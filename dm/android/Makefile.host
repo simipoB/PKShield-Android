@@ -1,0 +1,65 @@
+# The host (dm/host + the NVN layer of dm/gfx) built for Android arm64 with the NDK, as a command-line program (dmhost) run through adb: Phase 1 of the Android port.
+# Graphics: GFX=vulkan (default) builds the Vulkan replay (dm/gfx/nvn/nvn_vk.c); GFX=null the null GPU (host/null_gfx.c: game logic only). Darwin calls go through compat/.
+#   make -f Makefile.host GAME=<title ID> [GFX=null]        (run from dm/android)
+NDK ?= $(HOME)/nxnative-work/android-sdk/ndk/27.2.12479018
+API ?= 33
+GFX ?= vulkan
+# the NDK's prebuilt toolchain for this machine (macOS or Linux / WSL)
+NDK_HOST ?= $(if $(filter Darwin,$(shell uname -s)),darwin,linux)-x86_64
+CC = $(NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/bin/clang --target=aarch64-linux-android$(API)
+ifeq ($(strip $(GAME)),)
+$(error GAME is not set: make -f Makefile.host GAME=<base game title ID>)
+endif
+HOST = ../host
+GFXD = ../gfx
+OUT = out/host-$(GAME)-$(GFX)
+GAME_DIR = ../games/$(GAME)
+GAME_H = $(OUT)/gen/game_profile.h
+CFLAGS = -O2 -g -fPIC -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format -fno-omit-frame-pointer -include compat/darwin.h -Icompat \
+         -I$(HOST) -I$(GFXD)/nvn -I$(GFXD)/nvn/include -I../third_party/vulkan-headers/include -I$(OUT)/gen -I$(GAME_DIR) -I../third_party/libvpx -I../third_party/stb_vorbis
+# Darwin-only files: the Mac front end, the Metal / Vulkan-on-Metal backends, VideoToolbox, the memory sampler (memstat.m)
+SRC = $(filter-out $(HOST)/hle_movie_avc.c $(GFXD)/nvn/nvn_vk.c,$(wildcard $(HOST)/*.c)) $(filter-out $(GFXD)/nvn/nvn_vk.c,$(wildcard $(GFXD)/*.c $(GFXD)/nvn/*.c $(GFXD)/tex/*.c)) $(if $(filter vulkan,$(GFX)),$(GFXD)/nvn/nvn_vk.c)
+LOCAL = compat/compat.c compat/apkfs.c compat/aaudio_unit.c compat/audio_converter.c host/movie_avc_android.c host/front_null.c $(if $(filter null,$(GFX)),host/null_gfx.c)
+ASM = $(HOST)/entry.S $(GFXD)/nvn/nvn_entry.S $(GFXD)/nvn/nvn_thunks.S
+ASM_ELF = $(patsubst %.S,$(OUT)/asm/%.S,$(notdir $(ASM)))
+OBJ = $(patsubst ../%.c,$(OUT)/obj/%.o,$(SRC)) $(patsubst %.c,$(OUT)/obj/android/%.o,$(LOCAL)) $(ASM_ELF:.S=.o)
+VPX = ../third_party/libvpx
+VPX_OBJ = $(patsubst $(VPX)/%.c,$(OUT)/vpx/%.o,$(sort $(shell find $(VPX) -name '*.c')))
+
+$(OUT)/dmhost: $(OBJ) $(OUT)/libvpx.a
+	$(CC) -o $@ $(OBJ) $(OUT)/libvpx.a -lm -ldl -llog -lz -laaudio -lmediandk $(if $(filter vulkan,$(GFX)),-lvulkan -landroid) -Wl,-z,max-page-size=16384
+$(GAME_H): $(GAME_DIR)/game.tsv ../games/game.py
+	@mkdir -p $(dir $@); python3 ../games/game.py header $(GAME) $@
+$(OUT)/obj/%.o: ../%.c $(GAME_H) $(wildcard compat/*.h compat/*/*.h)
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
+$(OUT)/obj/android/%.o: %.c $(GAME_H) $(wildcard compat/*.h compat/*/*.h)
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
+$(OUT)/asm/entry.S: $(HOST)/entry.S elf_asm.py
+	@mkdir -p $(dir $@); python3 elf_asm.py $< $@
+$(OUT)/asm/%.S: $(GFXD)/nvn/%.S elf_asm.py
+	@mkdir -p $(dir $@); python3 elf_asm.py $< $@
+$(OUT)/asm/%.o: $(OUT)/asm/%.S
+	$(CC) -c $< -o $@
+$(OUT)/vpx/%.o: $(VPX)/%.c
+	@mkdir -p $(dir $@); $(CC) -O2 -fPIC -I$(VPX) -I$(VPX)/config -c $< -o $@
+$(OUT)/libvpx.a: $(VPX_OBJ)
+	rm -f $@; $(NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/bin/llvm-ar rcs $@ $^
+
+# The app's native library (make -f Makefile.host GAME=<id> lib): the same host objects (main.c as dm_main, as the iOS app) with the Android front end (app/jni/android_main.c)
+# and NDK's native_app_glue instead of front_null.c; symbols bound inside the library (-Bsymbolic) so the assembly's page-relative references to its own symbols link
+GLUE = $(NDK)/sources/android/native_app_glue
+LIBOBJ = $(filter-out $(OUT)/obj/host/main.o $(OUT)/obj/android/host/front_null.o,$(OBJ)) $(OUT)/objl/main.o $(OUT)/objl/android_main.o $(OUT)/objl/touch_ui.o $(OUT)/objl/touch_menu.o $(OUT)/objl/glue.o
+$(OUT)/objl/main.o: $(HOST)/main.c $(GAME_H)
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -Dmain=dm_main -c $< -o $@
+$(OUT)/objl/android_main.o: app/jni/android_main.c $(GAME_H)
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -I$(GLUE) -c $< -o $@
+$(OUT)/objl/touch_ui.o: app/jni/touch_ui.c $(GFXD)/nvn/nvn_ovl.h
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -I$(GFXD)/nvn -c $< -o $@
+$(OUT)/objl/touch_menu.o: app/jni/touch_menu.c $(GAME_H)
+	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
+$(OUT)/objl/glue.o: $(GLUE)/android_native_app_glue.c
+	@mkdir -p $(dir $@); $(CC) -O2 -fPIC -I$(GLUE) -c $< -o $@
+$(OUT)/lib/libnxnative.so: $(LIBOBJ) $(OUT)/libvpx.a
+	@mkdir -p $(dir $@); $(CC) -shared -o $@ $(LIBOBJ) $(OUT)/libvpx.a -lm -ldl -llog -lz -laaudio -lmediandk -lvulkan -landroid -Wl,-Bsymbolic -Wl,--no-undefined -Wl,-z,max-page-size=16384 -u ANativeActivity_onCreate
+.PHONY: lib
+lib: $(OUT)/lib/libnxnative.so

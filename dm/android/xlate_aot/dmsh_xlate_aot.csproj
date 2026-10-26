@@ -1,0 +1,32 @@
+<!-- The shader translator (dm/gfx/tools/dmsh_xlate, unchanged source) built with .NET NativeAOT as an Android executable (linux-bionic-arm64), so the
+     app translates the game's shaders on the phone with no .NET runtime. Build on Linux (WSL works) with the Android NDK: build_xlate_aot.sh. -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>dmsh_xlate</AssemblyName>
+    <RootNamespace>dmsh_xlate</RootNamespace>
+    <XlateSrc>$(MSBuildThisFileDirectory)../../gfx/tools/dmsh_xlate</XlateSrc>
+    <RyuSrc>$(MSBuildThisFileDirectory)../../third_party/ryujinx</RyuSrc>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- NativeAOT for Android: bionic runtime pack, no ICU (the translator needs no culture data) -->
+    <RuntimeIdentifier>linux-bionic-arm64</RuntimeIdentifier>
+    <PublishAot>true</PublishAot>
+    <PublishAotUsingRuntimePack>true</PublishAotUsingRuntimePack>
+    <DisableUnsupportedError>true</DisableUnsupportedError>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <SelfContained>true</SelfContained>
+    <StripSymbols>true</StripSymbols>
+    <TrimmerSingleWarn>true</TrimmerSingleWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(XlateSrc)/Program.cs" />
+    <EmbeddedResource Include="$(XlateSrc)/Program.cs" LogicalName="src0" />
+    <EmbeddedResource Include="$(XlateSrc)/dmsh_xlate.csproj" LogicalName="src1" />
+    <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
+    <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Common/Ryujinx.Common.csproj" />
+  </ItemGroup>
+</Project>

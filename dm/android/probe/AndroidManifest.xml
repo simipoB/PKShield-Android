@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.nxnative.probe" android:versionCode="2" android:versionName="2">
+    <uses-sdk android:minSdkVersion="30" android:targetSdkVersion="35" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
+    <application android:label="nxnative probe" android:extractNativeLibs="false" android:theme="@android:style/Theme.DeviceDefault">
+        <activity android:name=".Probe" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

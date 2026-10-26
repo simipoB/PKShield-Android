@@ -1,0 +1,32 @@
+# Build outputs and anything made from a game dump: never committed (game files, keys and extracted data stay in the game's NSP folder)
+out/
+dm/ios/Gen/
+dm/host/gen/
+dm/host/dmhost
+*.dSYM/
+obj/
+__pycache__/
+*.pyc
+.DS_Store
+# Android: built packages and signing keys
+*.apk
+*.apks
+*.idsig
+*.keystore
+*.jks
+# Game dumps and anything made from them: never committed
+*.nsp
+*.xci
+*.nca
+*.keys
+exefs/
+romfs/
+RomFS/
+ExeFS/
+Dump/
+*.patched.bin
+shaders.pak
+# .NET build folders
+bin/
+dm/android/spirv_cross/src/
+dm/android/spirv_cross/out/
