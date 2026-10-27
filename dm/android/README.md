@@ -22,7 +22,8 @@ The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at sta
   (`vk_dispatch.h`).
 - **Vulkan version**: 1.3, or 1.1 / 1.2 with dynamic rendering, timeline semaphores and extended dynamic state as extensions.
 - **GPU memory**: the game's memory pools are shared with the GPU through host-memory import, `VK_KHR_external_memory_fd` export, or driver-memory
-  mapping moves. If a driver advertises fd export but rejects an opaque-fd buffer, the app logs the rejection and falls back to mapping moves.
+  mapping moves. If a driver advertises fd export but rejects an opaque-fd buffer, or its mappings cannot be moved onto the game pools, the app falls back
+  to mirrored memory, copying changes in both directions around GPU submissions.
 - **Framebuffer compression**: render targets list their view formats instead of being freely mutable, which keeps Adreno's UBWC on; on Mali
   every plain colour image does, and those with a single format are not mutable at all (AFBC). With `VK_EXT_image_compression_control` the log
   says whether the first render targets are compressed.
