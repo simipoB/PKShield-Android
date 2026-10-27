@@ -14,6 +14,8 @@
 | `host/movie_avc_android.c` | H.264 movies (the staff credits) on MediaCodec |
 | `Makefile.host`, `tools/win_build_lib.py` | Build the engine library (Linux / macOS, or Windows) |
 
+Setup builds shader locations, facts, and pairs from the selected game dump instead of assuming it contains every shader in the profile's reference map. This lets base-game-only setups use their actual package indices; profile entries for shaders captured later at runtime are retained.
+
 ## Graphics (`dm/gfx/nvn/nvn_vk.c`)
 
 The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at start from what the device reports:

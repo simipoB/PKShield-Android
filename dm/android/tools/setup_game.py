@@ -19,6 +19,20 @@ GAME = os.environ.setdefault('DM_GAME', '01008DB008C2C000')
 sys.path.insert(0, os.path.join(DM, 'games')); import game as _game
 PROFILE = _game.load()
 
+def write_runtime_shader_map(found_map, profile_map, output):
+    """Use shader locations found in this dump, retaining profile slots for runtime-captured shaders."""
+    with open(found_map, encoding='utf-8') as f: rows = f.readlines()
+    keys = set()
+    for line in rows:
+        c = line.rstrip('\n').split('\t')
+        if len(c) > 4 and not line.startswith('#'): keys.add(c[3])
+    with open(profile_map, encoding='utf-8') as f:
+        for line in f:
+            c = line.rstrip('\n').split('\t')
+            if len(c) > 4 and c[3] not in keys and c[4].startswith('/nvn_capture/'):
+                rows.append(line)
+    with open(output, 'w', encoding='utf-8') as f: f.writelines(rows)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--keys'); ap.add_argument('--base'); ap.add_argument('--captures'); ap.add_argument('--update'); ap.add_argument('--dlc', action='append', default=[])
@@ -69,7 +83,11 @@ def main():
     vk = os.path.join(a.work, 'vk', 'b-' + chain); shutil.rmtree(os.path.dirname(vk), ignore_errors=True); os.makedirs(vk)
     cache = os.path.join(a.work, 'shader_cache'); shutil.rmtree(cache, ignore_errors=True)
     run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache],
-        env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, XLATE=tool('dmsh_xlate'), DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work))
+        env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, XLATE=tool('dmsh_xlate'), DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
+                 DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'),
+                 DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
+                 DMSH_PAIRS=os.path.join(a.work, 'shader_pairs.found.tsv'),
+                 MAIN=os.path.join(exefs, 'main')))
     built = os.path.join(cache, 'b-' + chain)
     for f in os.listdir(built):
         if f.endswith('_b.json'): shutil.copyfile(os.path.join(built, f), os.path.join(vk, f))
@@ -79,7 +97,9 @@ def main():
     run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, os.path.join(a.out, 'shaders.pak')])
 
     step(6)
-    shutil.copyfile(str(PROFILE.table('shader_map.tsv')), os.path.join(a.out, 'shader_map.tsv'))
+    write_runtime_shader_map(os.path.join(a.work, 'shader_map.found.tsv'),
+                             str(PROFILE.table('shader_map.tsv')),
+                             os.path.join(a.out, 'shader_map.tsv'))
     font = os.path.join(a.out, 'font'); os.makedirs(font, exist_ok=True)
     std = a.std_font or next((f for f in ('/system/fonts/Roboto-Regular.ttf', '/system/fonts/NotoSans-Regular.ttf') if os.path.isfile(f)), None)
     if std: shutil.copyfile(std, os.path.join(font, 'standard.ttf'))
