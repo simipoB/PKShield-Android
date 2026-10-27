@@ -6,7 +6,7 @@
 #   assets: python.zip (CPython's standard library, trimmed), dm.zip (the setup scripts, the game profile, the Python stand-ins for lz4 and capstone)
 # Usage: build_apk.py --libs <dir with the .so files> --pylib <CPython for Android's lib/python3.14> --capstone-py <the capstone Python package> --out <app.apk>
 #        [--ks <keystore> (default dm/android/probe/out/debug.keystore; made when missing)] [--bt <build-tools dir>] [--jar <android.jar>] [--name "Pokémon Shield"]
-import argparse, io, os, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
+import argparse, hashlib, io, os, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ANDROID = os.path.dirname(HERE); DM = os.path.dirname(ANDROID)
 LIBS = ['libnxnative.so', 'libnx_extract.so', 'libdmsh_xlate.so', 'libspirv_cross.so', 'libpython3.14.so', 'libpython_exe.so', 'libcapstone.so', 'liblz4.so', 'libssl_python.so', 'libcrypto_python.so']
@@ -38,6 +38,13 @@ def zipdir(z, src, arc, skip=()):
             if f.endswith(('.pyc', '.dll', '.dylib')): continue
             p = os.path.join(d, f); z.write(p, os.path.join(arc, os.path.relpath(p, src)).replace(os.sep, '/'))
 
+def validate_extractor(path):
+    with open(path, 'rb') as f: data = f.read()
+    obsolete_error = 'LibHac cache count was not found'
+    stale_release_hash = 'd40d71f2f0faf4c54bf92476fb9e10c8866f132e296ca73f63aba30623cee6c8'
+    if hashlib.sha256(data).hexdigest() == stale_release_hash or obsolete_error.encode('utf-8') in data or obsolete_error.encode('utf-16le') in data:
+        sys.exit('[RED] stale libnx_extract.so: rebuild it from this checkout before packaging (run scripts/build_apk_pc.sh)')
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--libs', required=True); ap.add_argument('--pylib', required=True); ap.add_argument('--capstone-py', required=True); ap.add_argument('--out', required=True)
@@ -49,6 +56,7 @@ def main():
     bt = a.bt or os.path.expanduser('~/nxnative-work/tools/android-15'); jar = a.jar or os.path.expanduser('~/nxnative-work/tools/android-35/android.jar')
     missing = [l for l in LIBS if not os.path.isfile(os.path.join(a.libs, l))]
     if missing: sys.exit('[RED] missing native libraries in ' + a.libs + ': ' + ', '.join(missing))
+    validate_extractor(os.path.join(a.libs, 'libnx_extract.so'))
     w = tempfile.mkdtemp(prefix='apk_')
     # resources: the icon; the manifest: the setup screen launches, the native activity plays
     for dpi, sz in (('xxxhdpi', 192), ('xxhdpi', 144), ('xhdpi', 96)):

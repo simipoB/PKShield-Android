@@ -116,28 +116,51 @@ def pak_keys(path):   # the keys an NXSP shader pack holds, and its chain versio
     with open(path, 'rb') as f:
         h = f.read(28)
         if h[:4] != b'NXSP': raise RuntimeError(f'{path} is not a shader pack')
-        n = struct.unpack_from('<I', h, 8)[0]; idx = f.read(32 * n)
-    return {idx[32 * i:32 * i + 8] for i in range(n)}, h[12:28].rstrip(b'\0').decode()
+        ver, n = struct.unpack_from('<II', h, 4)
+        if ver not in (1, 2, 3, 4): raise RuntimeError(f'{path} has unsupported shader pack version {ver}')
+        stride = 44 if ver >= 3 else 32; idx = f.read(stride * n)
+    if len(idx) != stride * n: raise RuntimeError(f'{path} has a truncated shader pack index')
+    return {idx[stride * i:stride * i + 8] for i in range(n)}, h[12:28].rstrip(b'\0').decode()
 
-def pak_merge(path, add):   # add the shaders of pack `add` (version 1) to pack `path` (version 1 or 2), rewriting it beside and swapping it in
+def pak_merge(path, add):   # merge a new uncompressed shader pack into the existing pack, preserving any GL depth variants
     with open(add, 'rb') as f: b = f.read()
-    nb = struct.unpack_from('<I', b, 8)[0]
-    src = open(path, 'rb'); h = src.read(28); ver, na = struct.unpack_from('<II', h, 4); idx = src.read(32 * na)
-    shift = 32 * nb; end = os.fstat(src.fileno()).st_size + shift; rows = []; blobs = []
+    add_ver, nb = struct.unpack_from('<II', b, 4)
+    if b[:4] != b'NXSP' or add_ver not in (1, 3): raise RuntimeError(f'{add} is not an uncompressed shader pack')
+    add_stride = 44 if add_ver == 3 else 32
+    src = open(path, 'rb'); h = src.read(28); ver, na = struct.unpack_from('<II', h, 4)
+    if h[:4] != b'NXSP' or ver not in (1, 2, 3, 4): raise RuntimeError(f'{path} has an unsupported shader pack')
+    old_stride = 44 if ver >= 3 else 32; compressed = ver in (2, 4)
+    old_index = src.read(old_stride * na)
+    has_gl = ver >= 3 or add_ver >= 3; new_stride = 44 if has_gl else 32; new_ver = (4 if compressed else 3) if has_gl else (2 if compressed else 1)
+    index_delta = (new_stride - old_stride) * na + new_stride * nb
+    end = os.fstat(src.fileno()).st_size + index_delta; rows = []; blobs = []
     for i in range(na):
-        e = idx[32 * i:32 * i + 32]; so, sl, ro, rl = struct.unpack_from('<QIQI', e, 8); rows.append((e[:8], so + shift, sl, ro + shift, rl))
+        e = old_index[old_stride * i:old_stride * (i + 1)]
+        so, sl, ro, rl = struct.unpack_from('<QIQI', e, 8)
+        row = [e[:8], so + index_delta, sl, ro + index_delta, rl]
+        if has_gl:
+            go, gl = struct.unpack_from('<QI', e, 32) if old_stride == 44 else (0, 0)
+            row += [go + index_delta if gl else 0, gl]
+        rows.append(tuple(row))
     for i in range(nb):
-        e = b[28 + 32 * i:60 + 32 * i]; so, sl, ro, rl = struct.unpack_from('<QIQI', e, 8); row = [e[:8]]
-        for o, l in ((so, sl), (ro, rl)):
+        e = b[28 + add_stride * i:28 + add_stride * (i + 1)]
+        so, sl, ro, rl = struct.unpack_from('<QIQI', e, 8); row = [e[:8]]
+        pairs = [(so, sl), (ro, rl)]
+        if add_stride == 44: pairs.append(struct.unpack_from('<QI', e, 32))
+        elif has_gl: pairs.append((0, 0))
+        for o, l in pairs:
+            if not l: row += [0, 0]; continue
             blob = b[o:o + l]
-            if ver == 2: blob = struct.pack('<I', l) + zlib.compress(blob, 9)
+            if len(blob) != l: raise RuntimeError(f'{add} has a truncated shader blob')
+            if compressed: blob = struct.pack('<I', l) + zlib.compress(blob, 9)
             row += [end, len(blob)]; blobs.append(blob); end += len(blob)
         rows.append(tuple(row))
     rows.sort(key=lambda r: r[0]); tmp = path + '.new'
     with open(tmp, 'wb') as out:
-        out.write(h[:8] + struct.pack('<I', na + nb) + h[12:28])
-        for k, so, sl, ro, rl in rows: out.write(k + struct.pack('<QIQI', so, sl, ro, rl))
-        src.seek(28 + 32 * na)
+        out.write(h[:4] + struct.pack('<II', new_ver, na + nb) + h[12:28])
+        for row in rows:
+            out.write(row[0] + (struct.pack('<QIQIQI', *row[1:]) if has_gl else struct.pack('<QIQI', *row[1:])))
+        src.seek(28 + old_stride * na)
         while True:
             chunk = src.read(1 << 24)
             if not chunk: break

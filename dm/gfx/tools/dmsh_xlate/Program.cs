@@ -79,8 +79,9 @@ static class SwshXlate
             Array32<AttributeType> attr = default; Array8<AttributeType> fout = default;
             if (_job["attr"] is JsonObject a) foreach (var kv in a) attr[int.Parse(kv.Key)] = Attr((string)kv.Value);
             if (_job["fout"] is JsonObject f) foreach (var kv in f) fout[int.Parse(kv.Key)] = Attr((string)kv.Value);
+            bool depthMode = _job["depth_mode"] is JsonNode depth && (bool)depth;
             return new GpuGraphicsState(false, InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
-                false, false, false, false /* depth not rewritten: dmsh_build.py adds the GL entry point (see the file header) */, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
+                false, false, false, depthMode, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* no Y flip */, true /* origin upper-left */, false);
         }
         public bool QueryHostSupportsTextureShadowLod() => true;
