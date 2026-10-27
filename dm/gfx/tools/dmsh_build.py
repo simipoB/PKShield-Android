@@ -23,14 +23,26 @@ OVERRIDES = {f.name[:-len('_b.metal')]: str(f) for f in dmsh_chain.msl_overrides
 GAME = dmsh_chain.GAME   # the current game profile (DM_GAME, default smbw): the tables and NVN constants come from here
 if f'"{CHAIN}"' not in open(dmsh_chain.HEADER).read(): sys.exit(f'[RED] {dmsh_chain.HEADER} does not hold the current translation chain version {CHAIN}: run dmsh_chain.py --header first (otherwise the host cannot find these libraries)')
 XLATE = os.environ.get('XLATE', os.path.join(dmsh_chain.XLATE_DIR, 'dmsh_xlate'))
+FACTS_FILE = os.environ.get('DMSH_FACTS')
 FACTS = dmsh_facts.load()
 if not os.path.exists(dmsh_facts.TABLE): sys.exit(f'[RED] no answer table {dmsh_facts.TABLE} (it comes with the game profile; an empty table = every query answered with defaults)')
+if FACTS_FILE:
+    if not os.path.isfile(FACTS_FILE): sys.exit(f'[RED] no generated shader facts table {FACTS_FILE}')
+    for _ln in open(FACTS_FILE):
+        if not _ln.strip() or _ln.startswith('#'): continue
+        _key, _value = _ln.rstrip('\n').split('\t', 1)
+        _extra = json.loads(_value); _merged = dict(FACTS.get(_key, {}))
+        for _name, _fact in _extra.items():
+            if isinstance(_fact, dict) and isinstance(_merged.get(_name), dict): _merged[_name] = {**_merged[_name], **_fact}
+            else: _merged[_name] = _fact
+        FACTS[_key] = _merged
 IOSOUT = os.environ.get('IOSOUT')   # if set, also build the iOS version (iphoneos metallib + reflection) into that directory
 if IOSOUT:
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../ios/tools')); import ios_metal
     IOSOUT = os.path.join(IOSOUT, 'b-' + CHAIN); os.makedirs(IOSOUT, exist_ok=True)
 MAIN = os.environ.get('MAIN', f'{DM_ROOT}/data/switch/3.3.94012/Update/ExeFS/main')
 MAP = str(GAME.table('shader_map.tsv'))
+SOURCE_MAP = os.environ.get('DMSH_SOURCE_MAP', MAP)
 BF_WANT_FILE = str(GAME.table('bf_want.tsv'))
 BF_WANT = {line.strip() for line in open(BF_WANT_FILE) if line.strip() and not line.lstrip().startswith('#')} if os.path.exists(BF_WANT_FILE) else set()
 XC = ['--msl', '--msl-version', '20300', '--msl-argument-buffers', '--msl-texture-buffer-native', '--msl-pad-fragment-output']
@@ -245,12 +257,19 @@ for raw in open(MAP + '.conflicts.tsv', 'rb'):
     if len(c) > 1 and not raw.startswith((b'#', b'dm_')): MAP_CONFLICT_ROWS.setdefault(c[0].decode(), raw)
 for ln in open(MAP):
     c = ln.rstrip('\n').split('\t')
-    if len(c) > 4 and c[0].endswith('.bin'): pc_of.setdefault(c[3], c[4]); loc.setdefault(c[3], (c[0], int(c[1])))
-    if len(c) > 4 and c[0].startswith('main.rodata@'):   # embedded: location = main image offset (start of the control segment), stage taken from column 3 of the mapping table
-        pc_of.setdefault(c[3], c[4]); loc.setdefault(c[3], (c[0], int(c[0].split('@')[1], 16))); stage_of[c[3]] = {'vertex': 'vs', 'pixel': 'ps'}[c[2]]
+    if len(c) > 4 and c[0].endswith('.bin'): pc_of.setdefault(c[3], c[4])
+    if len(c) > 4 and c[0].startswith('main.rodata@'): pc_of.setdefault(c[3], c[4])
 for ln in open(MAP + '.conflicts.tsv'):
     c = ln.rstrip('\n').split('\t')
     if len(c) > 1 and not ln.startswith('#') and not ln.startswith('dm_') and c[0] in pc_of: pc_of[c[0]] = c[1]
+for ln in open(SOURCE_MAP):
+    c = ln.rstrip('\n').split('\t')
+    if len(c) <= 4 or c[0] in ('package',) or c[0].startswith('#'): continue
+    pc_of.setdefault(c[3], c[4]); MAP_ROWS.setdefault(c[3], ln.encode())
+    if c[0].endswith('.bin'):
+        loc[c[3]] = (c[0], int(c[1])); stage_of[c[3]] = c[0][:2]
+    elif c[0].startswith('main.rodata@'):
+        loc[c[3]] = (c[0], int(c[0].split('@')[1], 16)); stage_of[c[3]] = {'vertex': 'vs', 'pixel': 'ps'}[c[2]]
 
 def main_rec(mi, o):
     """Embedded shader → bytes in the same layout as a package record: in a package record the code area starts at +0x38 (0x30 header + SPH + instructions, marker 78563412), immediately followed by the control segment (34127698);
@@ -491,7 +510,7 @@ def int_inputs(src):
 
 # vertex / pixel pairs (taken from BNSH variations by shader_split.py): vertex key → paired pixel keys
 PAIRS = collections.defaultdict(set)
-for _ln in open(GAME.table('shader_pairs.tsv')):
+for _ln in open(os.environ.get('DMSH_PAIRS', GAME.table('shader_pairs.tsv'))):
     if _ln.strip() and not _ln.startswith('#'): _v, _p = _ln.split(); PAIRS[_v].add(_p)
 
 def vs_pad(key, src):
@@ -676,6 +695,9 @@ def rec_of(key):   # → (package name, the shader's record)
         if hashlib.sha256(rec[rec.find(bytes.fromhex('34127698')):][:0x880]).hexdigest()[:16] != key: sys.exit(f'[RED] {name}: control section hash does not match shader map key {key} (MAIN={MAIN})')
     else:
         if name not in packs: packs[name] = records(open(os.path.join(dm_dir, name), 'rb').read())
+        if k < 0 or k >= len(packs[name]):
+            count = len(packs[name]); noun = 'record' if count == 1 else 'records'
+            sys.exit(f'[RED] generated shader map points to {name} record {k}, but this package has only {count} {noun}; check that the selected game files are complete and belong to the same version')
         rec = packs[name][k]
     return name, rec
 recs = {}
