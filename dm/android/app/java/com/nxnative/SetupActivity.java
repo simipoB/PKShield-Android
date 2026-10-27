@@ -29,7 +29,6 @@ import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.widget.Button;
-import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -67,19 +66,9 @@ public final class SetupActivity extends Activity {
         TextView note = new TextView(this); note.setText("Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone."); note.setPadding(0, 16, 0, 32); root.addView(note);
         gameText = row(root, "Game files", "Choose", v -> pick(PICK_GAME, true));
         keysText = row(root, "Keys", "Choose", v -> pick(PICK_KEYS, true));
-        // the player's name as the console's user profile (what a Switch reports as the account nickname; the game's own intro still asks for the trainer's name)
         // the Vulkan driver: the phone's own, or an Adreno driver package (a zip with meta.json and the library, e.g. Mesa Turnip) opened through libadrenotools
         driverText = row(root, "Graphics driver", "Choose", v -> pick(PICK_DRIVER, false));
         button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); refresh(); });
-        TextView nl = new TextView(this); nl.setText("Your name"); root.addView(nl);
-        EditText name = new EditText(this); name.setSingleLine(true); name.setHint("Player"); name.setText(envGet("DM_NICK"));
-        name.setFilters(new android.text.InputFilter[] { new android.text.InputFilter.LengthFilter(10) });   // a Switch profile name holds up to 10 characters
-        name.addTextChangedListener(new android.text.TextWatcher() {
-            public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
-            public void onTextChanged(CharSequence s, int a, int b, int c) { }
-            public void afterTextChanged(android.text.Editable s) { envSet("DM_NICK", s.toString().trim()); }
-        });
-        root.addView(name);
         settings(root);
         setup = button(root, "Set up the game", v -> startSetup());
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(6); root.addView(bar);
@@ -256,7 +245,9 @@ public final class SetupActivity extends Activity {
                 File ext = new File(dm, "android/app/assets/nintendo_ext.ttf"); if (ext.exists() && !args.contains("--captures")) { cmd.add("--ext-font"); cmd.add(ext.getPath()); }
                 ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
                 pb.environment().put("PYTHONHOME", py.getPath()); pb.environment().put("PYTHONPATH", new File(dm, "android/pyshim").getPath());
-                pb.environment().put("LD_LIBRARY_PATH", lib); pb.environment().put("LIBCAPSTONE_PATH", lib); pb.environment().put("NX_NATIVE_LIB_DIR", lib);
+                // bin first: the .NET unpacker dlopens libssl.so.3 / libcrypto.so.3, which binDir() links to the OpenSSL 3 that ships with CPython for Android
+                pb.environment().put("LD_LIBRARY_PATH", bin.getPath() + ":" + lib); pb.environment().put("LIBCAPSTONE_PATH", lib); pb.environment().put("NX_NATIVE_LIB_DIR", lib);
+                pb.environment().put("DOTNET_OPENSSL_VERSION_OVERRIDE", "3"); pb.environment().put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
                 pb.environment().put("TMPDIR", getCacheDir().getPath()); pb.environment().put("J", String.valueOf(Math.max(2, Runtime.getRuntime().availableProcessors())));
                 Process p = pb.start();
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String ln;
@@ -278,7 +269,7 @@ public final class SetupActivity extends Activity {
         if (logo != null) { logo.setImageBitmap(b); logo.setVisibility(android.view.View.VISIBLE); }
         return b;
     }
-    // once set up the app is the game: it starts straight into it. A long press on its icon offers "Set up again" (another dump, an update, the name, the layout of the setup)
+    // once set up the app is the game: it starts straight into it. A long press on its icon offers "Set up again" (another dump, an update, the layout of the setup)
     private void setupShortcut() {
         ShortcutManager sm = getSystemService(ShortcutManager.class); if (sm == null) return;
         Intent again = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN).putExtra("setup", true);
@@ -295,10 +286,12 @@ public final class SetupActivity extends Activity {
         for (ShortcutInfo p : sm.getPinnedShortcuts()) if (p.getId().equals("game")) { sm.updateShortcuts(Arrays.asList(si)); status.setText("The Pokémon Shield shortcut is on the home screen."); return; }
         if (sm.isRequestPinShortcutSupported()) sm.requestPinShortcut(si, null); else status.setText("This launcher cannot add shortcuts: long-press the app's icon for Pokémon Shield.");
     }
-    // the executables the setup runs, under the names the scripts call them by (links into the app's native library folder, where Android allows execution)
+    // the executables the setup runs, under the names the scripts call them by (links into the app's native library folder, where Android allows execution);
+    // also OpenSSL 3 under the names the .NET unpacker dlopens (libssl.so.3 / libcrypto.so.3), so it does not pick up the system's BoringSSL
     private File binDir() throws IOException {
         File d = new File(getFilesDir(), "bin"); d.mkdirs(); String lib = getApplicationInfo().nativeLibraryDir;
-        String[][] links = { { "nx_extract", "libnx_extract.so" }, { "dmsh_xlate", "libdmsh_xlate.so" }, { "spirv-cross", "libspirv_cross.so" } };
+        String[][] links = { { "nx_extract", "libnx_extract.so" }, { "dmsh_xlate", "libdmsh_xlate.so" }, { "spirv-cross", "libspirv_cross.so" },
+                             { "libssl.so.3", "libssl_python.so" }, { "libcrypto.so.3", "libcrypto_python.so" } };
         for (String[] l : links) { File f = new File(d, l[0]); f.delete(); try { android.system.Os.symlink(lib + "/" + l[1], f.getPath()); } catch (Exception e) { throw new IOException("link " + l[0] + ": " + e); } }
         return d;
     }
