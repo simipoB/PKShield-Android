@@ -45,10 +45,10 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class SetupActivity extends Activity {
-    private static final int PICK_GAME = 1, PICK_KEYS = 2, PICK_DRIVER = 3;
+    private static final int PICK_GAME = 1, PICK_KEYS = 2, PICK_DRIVER = 3, PICK_SAVE_EXPORT = 4;
     private TextView driverText;
     private final List<String> games = new ArrayList<>();
-    private TextView status, gameText, keysText; private ProgressBar bar; private Button setup, play, shortcut; private ImageView logo;
+    private TextView status, gameText, keysText; private ProgressBar bar; private Button setup, play, shortcut, saveExport; private ImageView logo;
     private volatile boolean running;
 
     private File gameDir() { return getExternalFilesDir(null); }
@@ -74,6 +74,7 @@ public final class SetupActivity extends Activity {
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(6); root.addView(bar);
         status = new TextView(this); status.setPadding(0, 16, 0, 16); root.addView(status);
         play = button(root, "Play", v -> startGame()); play.setEnabled(ready());
+        saveExport = button(root, "Export save data", v -> chooseSaveExport());
         shortcut = button(root, "Add Pokémon Shield to the home screen", v -> pinShortcut());
         ScrollView sv = new ScrollView(this); sv.addView(root); setContentView(sv);
         refresh(); gameIcon();
@@ -151,6 +152,7 @@ public final class SetupActivity extends Activity {
         boolean keys = new File(keysDir(), "prod.keys").exists();
         keysText.setText(keys ? "prod.keys" + (new File(keysDir(), "title.keys").exists() ? " + title.keys" : "") + " (kept in the app's private storage)" : "none chosen (prod.keys, and title.keys if needed)");
         setup.setEnabled(!running && keys && !games.isEmpty()); play.setEnabled(!running && ready());
+        saveExport.setEnabled(!running && ready());
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
     private void pick(int what, boolean multi) {
@@ -161,9 +163,12 @@ public final class SetupActivity extends Activity {
         startActivityForResult(i, what);
     }
     @Override protected void onActivityResult(int req, int res, Intent data) {
-        if (res != RESULT_OK || data == null) return;
+        if (res != RESULT_OK) return;
+        if (data == null) { status.setText("The file picker returned no selected file. Try the phone's Files app and select a file from Downloads or Documents."); return; }
+        if (req == PICK_SAVE_EXPORT) { exportSave(data.getData()); return; }
         List<Uri> uris = new ArrayList<>();
         if (data.getClipData() != null) for (int k = 0; k < data.getClipData().getItemCount(); k++) uris.add(data.getClipData().getItemAt(k).getUri()); else if (data.getData() != null) uris.add(data.getData());
+        if (uris.isEmpty()) { status.setText("The file picker did not return a file. Try the phone's Files app and select a file from Downloads or Documents."); return; }
         for (Uri u : uris) {
             String name = nameOf(u);
             if (req == PICK_DRIVER) { installDriver(u, name); continue; }
@@ -173,24 +178,81 @@ public final class SetupActivity extends Activity {
                 catch (IOException e) { status.setText("could not read " + name + ": " + e.getMessage()); }
             } else {
                 String p = pathOf(u);
-                if (p == null || !new File(p).canRead()) status.setText(name + ": choose it from the phone's own storage (Download, Documents...) so it can be read in place");
+                if (p == null || !new File(p).canRead()) status.setText(name + ": this file provider did not expose a readable phone-storage path. Choose it from Downloads or Documents in the phone's Files app.");
                 else if (!games.contains(p)) games.add(p);
             }
         }
         refresh();
     }
     private String nameOf(Uri u) { try (Cursor c = getContentResolver().query(u, new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null)) { if (c != null && c.moveToFirst()) return c.getString(0); } catch (Exception e) { } return u.getLastPathSegment(); }
-    // a document on the phone's own storage → its file path (external storage documents "primary:<path>", the Downloads provider "raw:<path>")
+    // Resolve document-provider paths for in-place reads; copying multi-gigabyte game files into the app is not practical.
     private String pathOf(Uri u) {
-        try {
-            String id = DocumentsContract.getDocumentId(u);
-            if (id.startsWith("raw:")) return id.substring(4);
-            if ("com.android.externalstorage.documents".equals(u.getAuthority()) && id.startsWith("primary:")) return Environment.getExternalStorageDirectory() + "/" + id.substring(8);
-            if ("com.android.providers.downloads.documents".equals(u.getAuthority())) { String n = nameOf(u); File f = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), n); if (f.exists()) return f.getPath(); }
-        } catch (Exception e) { }
+        if ("file".equals(u.getScheme())) return readableFile(u.getPath());
+        if (DocumentsContract.isDocumentUri(this, u)) {
+            try {
+                String id = DocumentsContract.getDocumentId(u);
+                if (id.startsWith("raw:")) return readableFile(id.substring(4));
+                if ("com.android.externalstorage.documents".equals(u.getAuthority())) {
+                    int sep = id.indexOf(':');
+                    if (sep > 0) {
+                        String volume = id.substring(0, sep), relative = id.substring(sep + 1);
+                        File root = "primary".equalsIgnoreCase(volume) ? Environment.getExternalStorageDirectory() : new File("/storage", volume);
+                        return readableFile(new File(root, relative).getPath());
+                    }
+                }
+            } catch (IllegalArgumentException e) { }
+        }
+        try (Cursor c = getContentResolver().query(u, new String[] { "_data" }, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int column = c.getColumnIndex("_data");
+                if (column >= 0) return readableFile(c.getString(column));
+            }
+        } catch (IllegalArgumentException | SecurityException e) { }
         return null;
     }
+    private String readableFile(String path) { if (path == null) return null; File f = new File(path); return f.isFile() && f.canRead() ? f.getPath() : null; }
     private static void copy(InputStream in, OutputStream out) throws IOException { byte[] buf = new byte[1 << 16]; int n; while ((n = in.read(buf)) > 0) out.write(buf, 0, n); }
+
+    private void chooseSaveExport() {
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("application/zip"); i.putExtra(Intent.EXTRA_TITLE, "PokemonShield-save.zip");
+        startActivityForResult(i, PICK_SAVE_EXPORT);
+    }
+    private void exportSave(Uri destination) {
+        if (destination == null) return;
+        File save = new File(gameDir(), "save");
+        status.setText("Exporting save data...");
+        new Thread(() -> {
+            String result;
+            try {
+                OutputStream output = getContentResolver().openOutputStream(destination, "wt");
+                if (output == null) throw new IOException("could not open the selected destination");
+                int files;
+                try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(output)) { files = addSaveFiles(save.getCanonicalFile(), save.getCanonicalFile(), zip); }
+                result = "Exported " + files + " save file" + (files == 1 ? "" : "s") + ".";
+            } catch (IOException e) { result = "Could not export save data: " + e.getMessage(); }
+            final String message = result;
+            runOnUiThread(() -> status.setText(message));
+        }).start();
+    }
+    private int addSaveFiles(File root, File directory, java.util.zip.ZipOutputStream zip) throws IOException {
+        File[] children = directory.listFiles();
+        if (children == null) throw new IOException("could not read " + directory);
+        int count = 0;
+        String rootPath = root.getPath() + File.separator;
+        for (File child : children) {
+            File canonical = child.getCanonicalFile();
+            if (!child.getAbsolutePath().equals(canonical.getPath())) throw new IOException("save contains a symbolic link");
+            if (!canonical.getPath().startsWith(rootPath)) throw new IOException("save contains a link outside its folder");
+            if (canonical.isDirectory()) { count += addSaveFiles(root, canonical, zip); continue; }
+            if (!canonical.isFile()) continue;
+            String relative = root.toPath().relativize(canonical.toPath()).toString().replace(File.separatorChar, '/');
+            zip.putNextEntry(new ZipEntry(relative));
+            try (InputStream input = new FileInputStream(canonical)) { copy(input, zip); }
+            zip.closeEntry(); count++;
+        }
+        return count;
+    }
 
     // the game's base, update and DLC told apart by their file names (the title ID ends 000 for the base, 800 for the update; [UPD] / [DLC] tags), else by size
     private String[] sortGames() {
