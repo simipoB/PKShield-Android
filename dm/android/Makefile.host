@@ -2,7 +2,7 @@
 # Graphics: GFX=vulkan (default) builds the Vulkan replay (dm/gfx/nvn/nvn_vk.c); GFX=null the null GPU (host/null_gfx.c: game logic only). Darwin calls go through compat/.
 #   make -f Makefile.host GAME=<title ID> [GFX=null]        (run from dm/android)
 NDK ?= $(HOME)/nxnative-work/android-sdk/ndk/27.2.12479018
-API ?= 33
+API ?= 31
 GFX ?= vulkan
 # the NDK's prebuilt toolchain for this machine (macOS or Linux / WSL)
 NDK_HOST ?= $(if $(filter Darwin,$(shell uname -s)),darwin,linux)-x86_64

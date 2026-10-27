@@ -55,10 +55,10 @@ def main():
         os.makedirs(os.path.join(w, 'res', f'mipmap-{dpi}'), exist_ok=True); open(os.path.join(w, 'res', f'mipmap-{dpi}', 'ic_launcher.png'), 'wb').write(png(sz))
     open(os.path.join(w, 'AndroidManifest.xml'), 'w', encoding='utf-8').write(f'''<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{a.package}" android:versionCode="{a.version}" android:versionName="0.{a.version}">
-    <uses-sdk android:minSdkVersion="33" android:targetSdkVersion="35" />
+    <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x403000" android:required="true" />
+    <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <application android:label="{a.name}" android:icon="@mipmap/ic_launcher" android:hasCode="true" android:extractNativeLibs="true"

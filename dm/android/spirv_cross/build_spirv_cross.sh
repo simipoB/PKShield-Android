@@ -1,9 +1,9 @@
 #!/bin/sh
 # Builds spirv-cross (Khronos, Apache-2.0) for the phone (out/libspirv_cross.so, an arm64 Android executable shipped as a library)
 # and for Linux (out/spirv-cross, the reference run). The setup uses it for shader reflection (--msl --reflect), as on the Mac.
-# Usage: build_spirv_cross.sh [tag]   (default: the newest vulkan-sdk-* tag). Env: NDK (default ~/aot/android-ndk-r27c), API (default 33)
+# Usage: build_spirv_cross.sh [tag]   (default: the newest vulkan-sdk-* tag). Env: NDK (default ~/aot/android-ndk-r27c), API (default 31)
 set -e
-HERE=$(cd "$(dirname "$0")" && pwd); NDK=${NDK:-$HOME/aot/android-ndk-r27c}; API=${API:-33}
+HERE=$(cd "$(dirname "$0")" && pwd); NDK=${NDK:-$HOME/aot/android-ndk-r27c}; API=${API:-31}
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 URL=https://github.com/KhronosGroup/SPIRV-Cross.git
 TAG=${1:-$(git ls-remote --tags --refs "$URL" 'vulkan-sdk-*' | sed 's#.*refs/tags/##' | sort -V | tail -1)}
