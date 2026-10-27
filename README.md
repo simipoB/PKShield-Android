@@ -29,6 +29,7 @@ shaders translated to SPIR-V by Ryujinx's shader translator, on the phone, durin
 
 Long-press the app's icon for **Settings**: graphics, touch controls, the graphics driver, exporting your save data as a ZIP, or setting the game up again.
 A few shaders the game builds while it runs are saved the first time and added at the next start.
+If a file picker does not expose a path the app can read directly, the selected game file is copied into the app's storage; this needs free space for both the copy and the setup output.
 
 ## Requirements
 
