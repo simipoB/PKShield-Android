@@ -48,7 +48,6 @@ both are signed with the same key.
 | `DM_GRAPHICS` | `high` (TV mode, 1080p), `low` (handheld mode, 720p), `auto` (high, low while the phone is hot) |
 | `DM_TOUCH_OPACITY` | 20 to 100 (percent) |
 | `DM_TOUCH_FADE` | seconds untouched before the controls fade; 0 = never |
-| `DM_NICK` | the console profile name the game sees |
 | `DM_VK_DRIVER` | path of a custom Vulkan driver library (set by the settings screen) |
 | `DM_VK_NO_BC=1` | decode BC textures on the CPU even where the GPU has them (to try the Mali / PowerVR path) |
 | `DM_VK_API=11` / `12` | take the Vulkan 1.1 / 1.2 path on a newer driver (testing) |

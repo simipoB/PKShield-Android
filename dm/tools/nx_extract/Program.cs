@@ -1,3 +1,4 @@
+using System.Linq;
 // NSP extraction: nx_extract <prod.keys> <base NSP> <update NSP or -> <output dir> [base RomFS dir to compare against] [--manifest]
 // Writes <output dir>/ExeFS and <output dir>/RomFS (the merged RomFS when there is an update); with a base RomFS dir, files whose content matches it become APFS clones (no new space).
 // --manifest: the RomFS is not written, only a list <output dir>/romfs_manifest.tsv (path, size, first 32 bytes), for surveying a new game (a large game's RomFS is well over 10 GB).
@@ -32,11 +33,19 @@ static class P {
         // title.keys beside prod.keys (the Android app keeps both in its private storage) is read too: dumps whose tickets are missing need it
         string tk = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(a[0])) ?? ".", "title.keys");
         KeySet ks = ExternalKeyReader.ReadKeyFile(a[0], File.Exists(tk) ? tk : null);
-        if (a[1] == "--aoc") return Aoc(ks, a[2], a[3]);
+        string aocDir = null; int ai = Array.IndexOf(a, "--aoc-dir"); if (ai >= 0 && ai + 1 < a.Length) { aocDir = a[ai + 1]; a = a.Where((_, i) => i != ai && i != ai + 1).ToArray(); }
+        if (a[1] == "--aoc") return Aoc(ks, OpenNsp(ks, a[2]), a[3], true);
         var basePkg = OpenNsp(ks, a[1]); var updPkg = a[2] == "-" ? null : OpenNsp(ks, a[2]);
-        Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base NSP");
-        Nca updProg = updPkg == null ? null : Pick(updPkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the update NSP");
-        Nca ctrl = Pick(updPkg ?? basePkg, NcaContentType.Control);
+        // Base game and update told apart by their data section: an update's program stores it as a patch over the base (both carry the base game's title ID).
+        // A merged dump (one XCI / NSP holding the base game, an update and DLC) has both in one file; separate files give one each
+        var progs = basePkg.Concat(updPkg ?? new List<Nca>()).Where(n => n.Header.ContentType == NcaContentType.Program).ToList();
+        Nca baseProg = progs.FirstOrDefault(n => !IsPatch(n)) ?? throw new Exception("no base game program in the files (only an update?)");
+        Nca updProg = progs.FirstOrDefault(IsPatch);
+        if (updPkg != null && updProg == null) throw new Exception("no update program in the update file");
+        if (updPkg == null && updProg != null) Console.WriteLine("merged dump: the update is in the same file as the base game");
+        if (aocDir != null) Aoc(ks, basePkg.Concat(updPkg ?? new List<Nca>()).ToList(), aocDir, false);   // DLC packed in the same files (merged dumps)
+        // control data (name, version, icon): the newest one present (the update's when there is one)
+        Nca ctrl = basePkg.Concat(updPkg ?? new List<Nca>()).Where(n => n.Header.ContentType == NcaContentType.Control).OrderByDescending(DisplayVersion).FirstOrDefault();
         Console.WriteLine($"title {baseProg.Header.TitleId:x16}" + (updProg != null ? $", update {updProg.Header.TitleId:x16}" : ""));
         string outDir = a[3], cmpDir = a.Length > 4 ? a[4] : null;
         if (ctrl != null) {   // control data (NACP): display version and game name; a raw copy goes to <output dir>/control.nacp for naming the app
@@ -77,13 +86,18 @@ static class P {
         return 3;
     }
 
-    // DLC NSP: one data NCA (content type PublicData / Data) + a meta NCA + the ticket; only the data NCA's RomFS is written
-    static int Aoc(KeySet ks, string nsp, string outDir) {
-        var pkg = OpenNsp(ks, nsp);
-        Nca data = Pick(pkg, NcaContentType.PublicData) ?? Pick(pkg, NcaContentType.Data) ?? throw new Exception("no data NCA in the DLC NSP");
-        Console.WriteLine($"add-on content {data.Header.TitleId:x16}");
-        Directory.CreateDirectory(outDir);
-        Copy(new RomFsFileSystem(data.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid)), outDir, null);
+    // DLC: each data NCA (content type PublicData / Data) → <aoc dir>/<index>, the index from its title ID (the base game's + 0x1000 + index: Shield's
+    // Isle of Armor ...D001 → 1, Crown Tundra ...D002 → 2), whatever order the files were chosen in. A DLC NSP holds one; a merged dump may hold several
+    static int Aoc(KeySet ks, List<Nca> pkg, string aocDir, bool required) {
+        var data = pkg.Where(n => n.Header.ContentType == NcaContentType.PublicData || n.Header.ContentType == NcaContentType.Data).ToList();
+        if (data.Count == 0) { if (required) throw new Exception("no data NCA in the DLC file"); return 0; }
+        foreach (Nca d in data) {
+            int idx = (int)(d.Header.TitleId & 0x7ff); if (idx == 0) idx = 1;
+            string outDir = Path.Combine(aocDir, idx.ToString());
+            Console.WriteLine($"add-on content {d.Header.TitleId:x16} → {outDir}");
+            Directory.CreateDirectory(outDir);
+            Copy(new RomFsFileSystem(d.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid)), outDir, null);
+        }
         return 0;
     }
 
@@ -110,6 +124,11 @@ static class P {
             } else if (e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) ncas.Add(new Nca(ks, st));
         }
         return ncas;
+    }
+    static bool IsPatch(Nca n) { try { return n.Header.GetFsHeader(1).IsPatchSection(); } catch { return false; } }
+    static Version DisplayVersion(Nca c) {
+        try { string v = System.Text.Encoding.ASCII.GetString(Nacp(c), 0x3060, 0x10).TrimEnd('\0'); return Version.TryParse(v, out var r) ? r : new Version(0, 0); }
+        catch { return new Version(0, 0); }
     }
     static Nca Pick(List<Nca> l, NcaContentType t) { foreach (Nca n in l) if (n.Header.ContentType == t) return n; return null; }
 
