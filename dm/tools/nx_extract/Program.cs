@@ -8,6 +8,7 @@ using System.Linq;
 // Title keys come from the common tickets (.tik) inside the NSPs, so only prod.keys is needed; key values are never printed.
 // The base game may also be a cartridge dump (.xci, Monster Hunter Rise): its secure partition holds the NCAs, which carry their keys in the key area (no ticket).
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
@@ -96,14 +97,13 @@ static class P {
             ?? throw new InvalidOperationException("LibHac CachedStorage.Blocks was not found");
         PropertyInfo blockSizeInfo = cacheType.GetProperty("BlockSize", BindingFlags.Instance | BindingFlags.NonPublic)
             ?? throw new InvalidOperationException("LibHac CachedStorage.BlockSize was not found");
-        PropertyInfo countInfo = null;
         MethodInfo addLast = null;
         if (storage is CachedStorage cache) {
-            EnsureNonEmptyCache(cache, blocksInfo, blockType, blockSizeInfo, ref countInfo, ref addLast);
+            EnsureNonEmptyCache(cache, blocksInfo, blockType, blockSizeInfo, ref addLast);
         } else if (storage is LibHac.Tools.FsSystem.HierarchicalIntegrityVerificationStorage integrity) {
             foreach (IStorage level in integrity.Levels) {
                 if (level is not CachedStorage levelCache) continue;
-                EnsureNonEmptyCache(levelCache, blocksInfo, blockType, blockSizeInfo, ref countInfo, ref addLast);
+                EnsureNonEmptyCache(levelCache, blocksInfo, blockType, blockSizeInfo, ref addLast);
             }
         }
     }
@@ -111,11 +111,10 @@ static class P {
     [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "The LibHac CacheBlock constructor is preserved by the Android linker descriptor.")]
     [UnconditionalSuppressMessage("Trimming", "IL2070", Justification = "The LibHac CacheBlock properties are preserved by the Android linker descriptor.")]
     static void EnsureNonEmptyCache(CachedStorage cache, PropertyInfo blocksInfo, Type blockType, PropertyInfo blockSizeInfo,
-                                    ref PropertyInfo countInfo, ref MethodInfo addLast) {
+                                    ref MethodInfo addLast) {
         object blocks = blocksInfo.GetValue(cache) ?? throw new InvalidOperationException("LibHac CachedStorage.Blocks is null");
         Type blocksType = blocks.GetType();
-        countInfo ??= blocksType.GetProperty("Count") ?? throw new InvalidOperationException("LibHac cache count was not found");
-        if ((int)countInfo.GetValue(blocks) != 0) return;
+        if (((ICollection)blocks).Count != 0) return;
         addLast ??= blocksType.GetMethod("AddLast", new[] { blockType }) ?? throw new InvalidOperationException("LibHac cache AddLast was not found");
         // LibHac 0.19's empty-cache fallback still removes the missing tail node.
         object block = Activator.CreateInstance(blockType, nonPublic: true)
