@@ -27,7 +27,7 @@ shaders translated to SPIR-V by Ryujinx's shader translator, on the phone, durin
    opens straight into it every time, and your dump files are no longer needed. A Pokémon Shield shortcut with the game's own icon (from your
    dump) goes on the home screen.
 
-Long-press the app's icon for **Settings**: graphics, touch controls, your name, the graphics driver, or setting the game up again.
+Long-press the app's icon for **Settings**: graphics, touch controls, the graphics driver, or setting the game up again.
 A few shaders the game builds while it runs are saved the first time and added at the next start.
 
 ## Requirements

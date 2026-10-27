@@ -45,8 +45,9 @@ def main():
 
     step(1)
     if os.path.isdir(ex): shutil.rmtree(ex)
-    run([tool('nx_extract'), keys, a.base, a.update or '-', ex])
-    for n, d in enumerate(a.dlc, 1): run([tool('nx_extract'), keys, '--aoc', d, os.path.join(a.out, 'aoc', str(n))])
+    aoc = os.path.join(a.out, 'aoc'); shutil.rmtree(aoc, ignore_errors=True)
+    run([tool('nx_extract'), keys, a.base, a.update or '-', ex, '--aoc-dir', aoc])   # (DLC inside a merged dump goes to aoc/ too)
+    for d in a.dlc: run([tool('nx_extract'), keys, '--aoc', d, aoc])
     exefs, romfs = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS')
     if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError('the dump has no main module: is it Pokémon Shield?')
 
