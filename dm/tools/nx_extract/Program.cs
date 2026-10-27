@@ -46,7 +46,7 @@ static class P {
         Nca updProg = progs.FirstOrDefault(IsPatch);
         if (updPkg != null && updProg == null) throw new Exception("no update program in the update file");
         if (updPkg == null && updProg != null) Console.WriteLine("update found among the chosen files: applied over the base game");
-        if (aocDir != null) Aoc(ks, basePkg.Concat(updPkg ?? new List<Nca>()).ToList(), aocDir, false);   // DLC packed in the same files (merged dumps)
+        if (aocDir != null) Aoc(ks, basePkg.Concat(updPkg ?? new List<Nca>()).ToList(), aocDir, false, baseProg.Header.TitleId);   // DLC packed in the same files (merged dumps)
         // control data (name, version, icon): the newest one present (the update's when there is one)
         Nca ctrl = basePkg.Concat(updPkg ?? new List<Nca>()).Where(n => n.Header.ContentType == NcaContentType.Control).OrderByDescending(DisplayVersion).FirstOrDefault();
         Console.WriteLine($"title {baseProg.Header.TitleId:x16}" + (updProg != null ? $", update {updProg.Header.TitleId:x16}" : ""));
@@ -91,10 +91,19 @@ static class P {
 
     // DLC: each data NCA (content type PublicData / Data) → <aoc dir>/<index>, the index from its title ID (the base game's + 0x1000 + index: Shield's
     // Isle of Armor ...D001 → 1, Crown Tundra ...D002 → 2), whatever order the files were chosen in. A DLC NSP holds one; a merged dump may hold several
-    static int Aoc(KeySet ks, List<Nca> pkg, string aocDir, bool required) {
+    static int Aoc(KeySet ks, List<Nca> pkg, string aocDir, bool required, ulong? baseTitleId = null) {
         var data = pkg.Where(n => n.Header.ContentType == NcaContentType.PublicData || n.Header.ContentType == NcaContentType.Data).ToList();
         if (data.Count == 0) { if (required) throw new Exception("no data NCA in the DLC file"); return 0; }
         foreach (Nca d in data) {
+            if (baseTitleId.HasValue) {
+                ulong titleId = d.Header.TitleId;
+                if (titleId < baseTitleId.Value) continue;
+                ulong offset = titleId - baseTitleId.Value;
+                if (offset < 0x1000 || offset > 0x17ff) {
+                    Console.WriteLine($"skipping non-DLC content {titleId:x16}");
+                    continue;   // exclude the base game and its update; DLC titles are base + 0x1000 + index
+                }
+            }
             int idx = (int)(d.Header.TitleId & 0x7ff); if (idx == 0) idx = 1;
             string outDir = Path.Combine(aocDir, idx.ToString());
             Console.WriteLine($"add-on content {d.Header.TitleId:x16} → {outDir}");
