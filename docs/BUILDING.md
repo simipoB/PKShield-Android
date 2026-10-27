@@ -23,7 +23,7 @@ builds every part from source:
 | The NSP / XCI unpacker | `dm/tools/nx_extract` (LibHac), .NET NativeAOT (`dm/android/extract_aot`) | `libnx_extract.so` |
 | The shader translator | `dm/gfx/tools/dmsh_xlate` (Ryujinx), .NET NativeAOT (`dm/android/xlate_aot`) | `libdmsh_xlate.so` |
 | SPIRV-Cross | `dm/android/spirv_cross/build_spirv_cross.sh` | `libspirv_cross.so` |
-| Python for the setup scripts | CPython 3.14 for Android, `dm/android/python/pylaunch.c` | `libpython3.14.so`, `libpython_exe.so`, `python.zip` |
+| Python for the setup scripts | CPython 3.14 for Android, `dm/android/python/pylaunch.c` | `libpython3.14.so`, `libpython_exe.so`, `libssl_python.so`, `libcrypto_python.so`, `python.zip` |
 | The setup scripts and the game profile | `dm/android/tools`, `dm/gfx/tools`, `dm/games/01008DB008C2C000` | `dm.zip` |
 | Custom drivers (optional) | libadrenotools | `libadrenotools.so` and its hooks |
 
