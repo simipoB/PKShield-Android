@@ -9,7 +9,9 @@ using System.Linq;
 // The base game may also be a cartridge dump (.xci, Monster Hunter Rise): its secure partition holds the NCAs, which carry their keys in the key area (no ticket).
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using LibHac.Common;
 using LibHac.Common.Keys;
@@ -70,8 +72,13 @@ static class P {
             if (h[0] == 'N' && h[1] == 'S' && h[2] == 'O' && h[3] == '0') Console.WriteLine($"{Path.GetFileName(p)} build id {Convert.ToHexString(h, 0x40, 16).ToLowerInvariant()}");
         }
         IStorage romfs = updProg != null ? baseProg.OpenStorageWithPatch(updProg, NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid) : baseProg.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid);
+        EnsureNonEmptyIntegrityCaches(romfs);
         // the same RomFS without hash checks, for reading damaged files as they are (--allow-damaged)
-        g_lenient = () => new RomFsFileSystem(updProg != null ? baseProg.OpenStorageWithPatch(updProg, NcaSectionType.Data, IntegrityCheckLevel.IgnoreOnInvalid) : baseProg.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.IgnoreOnInvalid));
+        g_lenient = () => {
+            IStorage storage = updProg != null ? baseProg.OpenStorageWithPatch(updProg, NcaSectionType.Data, IntegrityCheckLevel.IgnoreOnInvalid) : baseProg.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.IgnoreOnInvalid);
+            EnsureNonEmptyIntegrityCaches(storage);
+            return new RomFsFileSystem(storage);
+        };
         if (manifest) Manifest(new RomFsFileSystem(romfs), Path.Combine(outDir, "romfs_manifest.tsv"));
         else Copy(new RomFsFileSystem(romfs), Path.Combine(outDir, "RomFS"), cmpDir);
         return Damaged();
@@ -80,6 +87,46 @@ static class P {
     // Files whose data failed the hash check: listed at the end; exit code 3 unless --allow-damaged
     static readonly List<string> g_damaged = new List<string>(); static bool g_allow; static Func<IFileSystem> g_lenient; static IFileSystem g_lenientFs;
     static bool HashError(HorizonResultException e) => e.ResultValue.Module == 2 && e.ResultValue.Description >= 4600 && e.ResultValue.Description < 4700;   // fs: integrity verification failures (2002-46xx)
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "The LibHac cache's closed LinkedList type is reached through CachedStorage and its CacheBlock metadata is preserved below.")]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(CachedStorage))]
+    static void EnsureNonEmptyIntegrityCaches(IStorage storage) {
+        Type cacheType = typeof(CachedStorage), blockType = cacheType.GetNestedType("CacheBlock", BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("LibHac CachedStorage.CacheBlock was not found");
+        PropertyInfo blocksInfo = cacheType.GetProperty("Blocks", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("LibHac CachedStorage.Blocks was not found");
+        PropertyInfo blockSizeInfo = cacheType.GetProperty("BlockSize", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("LibHac CachedStorage.BlockSize was not found");
+        PropertyInfo countInfo = null;
+        MethodInfo addLast = null;
+        if (storage is CachedStorage cache) {
+            EnsureNonEmptyCache(cache, blocksInfo, blockType, blockSizeInfo, ref countInfo, ref addLast);
+        } else if (storage is LibHac.Tools.FsSystem.HierarchicalIntegrityVerificationStorage integrity) {
+            foreach (IStorage level in integrity.Levels) {
+                if (level is not CachedStorage levelCache) continue;
+                EnsureNonEmptyCache(levelCache, blocksInfo, blockType, blockSizeInfo, ref countInfo, ref addLast);
+            }
+        }
+    }
+    [UnconditionalSuppressMessage("Trimming", "IL2075", Justification = "The closed cache list is preserved as part of the CachedStorage reflection descriptor.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "The LibHac CacheBlock constructor is preserved by the Android linker descriptor.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2070", Justification = "The LibHac CacheBlock properties are preserved by the Android linker descriptor.")]
+    static void EnsureNonEmptyCache(CachedStorage cache, PropertyInfo blocksInfo, Type blockType, PropertyInfo blockSizeInfo,
+                                    ref PropertyInfo countInfo, ref MethodInfo addLast) {
+        object blocks = blocksInfo.GetValue(cache) ?? throw new InvalidOperationException("LibHac CachedStorage.Blocks is null");
+        Type blocksType = blocks.GetType();
+        countInfo ??= blocksType.GetProperty("Count") ?? throw new InvalidOperationException("LibHac cache count was not found");
+        if ((int)countInfo.GetValue(blocks) != 0) return;
+        addLast ??= blocksType.GetMethod("AddLast", new[] { blockType }) ?? throw new InvalidOperationException("LibHac cache AddLast was not found");
+        // LibHac 0.19's empty-cache fallback still removes the missing tail node.
+        object block = Activator.CreateInstance(blockType, nonPublic: true)
+            ?? throw new InvalidOperationException("LibHac cache block could not be created");
+        (blockType.GetProperty("Buffer") ?? throw new InvalidOperationException("LibHac cache block buffer was not found"))
+            .SetValue(block, new byte[(int)blockSizeInfo.GetValue(cache)]);
+        (blockType.GetProperty("Index") ?? throw new InvalidOperationException("LibHac cache block index was not found"))
+            .SetValue(block, -1L);
+        addLast.Invoke(blocks, new[] { block });
+        Console.WriteLine("repaired empty LibHac RomFS integrity cache (capacity 1)");
+    }
     static int Damaged() {
         if (g_damaged.Count == 0) return 0;
         foreach (string p in g_damaged) Console.WriteLine($"[RED] hash check failed: {p}");

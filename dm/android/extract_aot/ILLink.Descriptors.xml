@@ -1,0 +1,6 @@
+<linker>
+  <assembly fullname="LibHac">
+    <type fullname="LibHac.Tools.FsSystem.CachedStorage" preserve="all" />
+    <type fullname="LibHac.Tools.FsSystem.CachedStorage/CacheBlock" preserve="all" />
+  </assembly>
+</linker>
