@@ -16,6 +16,8 @@
 
 Setup builds shader locations, facts, and pairs from the selected game dump instead of assuming it contains every shader in the profile's reference map. This lets base-game-only setups use their actual package indices; profile entries for shaders captured later at runtime are retained.
 
+Save data can be exported as a ZIP and edited externally, then imported from the launcher with **Import edited save data**. The archive is validated and staged privately; the next Play action atomically swaps it into place and keeps the previous save as a backup.
+
 ## Graphics (`dm/gfx/nvn/nvn_vk.c`)
 
 The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at start from what the device reports:

@@ -20,6 +20,7 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -307,16 +308,28 @@ static void host_start(void) {
     SETP("DM_NVN_CAPTURE", "nvn_capture");   // shaders the game builds in memory, saved for the setup to translate (nvn_vk.c mtl_shader_seen)
     SETG("DM_ROMFS", "RomFS"); SETG("DM_SPV_DIR", "vk"); SETG("DM_NVN_SHMAP", "shader_map.tsv"); SETG("DM_FONT_DIR", "font");
     SETP("DM_SAVE", "save"); SETP("DM_TEMP", "temp");
-    // a save brought in from elsewhere (a Switch dump): files put in save_import/ (adb can write there, not into the app's own save/) replace the save at start;
-    // the old save is kept as save.before-import-<time>
-    { char imp[1200], old[1200], src[1300], dst[1300]; snprintf(imp, sizeof imp, "%s/save_import", g_files); struct stat is;
-      if (!stat(imp, &is) && S_ISDIR(is.st_mode)) {
-          snprintf(p, sizeof p, "%s/save", g_files); snprintf(old, sizeof old, "%s/save.before-import-%ld", g_files, (long)time(NULL)); rename(p, old); mkdir(p, 0755);
-          DIR *d = opendir(imp); struct dirent *de; int n = 0;
-          while (d && (de = readdir(d))) { if (de->d_name[0] == '.') continue; snprintf(src, sizeof src, "%s/%s", imp, de->d_name); snprintf(dst, sizeof dst, "%s/%s", p, de->d_name);
-              copy_file(src, dst); unlink(src); n++; }
-          if (d) closedir(d); rmdir(imp);
-          fprintf(stderr, "boot: save imported from save_import (%d files); the previous save is in %s\n", n, old); } }
+    // A save archive imported by SetupActivity is staged as save_import/. Rename the directories on the same
+    // filesystem so nested save layouts survive and the old save remains intact if the import cannot be installed.
+    { char imp[1200], old[1300]; struct stat is, ss;
+      snprintf(imp, sizeof imp, "%s/save_import", g_files);
+      snprintf(p, sizeof p, "%s/save", g_files);
+      if (!lstat(imp, &is) && S_ISDIR(is.st_mode)) {
+          int moved_old = 0, can_install = 1;
+          int save_status = stat(p, &ss);
+          if (!save_status) {
+              snprintf(old, sizeof old, "%s/save.before-import-%ld-%d", g_files, (long)time(NULL), (int)getpid());
+              if (!rename(p, old)) moved_old = 1;
+              else { fprintf(stderr, "[RED] save import: could not preserve the current save: %s\n", strerror(errno)); can_install = 0; }
+          } else if (errno != ENOENT) {
+              fprintf(stderr, "[RED] save import: could not inspect the current save: %s\n", strerror(errno)); can_install = 0;
+          }
+          if (can_install && !rename(imp, p)) {
+              fprintf(stderr, "boot: imported save archive; previous save backup: %s\n", moved_old ? old : "none");
+          } else {
+              if (moved_old) rename(old, p);
+              fprintf(stderr, "[RED] save import: could not install imported save; it remains in %s\n", imp);
+          }
+      } }
     snprintf(p, sizeof p, "%s/save", g_files); mkdir(p, 0755); snprintf(p, sizeof p, "%s/temp", g_files); mkdir(p, 0755);
     snprintf(p, sizeof p, "%s/RomFS", g_game);
     if (stat(p, &st)) { fprintf(stderr, "boot: game files not found: %s (install the bundle, or copy RomFS, patched, shaders.pak, shader_map.tsv and font there)\n", p); ALOG("game files missing in %s", g_files); return; }
