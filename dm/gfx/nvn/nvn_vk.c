@@ -353,7 +353,16 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     VkExternalMemoryBufferCreateInfo eb = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT };
     VkExternalMemoryBufferCreateInfo ebfd = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
     VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = g_host_import ? &eb : g_fdmap ? &ebfd : NULL, .size = n, .usage = BUF_ALL };
-    VKCHECK(vkCreateBuffer(g_dev, &bi, NULL, &e.buf));
+    VkResult br = vkCreateBuffer(g_dev, &bi, NULL, &e.buf);
+#ifdef __linux__
+    if (br == VK_ERROR_INVALID_EXTERNAL_HANDLE && g_fdmap < 0) {
+        VLOG("[RED] opaque-fd external buffer rejected (%d): moving driver mappings instead (mremap)", br);
+        g_fdmap = 0;
+        bi.pNext = NULL;
+        br = vkCreateBuffer(g_dev, &bi, NULL, &e.buf);
+    }
+#endif
+    if (br != VK_SUCCESS) VDIE("vkCreateBuffer(g_dev, &bi, NULL, &e.buf) failed: %d (%s:%d)", br, __FILE__, __LINE__);
     VkMemoryRequirements rq; vkGetBufferMemoryRequirements(g_dev, e.buf, &rq);
     if (g_host_import) {
         VkMemoryHostPointerPropertiesEXT hp = { .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT };
