@@ -438,9 +438,9 @@ void mtl_pool_add(const void *mem, uint64_t size) {
             VLOG("[RED] memory pool %p+%#llx: the driver's mapping %p is not usable (%s): kept aside, allocating again", mem, (unsigned long long)size, p, rw ? "too short" : "not writable");
             if (tries >= 16) VDIE("memory pool %p+%#llx: no usable GPU memory mapping after %d tries", mem, (unsigned long long)size, tries + 1);
         }
-        {   // mremap moves whole mappings: the driver's must start at p, page-aligned, and cover the pool (a driver that sub-allocates from bigger mappings breaks this)
+        {   // mremap moves whole mappings: the driver's must start at p, be page-aligned, and end exactly after the pool
             static int force = -1; if (force < 0) force = getenv("DM_VK_POOL_SHADOW") && atoi(getenv("DM_VK_POOL_SHADOW"));
-            if (force || ((uintptr_t)p & (getpagesize() - 1)) || vs != (uintptr_t)p || ve < (uintptr_t)p + n) {
+            if (force || ((uintptr_t)p & (getpagesize() - 1)) || vs != (uintptr_t)p || ve != (uintptr_t)p + n) {
                 static int said; if (!said++) VLOG("memory pools: %s: mirrored (pages the game writes copied in before each submission)", force ? "DM_VK_POOL_SHADOW" : "the driver's mappings are not whole mappings of their own");
                 e.shadow = p; atomic_fetch_add(&g_nshadow, 1);
                 if (!nvn_dirty_tracked((void *)a, n)) { nvn_dirty_add_range((void *)a, n); e.tracked_here = 1; }
@@ -467,7 +467,15 @@ reuse:
         else {
             static int said; if (!said++) VLOG("pool memory: MREMAP_DONTUNMAP refused (errno %d), moving without it", errno);
             q = mremap(p, n, n, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)a);
-            if (q != (void *)a) VDIE("memory pool %p+%#llx: moving the GPU memory onto it failed (errno %d)", mem, (unsigned long long)size, errno);
+            if (q != (void *)a) {
+                int err = errno;
+                VLOG("[RED] memory pool %p+%#llx: moving the GPU memory onto it failed (errno %d): mirrored instead", mem, (unsigned long long)size, err);
+                e.shadow = p; atomic_fetch_add(&g_nshadow, 1);
+                if (!nvn_dirty_tracked((void *)a, n)) { nvn_dirty_add_range((void *)a, n); e.tracked_here = 1; }
+                e.stamp = nvn_dirty_now(); nvn_dirty_protect((void *)a, n);
+                memcpy(p, (void *)a, n);
+                goto bind;
+            }
             mmap(p, n, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
         }
         e.moved_from = p;
