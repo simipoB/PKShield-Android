@@ -46,8 +46,10 @@ def main():
     step(1)
     if os.path.isdir(ex): shutil.rmtree(ex)
     aoc = os.path.join(a.out, 'aoc'); shutil.rmtree(aoc, ignore_errors=True)
-    run([tool('nx_extract'), keys, a.base, a.update or '-', ex, '--aoc-dir', aoc])   # (DLC inside a merged dump goes to aoc/ too)
-    for d in a.dlc: run([tool('nx_extract'), keys, '--aoc', d, aoc])
+    # every chosen file in one run: the unpacker tells base game, update and DLC apart by their contents, not their names or the order they were chosen in
+    # (an update named without [UPD], a merged XCI, DLC chosen first all work)
+    files = [f for f in [a.base, a.update] + a.dlc if f]
+    run([tool('nx_extract'), keys, files[0], '-', ex, '--aoc-dir', aoc] + [x for f in files[1:] for x in ('--more', f)])
     exefs, romfs = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS')
     if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError('the dump has no main module: is it Pokémon Shield?')
 

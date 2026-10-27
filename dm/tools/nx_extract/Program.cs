@@ -34,15 +34,18 @@ static class P {
         string tk = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(a[0])) ?? ".", "title.keys");
         KeySet ks = ExternalKeyReader.ReadKeyFile(a[0], File.Exists(tk) ? tk : null);
         string aocDir = null; int ai = Array.IndexOf(a, "--aoc-dir"); if (ai >= 0 && ai + 1 < a.Length) { aocDir = a[ai + 1]; a = a.Where((_, i) => i != ai && i != ai + 1).ToArray(); }
+        // --more <file>: more of the player's files (update, DLC, in any order and under any name); everything is pooled and told apart by its contents
+        var more = new List<string>(); for (int mi; (mi = Array.IndexOf(a, "--more")) >= 0 && mi + 1 < a.Length;) { more.Add(a[mi + 1]); a = a.Where((_, i) => i != mi && i != mi + 1).ToArray(); }
         if (a[1] == "--aoc") return Aoc(ks, OpenNsp(ks, a[2]), a[3], true);
         var basePkg = OpenNsp(ks, a[1]); var updPkg = a[2] == "-" ? null : OpenNsp(ks, a[2]);
+        foreach (string m in more) basePkg.AddRange(OpenNsp(ks, m));
         // Base game and update told apart by their data section: an update's program stores it as a patch over the base (both carry the base game's title ID).
         // A merged dump (one XCI / NSP holding the base game, an update and DLC) has both in one file; separate files give one each
         var progs = basePkg.Concat(updPkg ?? new List<Nca>()).Where(n => n.Header.ContentType == NcaContentType.Program).ToList();
         Nca baseProg = progs.FirstOrDefault(n => !IsPatch(n)) ?? throw new Exception("no base game program in the files (only an update?)");
         Nca updProg = progs.FirstOrDefault(IsPatch);
         if (updPkg != null && updProg == null) throw new Exception("no update program in the update file");
-        if (updPkg == null && updProg != null) Console.WriteLine("merged dump: the update is in the same file as the base game");
+        if (updPkg == null && updProg != null) Console.WriteLine("update found among the chosen files: applied over the base game");
         if (aocDir != null) Aoc(ks, basePkg.Concat(updPkg ?? new List<Nca>()).ToList(), aocDir, false);   // DLC packed in the same files (merged dumps)
         // control data (name, version, icon): the newest one present (the update's when there is one)
         Nca ctrl = basePkg.Concat(updPkg ?? new List<Nca>()).Where(n => n.Header.ContentType == NcaContentType.Control).OrderByDescending(DisplayVersion).FirstOrDefault();
