@@ -69,7 +69,7 @@ PY=$WORK/python-android
 if [ ! -f "$PY/prefix/lib/libpython3.14.so" ]; then
     mkdir -p "$PY"; curl -fsSLo py.tar.gz "https://www.python.org/ftp/python/$PYV/python-$PYV-aarch64-linux-android.tar.gz"; tar -xzf py.tar.gz -C "$PY"; rm py.tar.gz
 fi
-cp "$PY/prefix/lib/libpython3.14.so" "$LIBS/"
+cp "$PY/prefix/lib/libpython3.14.so" "$PY/prefix/lib/libssl_python.so" "$PY/prefix/lib/libcrypto_python.so" "$LIBS/"
 "$CC" -O2 -fPIE -pie -I"$PY/prefix/include/python3.14" "$A/python/pylaunch.c" -L"$PY/prefix/lib" -lpython3.14 -o "$LIBS/libpython_exe.so"
 
 step "6/8 capstone $CAPV and lz4 $LZ4V for Android (the code rewriter's disassembler, the NSO decompressor)"
