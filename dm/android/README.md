@@ -14,6 +14,10 @@
 | `host/movie_avc_android.c` | H.264 movies (the staff credits) on MediaCodec |
 | `Makefile.host`, `tools/win_build_lib.py` | Build the engine library (Linux / macOS, or Windows) |
 
+Setup builds shader locations, facts, and pairs from the selected game dump instead of assuming it contains every shader in the profile's reference map. This lets base-game-only setups use their actual package indices; profile entries for shaders captured later at runtime are retained.
+
+Save data can be exported as a ZIP and edited externally, then imported from the launcher with **Import edited save data**. The archive is validated and staged privately; the next Play action atomically swaps it into place and keeps the previous save as a backup.
+
 ## Graphics (`dm/gfx/nvn/nvn_vk.c`)
 
 The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at start from what the device reports:
@@ -21,8 +25,9 @@ The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at sta
 - **The driver**: the phone's own, or a custom one (Mesa Turnip) opened through libadrenotools; every Vulkan function is loaded at run time
   (`vk_dispatch.h`).
 - **Vulkan version**: 1.3, or 1.1 / 1.2 with dynamic rendering, timeline semaphores and extended dynamic state as extensions.
-- **GPU memory**: the game's memory pools are shared with the GPU without copies (`VK_KHR_external_memory_fd` export mapped over the pool's
-  pages, else the driver's memory moved onto the pool, else host memory import).
+- **GPU memory**: the game's memory pools are shared with the GPU through host-memory import, `VK_KHR_external_memory_fd` export, or driver-memory
+  mapping moves. If a driver advertises fd export but rejects an opaque-fd buffer, or its mappings cannot be moved onto the game pools, the app falls back
+  to mirrored memory, copying changes in both directions around GPU submissions.
 - **Framebuffer compression**: render targets list their view formats instead of being freely mutable, which keeps Adreno's UBWC on; on Mali
   every plain colour image does, and those with a single format are not mutable at all (AFBC). With `VK_EXT_image_compression_control` the log
   says whether the first render targets are compressed.

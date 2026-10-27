@@ -353,7 +353,16 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     VkExternalMemoryBufferCreateInfo eb = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT };
     VkExternalMemoryBufferCreateInfo ebfd = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
     VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = g_host_import ? &eb : g_fdmap ? &ebfd : NULL, .size = n, .usage = BUF_ALL };
-    VKCHECK(vkCreateBuffer(g_dev, &bi, NULL, &e.buf));
+    VkResult br = vkCreateBuffer(g_dev, &bi, NULL, &e.buf);
+#ifdef __linux__
+    if (br == VK_ERROR_INVALID_EXTERNAL_HANDLE && g_fdmap < 0) {
+        VLOG("[RED] opaque-fd external buffer rejected (%d): moving driver mappings instead (mremap)", br);
+        g_fdmap = 0;
+        bi.pNext = NULL;
+        br = vkCreateBuffer(g_dev, &bi, NULL, &e.buf);
+    }
+#endif
+    if (br != VK_SUCCESS) VDIE("vkCreateBuffer(g_dev, &bi, NULL, &e.buf) failed: %d (%s:%d)", br, __FILE__, __LINE__);
     VkMemoryRequirements rq; vkGetBufferMemoryRequirements(g_dev, e.buf, &rq);
     if (g_host_import) {
         VkMemoryHostPointerPropertiesEXT hp = { .sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT };
@@ -429,9 +438,9 @@ void mtl_pool_add(const void *mem, uint64_t size) {
             VLOG("[RED] memory pool %p+%#llx: the driver's mapping %p is not usable (%s): kept aside, allocating again", mem, (unsigned long long)size, p, rw ? "too short" : "not writable");
             if (tries >= 16) VDIE("memory pool %p+%#llx: no usable GPU memory mapping after %d tries", mem, (unsigned long long)size, tries + 1);
         }
-        {   // mremap moves whole mappings: the driver's must start at p, page-aligned, and cover the pool (a driver that sub-allocates from bigger mappings breaks this)
+        {   // mremap moves whole mappings: the driver's must start at p, be page-aligned, and end exactly after the pool
             static int force = -1; if (force < 0) force = getenv("DM_VK_POOL_SHADOW") && atoi(getenv("DM_VK_POOL_SHADOW"));
-            if (force || ((uintptr_t)p & (getpagesize() - 1)) || vs != (uintptr_t)p || ve < (uintptr_t)p + n) {
+            if (force || ((uintptr_t)p & (getpagesize() - 1)) || vs != (uintptr_t)p || ve != (uintptr_t)p + n) {
                 static int said; if (!said++) VLOG("memory pools: %s: mirrored (pages the game writes copied in before each submission)", force ? "DM_VK_POOL_SHADOW" : "the driver's mappings are not whole mappings of their own");
                 e.shadow = p; atomic_fetch_add(&g_nshadow, 1);
                 if (!nvn_dirty_tracked((void *)a, n)) { nvn_dirty_add_range((void *)a, n); e.tracked_here = 1; }
@@ -458,7 +467,15 @@ reuse:
         else {
             static int said; if (!said++) VLOG("pool memory: MREMAP_DONTUNMAP refused (errno %d), moving without it", errno);
             q = mremap(p, n, n, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)a);
-            if (q != (void *)a) VDIE("memory pool %p+%#llx: moving the GPU memory onto it failed (errno %d)", mem, (unsigned long long)size, errno);
+            if (q != (void *)a) {
+                int err = errno;
+                VLOG("[RED] memory pool %p+%#llx: moving the GPU memory onto it failed (errno %d): mirrored instead", mem, (unsigned long long)size, err);
+                e.shadow = p; atomic_fetch_add(&g_nshadow, 1);
+                if (!nvn_dirty_tracked((void *)a, n)) { nvn_dirty_add_range((void *)a, n); e.tracked_here = 1; }
+                e.stamp = nvn_dirty_now(); nvn_dirty_protect((void *)a, n);
+                memcpy(p, (void *)a, n);
+                goto bind;
+            }
             mmap(p, n, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
         }
         e.moved_from = p;
@@ -1227,7 +1244,7 @@ enum { W_NONE, W_SUPPORT, W_C1, W_DRV0, W_DRV2, W_CBUF, W_SSBO, W_UBOP, W_SBUFU,
 enum { S_NONE, S_TEX, S_SEP, S_UBO, S_ID };   // where a combined texture's sampler comes from: the texture handle's high bits, a separate sampler slot, a handle in a uniform buffer, a constant ID
 typedef struct { uint8_t what, skind, rw; uint16_t reg, off, sreg, soff; } vres_how;
 typedef struct vshader {
-    char key[24]; int stage; VkShaderStageFlagBits vkstage; VkShaderModule mod; uint32_t shift;
+    char key[24]; int stage; VkShaderStageFlagBits vkstage; VkShaderModule mod, glmod; uint32_t shift;
     spv_res res[64]; vres_how how[64]; int nres;
     spv_input in[32]; int nin;
     uint8_t drv_read[3]; uint8_t color_mask, color_known;
@@ -1275,8 +1292,8 @@ static void c1_store(vshader *s, const uint8_t *c1, uint32_t n) {
 }
 enum { TF_BIND = 320 };   // the capture buffers' bindings (past every stage's shifted range, stage_shift)
 static uint32_t stage_shift(int st) { return st == 1 ? 64 : st == 2 ? 128 : st == 3 ? 192 : st == 4 ? 256 : 0; }
-// The shader set packed into one mapped file (DM_SPV_PAK, dm/android/tools/spv_pak.py): "NXSP", version, count, chain[16], sorted {key[8], spv off/len, vkr off/len}, data.
-// Version 2 stores each blob as u32 size + a zlib stream (a quarter of the size)
+// The shader set packed into one mapped file (DM_SPV_PAK, dm/android/tools/spv_pak.py): "NXSP", version, count, chain[16], sorted index, data.
+// Versions 1/2 index SPIR-V and reflection; versions 3/4 additionally index a GL-depth fallback SPIR-V. Versions 2/4 compress each blob.
 static const uint8_t *g_pak; static size_t g_pak_n; static uint32_t g_pak_count, g_pak_ver;
 static int pak_open(void) {
     static int tried; if (tried++) return g_pak != NULL;
@@ -1287,33 +1304,40 @@ static int pak_open(void) {
     char chain[17] = {0}; memcpy(chain, (const uint8_t *)m + 12, 16);
     if (strcmp(chain, DMSH_CHAIN)) { VLOG("[RED] shader pack %s has chain %s, this host expects %s", path, chain, DMSH_CHAIN); munmap(m, (size_t)st.st_size); return 0; }
     g_pak = m; g_pak_n = (size_t)st.st_size; memcpy(&g_pak_ver, g_pak + 4, 4); memcpy(&g_pak_count, g_pak + 8, 4);
-    if (g_pak_ver != 1 && g_pak_ver != 2) { VLOG("[RED] shader pack %s has version %u", path, g_pak_ver); g_pak = NULL; munmap(m, (size_t)st.st_size); return 0; }
-    VLOG("shader pack %s: %u shaders%s", path, g_pak_count, g_pak_ver == 2 ? " (compressed)" : "");
+    if (g_pak_ver < 1 || g_pak_ver > 4) { VLOG("[RED] shader pack %s has version %u", path, g_pak_ver); g_pak = NULL; munmap(m, (size_t)st.st_size); return 0; }
+    size_t entry_size = g_pak_ver >= 3 ? 44 : 32;
+    if (g_pak_count > (g_pak_n - 28) / entry_size) { VLOG("[RED] shader pack %s has a truncated index", path); g_pak = NULL; munmap(m, (size_t)st.st_size); return 0; }
+    VLOG("shader pack %s: %u shaders%s%s", path, g_pak_count, g_pak_ver == 2 || g_pak_ver == 4 ? " (compressed)" : "", g_pak_ver >= 3 ? " (GL depth fallback)" : "");
     return 1;
 }
 static void *pak_blob(const uint8_t *p, size_t n, size_t *out) {   // a malloc'd copy of one blob, inflated in a version 2 pack
-    if (g_pak_ver != 2) { void *b = malloc(n ? n : 1); memcpy(b, p, n); *out = n; return b; }
+    if (g_pak_ver != 2 && g_pak_ver != 4) { void *b = malloc(n ? n : 1); memcpy(b, p, n); *out = n; return b; }
     if (n < 4) return NULL;
     uint32_t raw; memcpy(&raw, p, 4); uLongf dl = raw; void *b = malloc(raw ? raw : 1);
     if (uncompress(b, &dl, p + 4, (uLong)(n - 4)) != Z_OK || dl != raw) { free(b); return NULL; }
     *out = raw; return b;
 }
-static int pak_get(const uint8_t key[8], uint32_t **spv, size_t *ns, char **vkr, size_t *nr) {
+static int pak_get(const uint8_t key[8], uint32_t **spv, size_t *ns, char **vkr, size_t *nr, uint32_t **glspv, size_t *ngl) {
     if (!pak_open()) return 0;
+    *glspv = NULL; *ngl = 0;
+    size_t entry_size = g_pak_ver >= 3 ? 44 : 32;
     uint32_t lo = 0, hi = g_pak_count;
-    while (lo < hi) { uint32_t m = (lo + hi) / 2; const uint8_t *e = g_pak + 28 + 32 * (size_t)m; int c = memcmp(e, key, 8);
+    while (lo < hi) { uint32_t m = (lo + hi) / 2; const uint8_t *e = g_pak + 28 + entry_size * (size_t)m; int c = memcmp(e, key, 8);
         if (!c) { uint64_t so, ro; uint32_t sl, rl; memcpy(&so, e + 8, 8); memcpy(&sl, e + 16, 4); memcpy(&ro, e + 20, 8); memcpy(&rl, e + 28, 4);
-                  if (so + sl > g_pak_n || ro + rl > g_pak_n) return 0;
+                  if (so > g_pak_n || sl > g_pak_n - so || ro > g_pak_n || rl > g_pak_n - ro) return 0;
                   *spv = pak_blob(g_pak + so, sl, ns); *vkr = pak_blob(g_pak + ro, rl, nr);
                   if (!*spv || !*vkr) { free(*spv); free(*vkr); *spv = NULL; *vkr = NULL; return 0; }
+                  if (g_pak_ver >= 3) { uint64_t go; uint32_t gl; memcpy(&go, e + 32, 8); memcpy(&gl, e + 40, 4);
+                      if (gl) { if (go > g_pak_n || gl > g_pak_n - go || !(*glspv = pak_blob(g_pak + go, gl, ngl))) { free(*spv); free(*vkr); *spv = NULL; *vkr = NULL; return 0; } } }
                   return 1; }
         if (c < 0) lo = m + 1; else hi = m; }
     return 0;
 }
 static int pak_has(const uint8_t key[8]) {
     if (!pak_open()) return 0;
+    size_t entry_size = g_pak_ver >= 3 ? 44 : 32;
     uint32_t lo = 0, hi = g_pak_count;
-    while (lo < hi) { uint32_t m = (lo + hi) / 2; int c = memcmp(g_pak + 28 + 32 * (size_t)m, key, 8); if (!c) return 1; if (c < 0) lo = m + 1; else hi = m; }
+    while (lo < hi) { uint32_t m = (lo + hi) / 2; int c = memcmp(g_pak + 28 + entry_size * (size_t)m, key, 8); if (!c) return 1; if (c < 0) lo = m + 1; else hi = m; }
     return 0;
 }
 // Shaders the game builds in memory match no game file, so the player's own setup cannot translate them from the dump (Shield: 45, profile shader_nvn_capture):
@@ -1342,17 +1366,18 @@ void mtl_shader_seen(const uint8_t key[8], const void *control, const void *code
 }
 static vshader *shader_load(const uint8_t key[8], int st) {
     char hex[17]; for (int i = 0; i < 8; i++) sprintf(hex + 2 * i, "%02x", key[i]);
-    char p[1200]; size_t ns = 0, nr = 0; uint32_t *code = NULL; char *meta = NULL;
-    if (pak_get(key, &code, &ns, &meta, &nr)) {}
+    char p[1200]; size_t ns = 0, nr = 0, ngl = 0; uint32_t *code = NULL, *glcode = NULL; char *meta = NULL;
+    if (pak_get(key, &code, &ns, &meta, &nr, &glcode, &ngl)) {}
     else {
         snprintf(p, sizeof p, "%s/%s.spv", g_spv_dir, hex); code = file_read(p, &ns);
         snprintf(p, sizeof p, "%s/%s.vkr", g_spv_dir, hex); meta = file_read(p, &nr);
+        if (st == 0) { snprintf(p, sizeof p, "%s/%s.gl.spv", g_spv_dir, hex); glcode = file_read(p, &ngl); }
     }
-    if (!code || !meta) { VLOG("[RED] shader %s: %s missing", hex, !code ? "SPIR-V" : "reflection (.vkr)"); free(code); free(meta); return NULL; }
+    if (!code || !meta) { VLOG("[RED] shader %s: %s missing", hex, !code ? "SPIR-V" : "reflection (.vkr)"); free(code); free(meta); free(glcode); return NULL; }
     meta = realloc(meta, nr + 1); meta[nr] = 0;
     vshader *s = calloc(1, sizeof *s); strcpy(s->key, hex); s->stage = st; s->shift = stage_shift(st);
     int spst; uint32_t ls[3];
-    if (spv_reflect(code, ns / 4, s->res, 64, &s->nres, s->in, 32, &s->nin, &spst, ls)) { VLOG("[RED] shader %s: SPIR-V not readable", hex); free(code); free(meta); free(s); return NULL; }
+    if (spv_reflect(code, ns / 4, s->res, 64, &s->nres, s->in, 32, &s->nin, &spst, ls)) { VLOG("[RED] shader %s: SPIR-V not readable", hex); free(code); free(meta); free(glcode); free(s); return NULL; }
     static const VkShaderStageFlagBits VS[6] = { VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_FRAGMENT_BIT, VK_SHADER_STAGE_COMPUTE_BIT };
     s->vkstage = spst >= 0 && spst < 6 ? VS[spst] : VK_SHADER_STAGE_VERTEX_BIT;
     // reflection: bindings by name (the combined image takes its texture slot from "<name>" and its sampler from "<name>Smplr"), c1, driver segment reads
@@ -1397,6 +1422,17 @@ static vshader *shader_load(const uint8_t key[8], int st) {
     ns = spv_strip_unused(code, ns / 4) * 4;   // capabilities declared but unused (Float64, fragment interlock): strict drivers refuse or mis-handle them
     { size_t nw; uint32_t *c2 = spv_image_caps(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // and the format-less storage image ones they need
     if (spst == 0 || spst == 2) { size_t nw; uint32_t *c2 = spv_init_outputs(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // outputs start at (0, 0, 0, 1) as on the hardware
+    if (st == 0 && glcode) {
+        size_t nw;
+        if (s->shift) spv_rebind(glcode, ngl / 4, s->shift);
+        ngl = spv_strip_unused(glcode, ngl / 4) * 4;
+        uint32_t *c2 = spv_image_caps(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
+        c2 = spv_init_outputs(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
+        VkShaderModuleCreateInfo gci = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = ngl, .pCode = glcode };
+        VkResult gr = vkCreateShaderModule(g_dev, &gci, NULL, &s->glmod);
+        if (gr) { VLOG("[RED] shader %s: GL depth fallback module failed %d", hex, gr); s->glmod = VK_NULL_HANDLE; }
+        free(glcode);
+    } else free(glcode);
     if (st == 1) spv_frag_outputs(code, ns / 4, s->out_cls);
     spv_io_masks(code, ns / 4, &s->in_mask, &s->out_mask);
     if (st == 0 && (s->tf_stride[0] | s->tf_stride[1] | s->tf_stride[2] | s->tf_stride[3])) {   // transform feedback: the capture variant (tf_draw)
@@ -1407,7 +1443,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
     VkShaderModuleCreateInfo mci = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = ns, .pCode = code };
     VkResult r = vkCreateShaderModule(g_dev, &mci, NULL, &s->mod);
     if (st == 1) { s->code = code; s->nw = ns / 4; } else free(code);
-    if (r) { VLOG("[RED] shader %s: vkCreateShaderModule failed %d", hex, r); free(s); return NULL; }
+    if (r) { VLOG("[RED] shader %s: vkCreateShaderModule failed %d", hex, r); if (s->glmod) vkDestroyShaderModule(g_dev, s->glmod, NULL); free(s); return NULL; }
     return s;
 }
 static pthread_mutex_t g_shmu = PTHREAD_MUTEX_INITIALIZER;   // the shader cache: the game's thread and the prewarm thread
@@ -1773,7 +1809,8 @@ static void *prewarm_main(void *arg) {
 static VkPipeline pso_make(vprog *pr, pkey k) {
     vshader *vs = pr->sh[0], *fs = pr->sh[1]; VkPipeline p = VK_NULL_HANDLE;
     VkPipelineShaderStageCreateInfo st[5]; uint32_t nst = 0;
-    for (int i = 0; i < 5; i++) if (pr->sh[i] && !(i == 1 && k.discard)) st[nst++] = (VkPipelineShaderStageCreateInfo){ .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = pr->sh[i]->vkstage, .module = i == 1 ? frag_module(pr, k.cfmt) : i == 0 && k.discard && pr->sh[0]->tfmod ? pr->sh[0]->tfmod : pr->sh[i]->mod, .pName = "main" };
+    if (!g_clipctl && !k.depth_zero && vs && !vs->glmod) RED_ONCE(27, "GL depth mode without VK_EXT_depth_clip_control and no translated depth fallback for vertex shader %s", vs->key);
+    for (int i = 0; i < 5; i++) if (pr->sh[i] && !(i == 1 && k.discard)) st[nst++] = (VkPipelineShaderStageCreateInfo){ .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = pr->sh[i]->vkstage, .module = i == 1 ? frag_module(pr, k.cfmt) : i == 0 && k.discard && pr->sh[0]->tfmod ? pr->sh[0]->tfmod : i == 0 && !g_clipctl && !k.depth_zero && pr->sh[0]->glmod ? pr->sh[0]->glmod : pr->sh[i]->mod, .pName = "main" };
     VkVertexInputBindingDescription vb[17]; VkVertexInputAttributeDescription va[32]; VkVertexInputBindingDivisorDescriptionEXT vd[16]; uint32_t nvb = 0, nva = 0, nvd = 0; uint32_t have = 0;
     for (uint32_t loc = 0; loc < 32; loc++) {
         if (!k.attr[loc].used) continue;
@@ -1787,7 +1824,6 @@ static VkPipeline pso_make(vprog *pr, pkey k) {
     VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = k.topo == 0 ? VK_PRIMITIVE_TOPOLOGY_POINT_LIST : k.topo == 1 ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
     VkPipelineViewportDepthClipControlCreateInfoEXT dcc = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT, .negativeOneToOne = !k.depth_zero };   // NVN's GL depth mode: z in [-w, w]
     VkPipelineViewportStateCreateInfo vp = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .pNext = g_clipctl ? &dcc : NULL, .viewportCount = 1, .scissorCount = 1 };
-    if (!g_clipctl && !k.depth_zero) RED_ONCE(27, "GL depth mode without VK_EXT_depth_clip_control: depth is off by the [-w, w] → [0, w] mapping");
     VkPipelineRasterizationStateCreateInfo rs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .depthClampEnable = k.clamp, .rasterizerDiscardEnable = k.discard,
         .polygonMode = k.poly == 1 ? VK_POLYGON_MODE_LINE : k.poly == 2 ? VK_POLYGON_MODE_POINT : VK_POLYGON_MODE_FILL, .depthBiasEnable = VK_TRUE, .lineWidth = 1 };
     VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = (VkSampleCountFlagBits)(k.samples ? k.samples : 1), .alphaToCoverageEnable = k.a2c };

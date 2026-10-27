@@ -14,7 +14,7 @@
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd); A=$REPO/dm/android
 WORK=${WORK:-$HOME/psa-build}; mkdir -p "$WORK"; cd "$WORK"
-GAME=01008DB008C2C000; API=33; PYV=3.14.9; CAPV=5.0.7; LZ4V=1.10.0
+GAME=01008DB008C2C000; API=31; PYV=3.14.9; CAPV=5.0.7; LZ4V=1.10.0
 export NDK=${NDK:-$WORK/android-ndk-r27c} DOTNET=${DOTNET:-$WORK/dotnet/dotnet} DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 DOTNET_CLI_TELEMETRY_OPTOUT=1
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin; CC="$TC/aarch64-linux-android$API-clang"
 LIBS=$WORK/libs; mkdir -p "$LIBS"

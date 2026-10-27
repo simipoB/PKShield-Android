@@ -1,4 +1,4 @@
-<!-- The NSP / XCI extractor (dm/tools/nx_extract, unchanged source, LibHac) built with .NET NativeAOT as an Android arm64 executable: the app unpacks the player's
+<!-- The NSP / XCI extractor (shared source in dm/tools/nx_extract, LibHac) built with .NET NativeAOT as an Android arm64 executable: the app unpacks the player's
      own dump with the player's own keys on the phone. Build on Linux (WSL works) with the Android NDK: build_extract_aot.sh. -->
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
@@ -21,5 +21,8 @@
   <ItemGroup>
     <Compile Include="$(MSBuildThisFileDirectory)../../tools/nx_extract/Program.cs" />
     <PackageReference Include="LibHac" Version="0.19.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <TrimmerRootDescriptor Include="ILLink.Descriptors.xml" />
   </ItemGroup>
 </Project>

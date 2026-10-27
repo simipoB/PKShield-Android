@@ -5,7 +5,7 @@
 set -e
 export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 DOTNET_CLI_TELEMETRY_OPTOUT=1   # the SDK itself runs without ICU (WSL has none by default)
 HERE=$(cd "$(dirname "$0")" && pwd)
-DOTNET=${DOTNET:-$HOME/.dotnet/dotnet}; NDK=${NDK:-$HOME/aot/android-ndk-r27c}; API=${API:-33}
+DOTNET=${DOTNET:-$HOME/.dotnet/dotnet}; NDK=${NDK:-$HOME/aot/android-ndk-r27c}; API=${API:-31}
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin
 PUB=${PUB:-$HOME/aot/xlate/publish}
 # the NDK's clang wrapper for the target carries the target triple and the sysroot; NativeAOT links with it

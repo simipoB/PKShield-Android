@@ -27,12 +27,13 @@ shaders translated to SPIR-V by Ryujinx's shader translator, on the phone, durin
    opens straight into it every time, and your dump files are no longer needed. A Pokémon Shield shortcut with the game's own icon (from your
    dump) goes on the home screen.
 
-Long-press the app's icon for **Settings**: graphics, touch controls, the graphics driver, or setting the game up again.
+Long-press the app's icon for **Settings**: graphics, touch controls, the graphics driver, exporting your save data as a ZIP, or setting the game up again.
 A few shaders the game builds while it runs are saved the first time and added at the next start.
+If a file picker does not expose a path the app can read directly, the selected game file is copied into the app's storage; this needs free space for both the copy and the setup output.
 
 ## Requirements
 
-- Android 13 or newer, arm64, Vulkan 1.1 or newer with dynamic rendering (most phones from 2020 on; Vulkan 1.3 recommended), about 15 GB free.
+- Android 12 or newer, arm64, Vulkan 1.1 or newer with dynamic rendering (most phones from 2020 on; Vulkan 1.3 recommended), about 15 GB free.
 - **Adreno** (Snapdragon): tested. Qualcomm's driver or a custom one (Mesa Turnip) chosen in the app.
 - **Mali / PowerVR / Xclipse**: supported but untested. Textures these GPUs cannot sample (BC formats) are decoded as they load; on Mali
   the framebuffers are set up to keep its compression (AFBC).
