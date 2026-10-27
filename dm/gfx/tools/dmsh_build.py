@@ -148,6 +148,10 @@ def restore_cache(key, digest):
     return True
 
 def cache_lookup(key, digest, rule_fp, code_fp):
+    if SPV_ONLY:
+        PRE_STATS['miss'] += 1
+        PRE_STATS['spv_only'] += 1
+        return False, 'SPIR-V output is not cached'
     with CAS_LOCKS_GUARD: lock = CAS_LOCKS.setdefault(('shader', key), threading.Lock())
     with lock:
         if restore_cache(key, digest): PRE_STATS['hit'] += 1; return True, 'hit'
@@ -724,6 +728,28 @@ for r in xr:
     for ln in r.stderr.splitlines():
         m = re.match(r'\[RED\] (\w+): (.*)', ln)
         if m: xerr[m.group(1)] = m.group(2)[:160]
+if SPV_ONLY and VK_SPV_OUT:
+    # Keep an alternate vertex module with the GL [-w, w] depth range converted to Vulkan [0, w].
+    # The replay selects it only when the device lacks depth clip control and NVN is in GL depth mode.
+    gl_jobs = [dict(jobs[k], depth_mode=True) for k in keys if jobs[k].get('stage') == 'vs' and k not in xerr and os.path.exists(os.path.join(w, k + '.spv'))]
+    if gl_jobs:
+        gl_dir = os.path.join(w, 'gl_depth')
+        os.makedirs(gl_dir, exist_ok=True)
+        gl_job_file = os.path.join(w, 'gl_depth_jobs.json')
+        json.dump(gl_jobs, open(gl_job_file, 'w'))
+        gr = subprocess.run([XLATE, gl_job_file, gl_dir], capture_output=True, text=True,
+                            env=dict(os.environ, VK_SPV_OUT=gl_dir))
+        gl_errors = {}
+        for ln in gr.stderr.splitlines():
+            m = re.match(r'\[RED\] (\w+): (.*)', ln)
+            if m: gl_errors[m.group(1)] = m.group(2)[:160]
+        for j in gl_jobs:
+            key = j['key']; gl_spv = os.path.join(gl_dir, key + '.spv')
+            if key in gl_errors or not os.path.exists(gl_spv):
+                xerr[key] = 'GL depth fallback translation failed: ' + gl_errors.get(key, gr.stderr.strip()[:120] or 'no SPIR-V')
+                continue
+            spv_single_lane(gl_spv)
+            shutil.copyfile(gl_spv, os.path.join(VK_SPV_OUT, key + '.gl.spv'))
 def fin(key):
     if key in cache_hits:
         refl = json.load(open(os.path.join(out, key + '_b.json')))
