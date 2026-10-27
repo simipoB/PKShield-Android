@@ -24,6 +24,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.StatFs;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -48,6 +49,11 @@ public final class SetupActivity extends Activity {
     private static final int PICK_GAME = 1, PICK_KEYS = 2, PICK_DRIVER = 3, PICK_SAVE_EXPORT = 4;
     private TextView driverText;
     private final List<String> games = new ArrayList<>();
+    private final List<File> importedGames = new ArrayList<>();
+    private static final class PickedGame {
+        final Uri uri; final String name;
+        PickedGame(Uri uri, String name) { this.uri = uri; this.name = name; }
+    }
     private TextView status, gameText, keysText; private ProgressBar bar; private Button setup, play, shortcut, saveExport; private ImageView logo;
     private volatile boolean running;
 
@@ -156,6 +162,7 @@ public final class SetupActivity extends Activity {
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
     private void pick(int what, boolean multi) {
+        if (running) { status.setText("Please wait for the current setup or file copy to finish."); return; }
         if (what == PICK_GAME && Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {   // read the dump in place: all-files access
             status.setText("Allow access to all files so the app can read your dump where it is (it is several GB; nothing is copied).");
             startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName()))); return; }
@@ -169,6 +176,7 @@ public final class SetupActivity extends Activity {
         List<Uri> uris = new ArrayList<>();
         if (data.getClipData() != null) for (int k = 0; k < data.getClipData().getItemCount(); k++) uris.add(data.getClipData().getItemAt(k).getUri()); else if (data.getData() != null) uris.add(data.getData());
         if (uris.isEmpty()) { status.setText("The file picker did not return a file. Try the phone's Files app and select a file from Downloads or Documents."); return; }
+        List<PickedGame> imports = new ArrayList<>();
         for (Uri u : uris) {
             String name = nameOf(u);
             if (req == PICK_DRIVER) { installDriver(u, name); continue; }
@@ -178,11 +186,14 @@ public final class SetupActivity extends Activity {
                 catch (IOException e) { status.setText("could not read " + name + ": " + e.getMessage()); }
             } else {
                 String p = pathOf(u);
-                if (p == null || !new File(p).canRead()) status.setText(name + ": this file provider did not expose a readable phone-storage path. Choose it from Downloads or Documents in the phone's Files app.");
+                if (p == null) imports.add(new PickedGame(u, name));
                 else if (!games.contains(p)) games.add(p);
             }
         }
         refresh();
+        if (!imports.isEmpty()) {
+            importGames(imports);
+        }
     }
     private String nameOf(Uri u) { try (Cursor c = getContentResolver().query(u, new String[] { OpenableColumns.DISPLAY_NAME }, null, null, null)) { if (c != null && c.moveToFirst()) return c.getString(0); } catch (Exception e) { } return u.getLastPathSegment(); }
     // Resolve document-provider paths for in-place reads; copying multi-gigabyte game files into the app is not practical.
@@ -212,6 +223,65 @@ public final class SetupActivity extends Activity {
     }
     private String readableFile(String path) { if (path == null) return null; File f = new File(path); return f.isFile() && f.canRead() ? f.getPath() : null; }
     private static void copy(InputStream in, OutputStream out) throws IOException { byte[] buf = new byte[1 << 16]; int n; while ((n = in.read(buf)) > 0) out.write(buf, 0, n); }
+
+    private long documentSize(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri, new String[] { OpenableColumns.SIZE }, null, null, null)) {
+            return c != null && c.moveToFirst() && !c.isNull(0) ? c.getLong(0) : -1;
+        } catch (IllegalArgumentException | SecurityException e) { return -1; }
+    }
+    private void importGames(List<PickedGame> imports) {
+        running = true; refresh();
+        gameText.setText("Copying " + imports.size() + " selected file" + (imports.size() == 1 ? "" : "s") + " into app storage...");
+        status.setText("Copying " + imports.size() + " selected game file" + (imports.size() == 1 ? "" : "s") + " into app storage; large files need extra free space...");
+        new Thread(() -> {
+            List<File> copied = new ArrayList<>();
+            String error = null;
+            try {
+                File dir = new File(gameDir(), "imported");
+                if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("could not create app storage for the selected game file");
+                for (PickedGame picked : imports) {
+                    File destination = uniqueImportFile(dir, picked.name);
+                    long size = documentSize(picked.uri);
+                    long available = new StatFs(dir.getPath()).getAvailableBytes();
+                    if (size >= 0 && available < size + (512L << 20))
+                        throw new IOException("not enough free space to copy " + picked.name + "; select it from phone storage where possible or free at least " + size / (1L << 20) + " MB");
+                    runOnUiThread(() -> status.setText("Copying " + picked.name + " (" + (size >= 0 ? size / (1L << 20) + " MB" : "size unknown") + ") into app storage..."));
+                    try (InputStream in = getContentResolver().openInputStream(picked.uri);
+                         OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) {
+                        if (in == null) throw new IOException("the file provider could not open " + picked.name);
+                        byte[] buffer = new byte[1 << 20]; int n;
+                        while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+                    } catch (IOException | SecurityException e) { destination.delete(); throw e; }
+                    if (!destination.isFile() || destination.length() == 0) { destination.delete(); throw new IOException("the selected file was empty or could not be copied: " + picked.name); }
+                    copied.add(destination);
+                }
+            } catch (IOException | SecurityException | IllegalArgumentException e) { error = e.getMessage(); }
+            final String failure = error;
+            runOnUiThread(() -> {
+                running = false;
+                for (File file : copied) { games.add(file.getPath()); importedGames.add(file); }
+                if (failure == null) status.setText("Game file" + (copied.size() == 1 ? "" : "s") + " copied into app storage and selected.");
+                else status.setText("Could not import game file: " + failure + (copied.isEmpty() ? "" : " Previously copied selections are ready."));
+                refresh();
+            });
+        }).start();
+    }
+    private static String safeFileName(String name) {
+        String base = new File(name == null ? "game.nsp" : name).getName().replaceAll("[^A-Za-z0-9._ -]", "_").trim();
+        return base.isEmpty() ? "game.nsp" : base;
+    }
+    private static File uniqueImportFile(File directory, String name) throws IOException {
+        File root = directory.getCanonicalFile();
+        String base = safeFileName(name), stem = base, ext = "";
+        int dot = base.lastIndexOf('.');
+        if (dot > 0) { stem = base.substring(0, dot); ext = base.substring(dot); }
+        for (int suffix = 1; ; suffix++) {
+            String candidate = stem + (suffix == 1 ? "" : " (" + suffix + ")") + ext;
+            File file = new File(root, candidate).getCanonicalFile();
+            if (!file.getParentFile().equals(root)) throw new IOException("invalid game file name");
+            if (!file.exists()) return file;
+        }
+    }
 
     private void chooseSaveExport() {
         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE);
@@ -271,7 +341,12 @@ public final class SetupActivity extends Activity {
         runSetup(cmd, err -> {
             bar.setProgress(err == null ? 6 : bar.getProgress());
             status.setText(err == null ? "Ready. The setup log is in Android/data/" + getPackageName() + "/files/setup_work." : "Setup failed: " + err);
-            if (err == null && gameIcon() != null) pinShortcut();
+            if (err == null) {
+                for (File file : importedGames) file.delete();
+                importedGames.clear();
+                new File(gameDir(), "imported").delete();
+                if (gameIcon() != null) pinShortcut();
+            }
         });
     }
     // shaders the game saved on an earlier run (nvn_capture/<key>.code) and no setup has translated yet (captures_done lists those already done)
