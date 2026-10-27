@@ -5,6 +5,7 @@
 //   Set up: runs dm/android/tools/setup_game.py with the Python the app ships (libpython_exe.so + the standard library unpacked from assets/python.zip), the
 //   unpacker / shader translator / spirv-cross the app ships as native executables. The game ends up in the app's external files folder, where the native
 //   activity (android_main.c) reads it. Once set up, the app starts straight into the game.
+//   Save data can be exported to a ZIP, edited elsewhere, and imported here; the next game start swaps it in and keeps the previous save as a backup.
 //   Shaders the game builds in memory (Shield: 45) are saved by the game the first time it makes them (nvn_vk.c mtl_shader_seen → nvn_capture/); the next start
 //   translates them first (setup_game.py --captures, a few seconds), so they draw from then on.
 //   The game's own icon, from the player's dump (icon.jpg, written by the setup), goes on a home screen shortcut, the recent-apps card and this screen; the app's
@@ -46,7 +47,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class SetupActivity extends Activity {
-    private static final int PICK_GAME = 1, PICK_KEYS = 2, PICK_DRIVER = 3, PICK_SAVE_EXPORT = 4;
+    private static final int PICK_GAME = 1, PICK_KEYS = 2, PICK_DRIVER = 3, PICK_SAVE_EXPORT = 4, PICK_SAVE_IMPORT = 5;
     private TextView driverText;
     private final List<String> games = new ArrayList<>();
     private final List<File> importedGames = new ArrayList<>();
@@ -54,7 +55,7 @@ public final class SetupActivity extends Activity {
         final Uri uri; final String name;
         PickedGame(Uri uri, String name) { this.uri = uri; this.name = name; }
     }
-    private TextView status, gameText, keysText; private ProgressBar bar; private Button setup, play, shortcut, saveExport; private ImageView logo;
+    private TextView status, gameText, keysText; private ProgressBar bar; private Button setup, play, shortcut, saveExport, saveImport; private ImageView logo;
     private volatile boolean running;
 
     private File gameDir() { return getExternalFilesDir(null); }
@@ -81,6 +82,7 @@ public final class SetupActivity extends Activity {
         status = new TextView(this); status.setPadding(0, 16, 0, 16); root.addView(status);
         play = button(root, "Play", v -> startGame()); play.setEnabled(ready());
         saveExport = button(root, "Export save data", v -> chooseSaveExport());
+        saveImport = button(root, "Import edited save data", v -> chooseSaveImport());
         shortcut = button(root, "Add Pokémon Shield to the home screen", v -> pinShortcut());
         ScrollView sv = new ScrollView(this); sv.addView(root); setContentView(sv);
         refresh(); gameIcon();
@@ -159,6 +161,7 @@ public final class SetupActivity extends Activity {
         keysText.setText(keys ? "prod.keys" + (new File(keysDir(), "title.keys").exists() ? " + title.keys" : "") + " (kept in the app's private storage)" : "none chosen (prod.keys, and title.keys if needed)");
         setup.setEnabled(!running && keys && !games.isEmpty()); play.setEnabled(!running && ready());
         saveExport.setEnabled(!running && ready());
+        saveImport.setEnabled(!running && ready());
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
     private void pick(int what, boolean multi) {
@@ -173,6 +176,7 @@ public final class SetupActivity extends Activity {
         if (res != RESULT_OK) return;
         if (data == null) { status.setText("The file picker returned no selected file. Try the phone's Files app and select a file from Downloads or Documents."); return; }
         if (req == PICK_SAVE_EXPORT) { exportSave(data.getData()); return; }
+        if (req == PICK_SAVE_IMPORT) { importSave(data.getData()); return; }
         List<Uri> uris = new ArrayList<>();
         if (data.getClipData() != null) for (int k = 0; k < data.getClipData().getItemCount(); k++) uris.add(data.getClipData().getItemAt(k).getUri()); else if (data.getData() != null) uris.add(data.getData());
         if (uris.isEmpty()) { status.setText("The file picker did not return a file. Try the phone's Files app and select a file from Downloads or Documents."); return; }
@@ -287,6 +291,28 @@ public final class SetupActivity extends Activity {
         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE);
         i.setType("application/zip"); i.putExtra(Intent.EXTRA_TITLE, "PokemonShield-save.zip");
         startActivityForResult(i, PICK_SAVE_EXPORT);
+    }
+    private void chooseSaveImport() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("application/zip");
+        startActivityForResult(i, PICK_SAVE_IMPORT);
+    }
+    private void importSave(Uri source) {
+        if (source == null) { status.setText("Choose the save ZIP you edited or exported."); return; }
+        running = true; refresh(); status.setText("Importing save archive...");
+        new Thread(() -> {
+            String result;
+            try (InputStream input = getContentResolver().openInputStream(source)) {
+                if (input == null) throw new IOException("the file provider could not open the selected archive");
+                int files = SaveImport.install(input, new File(gameDir(), "save_import"));
+                result = "Imported " + files + " save file" + (files == 1 ? "" : "s") +
+                         ". Tap Play to load it; your previous save will be kept as a backup.";
+            } catch (IOException | SecurityException e) {
+                result = "Could not import save data: " + e.getMessage();
+            }
+            final String message = result;
+            runOnUiThread(() -> { running = false; status.setText(message); refresh(); });
+        }).start();
     }
     private void exportSave(Uri destination) {
         if (destination == null) return;
