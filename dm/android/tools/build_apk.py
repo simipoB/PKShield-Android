@@ -10,12 +10,12 @@ import argparse, hashlib, io, os, re, shutil, struct, subprocess, sys, tempfile,
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ANDROID = os.path.dirname(HERE); DM = os.path.dirname(ANDROID)
 LIBS = ['libnxnative.so', 'libnx_extract.so', 'libdmsh_xlate.so', 'libspirv_cross.so', 'libpython3.14.so', 'libpython_exe.so', 'libcapstone.so', 'liblz4.so', 'libssl_python.so', 'libcrypto_python.so']
-OPTIONAL = ['libadrenotools.so', 'libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so']   # libadrenotools: custom Adreno drivers (Turnip); without them the phone's own driver only
+OPTIONAL = ['libadrenotools.so', 'libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so']   # libadrenotools: custom Adreno/PanVK drivers; without it the phone's own driver only
 PY_SKIP = ('test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'pydoc_data', 'lib2to3', 'venv', 'sqlite3', '__pycache__', 'unittest', 'wsgiref', 'xmlrpc', 'curses', 'dbm')
 DM_PARTS = ['games/game.py', 'games/01008DB008C2C000', 'tools/patch_nso.py', 'gfx/tools', 'ios/tools/ios_metal.py', 'android/tools']
 CHAIN_HEADER = os.path.join(DM, 'games/01008DB008C2C000/dmsh_chain.h')
 CHAIN_TOOL = os.path.join(DM, 'gfx/tools/dmsh_chain.py')
-DEFAULT_VERSION = 27
+DEFAULT_VERSION = 29
 DEFAULT_MIN_SDK = 30
 
 def png(size):   # the app's icon, drawn here (no game artwork ships): a red and white ball on dark blue
@@ -91,6 +91,11 @@ def main():
         <activity android:name="com.nxnative.SetupActivity" android:exported="true" android:theme="@android:style/Theme.DeviceDefault">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
+        <activity android:name="com.nxnative.SettingsActivity" android:exported="false" android:theme="@android:style/Theme.DeviceDefault" />
+        <activity-alias android:name="com.nxnative.SettingsShortcut" android:targetActivity="com.nxnative.SettingsActivity"
+                        android:exported="true" android:label="Pokémon Shield Settings" android:icon="@mipmap/ic_launcher">
+            <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
+        </activity-alias>
         <activity android:name="com.nxnative.GameActivity" android:exported="false" android:screenOrientation="sensorLandscape" android:launchMode="singleTask"
                   android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
                   android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|smallestScreenSize|density">

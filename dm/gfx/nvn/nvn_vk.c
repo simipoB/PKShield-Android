@@ -77,7 +77,8 @@ static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name)
 static void completion_start(void);
 static void dummies_init(void);
 static void pcache_open(void); static void *prewarm_main(void *arg);   // pipeline list and cache (below)
-// The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (an Adreno driver such as Mesa Turnip, chosen on the setup screen) is opened through libadrenotools
+// The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (an AdrenoTools package such as Mesa Turnip or PanVK,
+// chosen on the setup screen) is opened through libadrenotools
 // (BSD-2-Clause, shipped in the app with its hook libraries); without it, or when that fails, the system's libvulkan
 static void *vk_open(void) {
 #ifdef __ANDROID__
@@ -119,7 +120,11 @@ void mtl_init(void) {
         vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr"); if (!vkGetInstanceProcAddr) VDIE("the Vulkan driver has no vkGetInstanceProcAddr");
         VK_GLOBAL(VK_LOAD_G)
     }
-    VkApplicationInfo ai = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "nxnative", .apiVersion = VK_API_VERSION_1_3 };
+    uint32_t instance_api = VK_API_VERSION_1_0;
+    PFN_vkEnumerateInstanceVersion enumerate_instance_version = (PFN_vkEnumerateInstanceVersion)vkGetInstanceProcAddr(NULL, "vkEnumerateInstanceVersion");
+    if (enumerate_instance_version && enumerate_instance_version(&instance_api) != VK_SUCCESS) instance_api = VK_API_VERSION_1_0;
+    if (instance_api > VK_API_VERSION_1_3) instance_api = VK_API_VERSION_1_3;
+    VkApplicationInfo ai = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "nxnative", .apiVersion = instance_api };
     uint32_t nie = 0; vkEnumerateInstanceExtensionProperties(NULL, &nie, NULL);
     VkExtensionProperties *ie = calloc(nie ? nie : 1, sizeof *ie); vkEnumerateInstanceExtensionProperties(NULL, &nie, ie);
     const char *iext[6]; uint32_t niext = 0; VkInstanceCreateFlags ifl = 0;
