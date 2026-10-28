@@ -15,7 +15,8 @@ PY_SKIP = ('test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'pydoc_data'
 DM_PARTS = ['games/game.py', 'games/01008DB008C2C000', 'tools/patch_nso.py', 'gfx/tools', 'ios/tools/ios_metal.py', 'android/tools']
 CHAIN_HEADER = os.path.join(DM, 'games/01008DB008C2C000/dmsh_chain.h')
 CHAIN_TOOL = os.path.join(DM, 'gfx/tools/dmsh_chain.py')
-DEFAULT_VERSION = 26
+DEFAULT_VERSION = 27
+DEFAULT_MIN_SDK = 30
 
 def png(size):   # the app's icon, drawn here (no game artwork ships): a red and white ball on dark blue
     px = []
@@ -63,6 +64,7 @@ def main():
     ap.add_argument('--libs', required=True); ap.add_argument('--pylib', required=True); ap.add_argument('--capstone-py', required=True); ap.add_argument('--out', required=True)
     ap.add_argument('--ks', default=os.path.join(ANDROID, 'probe/out/debug.keystore')); ap.add_argument('--bt'); ap.add_argument('--jar'); ap.add_argument('--name', default='Pokémon Shield')
     ap.add_argument('--package', default='com.nxnative.pokemonshield'); ap.add_argument('--version', type=int, default=DEFAULT_VERSION)
+    ap.add_argument('--min-sdk', type=int, default=DEFAULT_MIN_SDK)
     ap.add_argument('--debuggable', action='store_true', help='test builds: adb run-as can reach the private storage of the app')
     a = ap.parse_args()
     chain = shader_chain()
@@ -77,7 +79,7 @@ def main():
         os.makedirs(os.path.join(w, 'res', f'mipmap-{dpi}'), exist_ok=True); open(os.path.join(w, 'res', f'mipmap-{dpi}', 'ic_launcher.png'), 'wb').write(png(sz))
     open(os.path.join(w, 'AndroidManifest.xml'), 'w', encoding='utf-8').write(f'''<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{a.package}" android:versionCode="{a.version}" android:versionName="0.{a.version}">
-    <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="35" />
+    <uses-sdk android:minSdkVersion="{a.min_sdk}" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
@@ -104,7 +106,7 @@ def main():
     cls = os.path.join(w, 'classes'); os.makedirs(cls)
     srcs = [os.path.join(d, f) for d, _, fs in os.walk(os.path.join(ANDROID, 'app/java')) for f in fs if f.endswith('.java')]
     run('javac', '-source', '8', '-target', '8', '-nowarn', '-cp', jar, '-d', cls, *srcs)
-    run(os.path.join(bt, 'd8' + bat), '--release', '--min-api', '33', '--lib', jar, '--output', w, *[os.path.join(d, f) for d, _, fs in os.walk(cls) for f in fs])
+    run(os.path.join(bt, 'd8' + bat), '--release', '--min-api', str(a.min_sdk), '--lib', jar, '--output', w, *[os.path.join(d, f) for d, _, fs in os.walk(cls) for f in fs])
     # the payload: native libraries, the Python standard library, the setup scripts
     with zipfile.ZipFile(os.path.join(w, 'base.apk'), 'a') as z:
         z.write(os.path.join(w, 'classes.dex'), 'classes.dex')

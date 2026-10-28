@@ -14,7 +14,7 @@
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd); A=$REPO/dm/android
 WORK=${WORK:-$HOME/psa-build}; mkdir -p "$WORK"; cd "$WORK"
-GAME=01008DB008C2C000; API=31; APP_VERSION=${APP_VERSION:-26}; PYV=3.14.9; CAPV=5.0.7; LZ4V=1.10.0
+GAME=01008DB008C2C000; API=30; APP_VERSION=${APP_VERSION:-27}; PYV=3.14.9; CAPV=5.0.7; LZ4V=1.10.0
 export NDK=${NDK:-$WORK/android-ndk-r27c} DOTNET=${DOTNET:-$WORK/dotnet/dotnet} DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 DOTNET_CLI_TELEMETRY_OPTOUT=1
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin; CC="$TC/aarch64-linux-android$API-clang"
 LIBS=$WORK/libs; mkdir -p "$LIBS"
@@ -58,8 +58,8 @@ make -C "$A" -f Makefile.host GAME=$GAME NDK="$NDK" API=$API -j"$(nproc)" lib | 
 cp "$A/out/host-$GAME-vulkan/lib/libnxnative.so" "$LIBS/"
 
 step "3/8 the NSP / XCI unpacker and the shader translator (.NET NativeAOT for Android)"
-bash "$A/extract_aot/build_extract_aot.sh" | tail -1; cp "$A/extract_aot/out/libnx_extract.so" "$LIBS/"
-bash "$A/xlate_aot/build_xlate_aot.sh" | tail -1; cp "$A/xlate_aot/out/libdmsh_xlate.so" "$LIBS/"
+API=$API bash "$A/extract_aot/build_extract_aot.sh" | tail -1; cp "$A/extract_aot/out/libnx_extract.so" "$LIBS/"
+API=$API bash "$A/xlate_aot/build_xlate_aot.sh" | tail -1; cp "$A/xlate_aot/out/libdmsh_xlate.so" "$LIBS/"
 
 step "4/8 spirv-cross"
 NDK=$NDK API=$API bash "$A/spirv_cross/build_spirv_cross.sh" | tail -1; cp "$A/spirv_cross/out/libspirv_cross.so" "$LIBS/"
@@ -92,5 +92,5 @@ else echo "skipped (TURNIP=1 to include it)"; fi
 
 step "8/8 the APK"
 python3 "$A/tools/build_apk.py" --libs "$LIBS" --pylib "$PY/prefix/lib/python3.14" --capstone-py "$WORK/capstone-py/capstone" --bt "$BT" --jar "$JAR" \
-    --ks "$WORK/debug.keystore" --version "$APP_VERSION" --out "$WORK/PokemonShield.apk"
+    --ks "$WORK/debug.keystore" --version "$APP_VERSION" --min-sdk "$API" --out "$WORK/PokemonShield.apk"
 echo; echo "done: $WORK/PokemonShield.apk (install it, open it, choose your game files and keys)"

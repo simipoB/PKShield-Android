@@ -14,6 +14,8 @@
 | `host/movie_avc_android.c` | H.264 movies (the staff credits) on MediaCodec |
 | `Makefile.host`, `tools/win_build_lib.py` | Build the engine library (Linux / macOS, or Windows) |
 
+The installable app supports Android 11 (API 30) and later. Its graphics requirements still depend on the device's Vulkan implementation and extensions.
+
 Setup builds shader locations, facts, and pairs from the selected game dump instead of assuming it contains every shader in the profile's reference map. This lets base-game-only setups use their actual package indices; profile entries for shaders captured later at runtime are retained.
 
 Save data can be exported as a ZIP and edited externally, then imported from the launcher with **Import edited save data**. The archive is validated and staged privately; the next Play action atomically swaps it into place and keeps the previous save as a backup.
