@@ -3,7 +3,7 @@
 # Runs on Windows, Linux and macOS (no Xcode, no sips): Android build-tools (aapt2, d8, zipalign, apksigner), a JDK (javac), Python 3.
 #   lib/arm64-v8a: libnxnative.so (the engine, Makefile.host lib / win_build_lib.py), libnx_extract.so and libdmsh_xlate.so (.NET NativeAOT: extract_aot/, xlate_aot/),
 #                  libspirv_cross.so (spirv_cross/), libpython3.14.so + libpython_exe.so (CPython for Android and its launcher), libcapstone.so, liblz4.so
-#   assets: python.zip (CPython's standard library, trimmed), dm.zip (the setup scripts, the game profile, the Python stand-ins for lz4 and capstone)
+#   assets: python.zip (CPython's standard library, trimmed), dm.zip (the setup scripts, the game profile, the Python stand-ins for lz4 and capstone), shader_chain (the engine's shader translation chain)
 # Usage: build_apk.py --libs <dir with the .so files> --pylib <CPython for Android's lib/python3.14> --capstone-py <the capstone Python package> --out <app.apk>
 #        [--ks <keystore> (default dm/android/probe/out/debug.keystore; made when missing)] [--bt <build-tools dir>] [--jar <android.jar>] [--name "Pokémon Shield"]
 import argparse, hashlib, io, os, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
@@ -37,6 +37,11 @@ def zipdir(z, src, arc, skip=()):
         for f in fs:
             if f.endswith(('.pyc', '.dll', '.dylib')): continue
             p = os.path.join(d, f); z.write(p, os.path.join(arc, os.path.relpath(p, src)).replace(os.sep, '/'))
+
+def shader_chain():   # the translation chain the engine is compiled for (DMSH_CHAIN in the game's dmsh_chain.h, nvn_vk.c)
+    for ln in open(os.path.join(DM, 'games/01008DB008C2C000/dmsh_chain.h'), encoding='utf-8'):
+        if ln.startswith('#define DMSH_CHAIN '): return ln.split('"')[1]
+    sys.exit('[RED] no DMSH_CHAIN in dm/games/01008DB008C2C000/dmsh_chain.h')
 
 def validate_extractor(path):
     with open(path, 'rb') as f: data = f.read()
@@ -109,6 +114,7 @@ def main():
                 p = os.path.join(ANDROID, 'app/assets', f)
                 if os.path.isfile(p): dz.write(p, 'android/app/assets/' + f)
         z.writestr('assets/dm.zip', b.getvalue(), compress_type=zipfile.ZIP_STORED)
+        z.writestr('assets/shader_chain', shader_chain() + '\n')   # the launcher sends players back to setup when their shader pack was made for another chain
     if not os.path.isfile(a.ks):
         os.makedirs(os.path.dirname(a.ks), exist_ok=True)
         run('keytool', '-genkeypair', '-keystore', a.ks, '-storepass', 'android', '-keypass', 'android', '-alias', 'debug', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000', '-dname', 'CN=nxnative debug')

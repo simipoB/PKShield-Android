@@ -60,7 +60,16 @@ public final class SetupActivity extends Activity {
 
     private File gameDir() { return getExternalFilesDir(null); }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
-    private boolean ready() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists(); }
+    private boolean setUp() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists(); }
+    // set up for this app version: the shader pack's translation chain (the ready file) is the one the engine was built for (assets/shader_chain, build_apk.py);
+    // an update that changes the chain otherwise starts the game with a pack the engine refuses (every 3D shader "SPIR-V missing")
+    private boolean ready() { return setUp() && chainCurrent(); }
+    private boolean chainCurrent() {
+        String want, have;
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(getAssets().open("shader_chain")))) { want = r.readLine(); } catch (IOException e) { return true; }   // an older build without the asset
+        try (BufferedReader r = new BufferedReader(new FileReader(new File(gameDir(), "ready")))) { have = r.readLine(); } catch (IOException e) { return false; }
+        return want != null && have != null && want.trim().equals(have.trim());
+    }
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
@@ -160,8 +169,10 @@ public final class SetupActivity extends Activity {
         boolean keys = new File(keysDir(), "prod.keys").exists();
         keysText.setText(keys ? "prod.keys" + (new File(keysDir(), "title.keys").exists() ? " + title.keys" : "") + " (kept in the app's private storage)" : "none chosen (prod.keys, and title.keys if needed)");
         setup.setEnabled(!running && keys && !games.isEmpty()); play.setEnabled(!running && ready());
-        saveExport.setEnabled(!running && ready());
-        saveImport.setEnabled(!running && ready());
+        saveExport.setEnabled(!running && setUp());
+        saveImport.setEnabled(!running && setUp());
+        if (!running && setUp() && !chainCurrent() && status.getText().length() == 0)
+            status.setText("This app version translates the game's shaders differently: choose your files and press Set up the game again (the save data is kept).");
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
     private void pick(int what, boolean multi) {

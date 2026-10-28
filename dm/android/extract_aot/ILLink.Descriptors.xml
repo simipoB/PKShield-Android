@@ -1,9 +1,0 @@
-<linker>
-  <assembly fullname="LibHac">
-    <type fullname="LibHac.Tools.FsSystem.CachedStorage" preserve="all" />
-    <type fullname="LibHac.Tools.FsSystem.CachedStorage/CacheBlock" preserve="all" />
-  </assembly>
-  <assembly fullname="System.Collections">
-    <type fullname="System.Collections.Generic.LinkedList`1" preserve="all" />
-  </assembly>
-</linker>

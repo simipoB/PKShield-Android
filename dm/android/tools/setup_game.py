@@ -98,8 +98,11 @@ def main():
 
     step(3)
     pkg = os.path.join(a.work, 'shader_pkg'); shutil.rmtree(pkg, ignore_errors=True)
+    # the shaders an earlier run of the game captured (nvn_capture/ in the game dir, android_main.c DM_NVN_CAPTURE) go into the new pack too: the game saves each
+    # one only once, so a pack rebuilt without them would never get them back
     run([py, os.path.join(DM, 'gfx/tools/shader_split.py'), romfs, os.path.join(exefs, 'main'), pkg,
-         os.path.join(a.work, 'shader_map.found.tsv'), os.path.join(a.work, 'shader_facts.found.tsv'), os.path.join(a.work, 'shader_pairs.found.tsv')])
+         os.path.join(a.work, 'shader_map.found.tsv'), os.path.join(a.work, 'shader_facts.found.tsv'), os.path.join(a.work, 'shader_pairs.found.tsv')],
+        env=dict(env, DM_NVN_CAPTURE=os.path.join(a.out, 'nvn_capture')))
 
     step(4)
     chain = subprocess.run([py, os.path.join(DM, 'gfx/tools/dmsh_chain.py')], capture_output=True, text=True, env=env).stdout.strip()
@@ -132,6 +135,9 @@ def main():
     if os.path.realpath(rom) != os.path.realpath(romfs):
         shutil.rmtree(rom, ignore_errors=True); os.replace(romfs, rom)   # same storage: a rename, nothing copied
     for d in ('shader_pkg', 'cas', 'vk', 'shader_cache', 'extract'): shutil.rmtree(os.path.join(a.work, d), ignore_errors=True)   # only setup.log stays
+    # the new pack holds every capture there is, so the launcher's list of captures already added is stale: the next start checks them against the pack again
+    try: os.remove(os.path.join(a.out, 'captures_done'))
+    except FileNotFoundError: pass
     open(os.path.join(a.out, 'ready'), 'w').write(chain + '\n')
     print('DONE', flush=True)
 
