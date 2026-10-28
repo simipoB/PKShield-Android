@@ -30,9 +30,10 @@ static class P {
     [DllImport("libc", SetLastError = true)] static extern int clonefile(string src, string dst, uint flags);
 
     static int Main(string[] a) {
-        bool manifest = Array.IndexOf(a, "--manifest") >= 0; a = Array.FindAll(a, s => s != "--manifest");
-        g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
-        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>"); return 2; }
+        try {
+            bool manifest = Array.IndexOf(a, "--manifest") >= 0; a = Array.FindAll(a, s => s != "--manifest");
+            g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
+            if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>"); return 2; }
         // title.keys beside prod.keys (the Android app keeps both in its private storage) is read too: dumps whose tickets are missing need it
         string tk = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(a[0])) ?? ".", "title.keys");
         KeySet ks = ExternalKeyReader.ReadKeyFile(a[0], File.Exists(tk) ? tk : null);
@@ -82,7 +83,11 @@ static class P {
         };
         if (manifest) Manifest(new RomFsFileSystem(romfs), Path.Combine(outDir, "romfs_manifest.tsv"));
         else Copy(new RomFsFileSystem(romfs), Path.Combine(outDir, "RomFS"), cmpDir);
-        return Damaged();
+            return Damaged();
+        } catch (Exception e) {
+            Console.Error.WriteLine($"[RED] extraction failed: {e}");
+            return 1;
+        }
     }
 
     // Files whose data failed the hash check: listed at the end; exit code 3 unless --allow-damaged
