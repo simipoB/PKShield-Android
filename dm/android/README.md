@@ -24,7 +24,7 @@ The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at sta
 
 - **The driver**: the phone's own, or a custom one (Mesa Turnip) opened through libadrenotools; every Vulkan function is loaded at run time
   (`vk_dispatch.h`).
-- **Vulkan version**: 1.3, or 1.1 / 1.2 with dynamic rendering, timeline semaphores and extended dynamic state as extensions.
+- **Vulkan version**: the highest version reported by the driver up to 1.3, or 1.1 / 1.2 with dynamic rendering, timeline semaphores and extended dynamic state as extensions. This avoids rejecting older Mali drivers during instance creation.
 - **GPU memory**: the game's memory pools are shared with the GPU through host-memory import, `VK_KHR_external_memory_fd` export, or driver-memory
   mapping moves. If a driver advertises fd export but rejects an opaque-fd buffer, or its mappings cannot be moved onto the game pools, the app falls back
   to mirrored memory, copying changes in both directions around GPU submissions.

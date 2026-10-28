@@ -57,6 +57,10 @@ both are signed with the same key.
 Attach `Android/data/com.nxnative.pokemonshield/files/log.txt` (and `log.prev.txt`), the phone model, its GPU and Android version. The
 `Vulkan device` line near the top of the log shows the GPU, the driver, and which texture and memory paths were chosen.
 
+If setup fails during extraction, attach `Android/data/com.nxnative.pokemonshield/files/setup_work/setup.log` instead. An error such as
+`nx_extract terminated by SIGABRT (-6)` means the extractor process was aborted before Vulkan started; the selected dump paths, their sizes,
+and free space are recorded immediately before extraction.
+
 ## Rebuilding only the engine
 
 After a change to `dm/host`, `dm/gfx` or `dm/android/app/jni`:
