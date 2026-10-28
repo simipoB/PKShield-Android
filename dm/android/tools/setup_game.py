@@ -12,7 +12,7 @@
 # Usage: setup_game.py --keys <dir with prod.keys [title.keys]> --base <.nsp|.xci> [--update <.nsp>] [--dlc <.nsp> ...] --out <game dir> --work <scratch dir>
 #                      --bin <dir with nx_extract, dmsh_xlate, spirv-cross> [--ext-font <nintendo_ext.ttf>] [--std-font <ttf>]
 # Environment: DM_GAME (the profile; default 01008DB008C2C000), J (jobs)
-import argparse, hashlib, os, shutil, struct, subprocess, sys, time, zlib
+import argparse, hashlib, os, shutil, signal, struct, subprocess, sys, time, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__)); DM = os.path.normpath(os.path.join(HERE, '../..'))
 GAME = os.environ.setdefault('DM_GAME', '01008DB008C2C000')
@@ -52,7 +52,13 @@ def main():
     def run(cmd, **kw):
         log.write('$ ' + ' '.join(map(str, cmd)) + '\n')
         r = subprocess.run(list(map(str, cmd)), stdout=log, stderr=subprocess.STDOUT, env=kw.pop('env', env), **kw)
-        if r.returncode: raise RuntimeError(f'{os.path.basename(str(cmd[1] if str(cmd[0]) == py else cmd[0]))} failed ({r.returncode}): see {log.name}')
+        if r.returncode:
+            name = os.path.basename(str(cmd[1] if str(cmd[0]) == py else cmd[0]))
+            if r.returncode < 0:
+                try: reason = signal.Signals(-r.returncode).name
+                except ValueError: reason = f'signal {-r.returncode}'
+                raise RuntimeError(f'{name} terminated by {reason} ({r.returncode}); see {log.name}')
+            raise RuntimeError(f'{name} failed ({r.returncode}); see {log.name}')
     keys = os.path.join(a.keys, 'prod.keys')
     if not os.path.isfile(keys): raise RuntimeError(f'no prod.keys in {a.keys}')
     ex = os.path.join(a.work, 'extract')
@@ -63,9 +69,25 @@ def main():
     # every chosen file in one run: the unpacker tells base game, update and DLC apart by their contents, not their names or the order they were chosen in
     # (an update named without [UPD], a merged XCI, DLC chosen first all work)
     files = [f for f in [a.base, a.update] + a.dlc if f]
+    log.write('selected files:\n')
+    for f in files:
+        try: log.write(f'  {f} ({os.path.getsize(f)} bytes)\n')
+        except OSError as e: log.write(f'  {f} (stat failed: {e})\n')
+    try:
+        free = shutil.disk_usage(a.work).free
+        log.write(f'free space at extraction start: {free} bytes\n')
+    except OSError as e: log.write(f'free-space check failed: {e}\n')
     run([tool('nx_extract'), keys, files[0], '-', ex, '--aoc-dir', aoc] + [x for f in files[1:] for x in ('--more', f)])
     exefs, romfs = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS')
     if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError('the dump has no main module: is it Pokémon Shield?')
+    with open(os.path.join(exefs, 'main'), 'rb') as f: build_id = f.read(0x50)[0x40:0x50].hex()
+    builds = PROFILE.builds(); want = ', '.join(sorted(b['display'] for b in builds.values()))
+    if build_id not in {b.get('main') for b in builds.values()}:
+        have = ''
+        try: have = open(os.path.join(ex, 'control.nacp'), 'rb').read()[0x3060:0x3070].split(b'\0')[0].decode()
+        except OSError: pass
+        raise RuntimeError(f'your files hold Pokémon Shield {have or "of an unknown version"}, and this app needs update {want}: '
+                           f'choose the {want} update too (a separate update file, or a dump that includes it)')
 
     step(2)
     pat = os.path.join(a.out, 'patched'); shutil.rmtree(pat, ignore_errors=True); os.makedirs(pat)

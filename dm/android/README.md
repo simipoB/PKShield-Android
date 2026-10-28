@@ -18,15 +18,22 @@ The installable app supports Android 11 (API 30) and later. Its graphics require
 
 Setup builds shader locations, facts, and pairs from the selected game dump instead of assuming it contains every shader in the profile's reference map. This lets base-game-only setups use their actual package indices; profile entries for shaders captured later at runtime are retained.
 
-Save data can be exported as a ZIP and edited externally, then imported from the launcher with **Import edited save data**. The archive is validated and staged privately; the next Play action atomically swaps it into place and keeps the previous save as a backup.
+Save data can be exported as a ZIP and edited externally, then imported from the launcher with **Import edited save data**. The archive is validated and staged privately; the next Play action atomically swaps it into place and keeps the previous save as a backup. The APK also exposes a separate **Pokémon Shield Settings** launcher entry, so launchers that do not show long-press shortcuts can open the setup screen from the app drawer.
 
 ## Graphics (`dm/gfx/nvn/nvn_vk.c`)
 
 The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at start from what the device reports:
 
-- **The driver**: the phone's own, or a custom one (Mesa Turnip) opened through libadrenotools; every Vulkan function is loaded at run time
+- **The driver**: the phone's own, or an AdrenoTools-compatible custom package (Mesa Turnip or PanVK) opened through libadrenotools; every Vulkan function is loaded at run time
   (`vk_dispatch.h`).
-- **Vulkan version**: 1.3, or 1.1 / 1.2 with dynamic rendering, timeline semaphores and extended dynamic state as extensions.
+
+  To build an APK that can import custom packages, run `CUSTOM_DRIVER=1 bash scripts/build_apk_pc.sh`.
+  The launcher accepts `.adpkg.zip` PanVK packages and legacy PanVK ZIPs when they contain `meta.json`
+  with a `libraryName` ending in `.so`. The package is installed privately and selected for the next
+  game start; it does not replace Android's system driver. PanVK support is experimental and remains
+  device-specific. The PanVK repositories listed in the issue are not tested on the AYANEO Thor/Mali-G615
+  or Mali-G720, so the system driver remains the safe default.
+- **Vulkan version**: the highest version reported by the driver up to 1.3, or 1.1 / 1.2 with dynamic rendering, timeline semaphores and extended dynamic state as extensions. This avoids rejecting older Mali drivers during instance creation.
 - **GPU memory**: the game's memory pools are shared with the GPU through host-memory import, `VK_KHR_external_memory_fd` export, or driver-memory
   mapping moves. If a driver advertises fd export but rejects an opaque-fd buffer, or its mappings cannot be moved onto the game pools, the app falls back
   to mirrored memory, copying changes in both directions around GPU submissions.

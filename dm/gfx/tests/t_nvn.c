@@ -61,6 +61,12 @@ int main(void) {
     // 2. Device
     NVNdeviceBuilder db; P(nvnDeviceBuilderSetDefaults)(&db); P(nvnDeviceBuilderSetFlags)(&db, 0);
     EXPECT("DeviceInitialize succeeds", 1, P(nvnDeviceInitialize)(&dev, &db));
+    EXPECT("default window origin is lower-left", NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT, P(nvnDeviceGetWindowOriginMode)(&dev));
+    EXPECT("default depth mode is near-minus-w", NVN_DEPTH_MODE_NEAR_IS_MINUS_W, P(nvnDeviceGetDepthMode)(&dev));
+    P(nvnDeviceSetWindowOriginMode)(&dev, NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT);
+    P(nvnDeviceSetDepthMode)(&dev, NVN_DEPTH_MODE_NEAR_IS_ZERO);
+    EXPECT("window origin getter follows setter", NVN_WINDOW_ORIGIN_MODE_UPPER_LEFT, P(nvnDeviceGetWindowOriginMode)(&dev));
+    EXPECT("depth mode getter follows setter", NVN_DEPTH_MODE_NEAR_IS_ZERO, P(nvnDeviceGetDepthMode)(&dev));
     int v; P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_UNIFORM_BUFFER_ALIGNMENT, &v);
     EXPECT("uniform buffer alignment (256 measured on X1)", 256, v);
     P(nvnDeviceGetInteger)(&dev, NVN_DEVICE_INFO_TEXTURE_DESCRIPTOR_SIZE, &v); EXPECT("texture descriptor size (32)", 32, v);

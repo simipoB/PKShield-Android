@@ -49,7 +49,7 @@ import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
-public final class SetupActivity extends Activity {
+public class SetupActivity extends Activity {
     private static final int PICK_GAME = 1, PICK_KEYS = 2, PICK_DRIVER = 3, PICK_SAVE_EXPORT = 4, PICK_SAVE_IMPORT = 5;
     private TextView driverText;
     private final List<String> games = new ArrayList<>();
@@ -103,7 +103,7 @@ public final class SetupActivity extends Activity {
         TextView note = new TextView(this); note.setText("Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone."); note.setPadding(0, 16, 0, 32); root.addView(note);
         gameText = row(root, "Game files", "Choose", v -> pick(PICK_GAME, true));
         keysText = row(root, "Keys", "Choose", v -> pick(PICK_KEYS, true));
-        // the Vulkan driver: the phone's own, or an Adreno driver package (a zip with meta.json and the library, e.g. Mesa Turnip) opened through libadrenotools
+        // The phone's own driver, or an AdrenoTools-compatible custom package such as PanVK or Turnip.
         driverText = row(root, "Graphics driver", "Choose", v -> pick(PICK_DRIVER, false));
         button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); refresh(); });
         settings(root);
@@ -167,21 +167,22 @@ public final class SetupActivity extends Activity {
         if (!value.isEmpty()) lines.add(key + "=" + value.replace("\n", " "));
         try (FileWriter w = new FileWriter(envFile())) { for (String l : lines) w.write(l + "\n"); } catch (IOException e) { }
     }
-    // a driver package into the app's private storage (libadrenotools loads drivers only from there): its meta.json names the library
+    // Install an AdrenoTools-compatible package into private storage. PanVK and Turnip both
+    // use meta.json with libraryName; the native side loads the selected library on next start.
     private void installDriver(Uri u, String name) {
-        File dir = new File(getFilesDir(), "drivers/" + name.replaceAll("[^A-Za-z0-9._-]", "_").replaceAll("\\.zip$", "")); String lib = null;
+        File dir = new File(getFilesDir(), "drivers/" + name.replaceAll("[^A-Za-z0-9._-]", "_").replaceAll("\\.zip$", ""));
         try {
-            deleteTree(dir); dir.mkdirs();
-            try (ZipInputStream z = new ZipInputStream(new BufferedInputStream(getContentResolver().openInputStream(u)))) { ZipEntry e;
-                while ((e = z.getNextEntry()) != null) { if (e.isDirectory()) continue; String n = new File(e.getName()).getName();
-                    try (OutputStream o = new FileOutputStream(new File(dir, n))) { copy(z, o); } } }
-            File meta = new File(dir, "meta.json");
-            if (meta.exists()) { StringBuilder sb = new StringBuilder(); try (BufferedReader r = new BufferedReader(new FileReader(meta))) { String l; while ((l = r.readLine()) != null) sb.append(l); }
-                java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"libraryName\"\\s*:\\s*\"([^\"]+)\"").matcher(sb); if (m.find()) lib = m.group(1); }
-            if (lib == null) { String[] so = dir.list((d, n) -> n.endsWith(".so")); if (so != null && so.length == 1) lib = so[0]; }
-            if (lib == null || !new File(dir, lib).exists()) { status.setText(name + " is not a driver package (no meta.json naming its library)"); deleteTree(dir); return; }
-            envSet("DM_VK_DRIVER", new File(dir, lib).getPath()); status.setText("Driver " + name + " installed: it is used from the next start.");
-        } catch (IOException e) { status.setText("could not read " + name + ": " + e.getMessage()); }
+            InputStream input = getContentResolver().openInputStream(u);
+            if (input == null) throw new IOException("the file provider could not open the selected package");
+            String lib;
+            try (InputStream in = input) {
+                lib = DriverPackage.install(in, dir);
+            }
+            envSet("DM_VK_DRIVER", new File(dir, lib).getPath());
+            status.setText("Driver " + name + " installed. Restart the game to use it.");
+        } catch (IOException e) {
+            status.setText("Could not install " + name + ": " + e.getMessage());
+        }
     }
     private static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) deleteTree(c); f.delete(); }
     private void refresh() {
