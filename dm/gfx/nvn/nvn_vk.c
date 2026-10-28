@@ -1551,10 +1551,23 @@ static int rt_dup_slot(const p_set_rt *r, int i) {
         if (lj == lv && yj == ly) return 1; }
     return 0;
 }
+static int format_supports_attachment(VkFormat f, VkImageUsageFlags usage, VkFormatFeatureFlags *out) {
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(g_pd, f, &fp);
+    VkFormatFeatureFlags features = fp.optimalTilingFeatures;
+    if (out) *out = features;
+    if ((usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && !(features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT)) return 0;
+    if ((usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) && !(features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) return 0;
+    return 1;
+}
 // the attachment view of a render target: one level, one layer (3D: one depth slice through a 2D-array view is not available, the slice is taken as layer 0 — first case reported)
 static VkImageView att_view(const tex_t *t, const view_t *v, int has_v, vtex **out, uint32_t *w, uint32_t *h) {
     vtex *x = tex_res(t); *out = x; if (!x || !x->img) return VK_NULL_HANDLE;
-    if (!(x->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))) { RED_ONCE(19, "render target ser=%llu format %#x cannot be attached (Vulkan format %d)", (unsigned long long)t->serial, t->d.format, x->fmt); return VK_NULL_HANDLE; }
+    if (!(x->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
+        RED_ONCE(19, "render target ser=%llu NVN format %#x / Vulkan format %d cannot be attached (image usage %#x)",
+                 (unsigned long long)t->serial, t->d.format, x->fmt, x->usage);
+        return VK_NULL_HANDLE;
+    }
     uint32_t lv = has_v && v->set_levels ? v->base_level : 0, ly = has_v && v->set_layers ? v->min_layer : 0;
     if (x->is3d) { if (ly) RED_ONCE(20, "render target is a slice of a 3D texture: not supported yet"); ly = 0; }
     if (lv >= x->levels || ly >= x->layers) return VK_NULL_HANDLE;
@@ -1564,6 +1577,17 @@ static VkImageView att_view(const tex_t *t, const view_t *v, int has_v, vtex **o
             has_v && v->set_layers ? v->nlayers : 0, has_v && v->set_layers); } }
     VkFormat f = x->fmt;
     if (has_v && v->set_format) { uint32_t vf = 0; uint8_t s[4]; if (nvn_fmt_to_vk(v->format, &vf, s) && vf) f = (VkFormat)vf; }
+    VkImageUsageFlags attachment_usage = x->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    VkFormatFeatureFlags features = 0;
+    if (!format_supports_attachment(f, attachment_usage, &features)) {
+        static int rejected;
+        if (rejected < 64) {
+            rejected++;
+            VLOG("render target ser=%llu view format %d rejected: image format %d, image usage %#x, view usage %#x, optimal features %#x",
+                 (unsigned long long)t->serial, f, x->fmt, x->usage, attachment_usage, features);
+        }
+        return VK_NULL_HANDLE;
+    }
     *w = x->w >> lv ? x->w >> lv : 1; *h = x->h >> lv ? x->h >> lv : 1;
     return view_get(x, x->is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D, f, lv, 1, ly, 1, SW_ID, x->aspect);
 }
@@ -1620,7 +1644,16 @@ static int pass_begin(void) {
     }
     if (!any) {   // no target attached: an attachment-less pass at the viewport's size (nvn_mtl.m bare_dims), or nothing when targets were set but none could be attached
         int bare = !R.rt.depth; for (int i = 0; i < R.rt.n; i++) if (R.rt.color[i]) bare = 0;
-        if (!bare) { RED_ONCE(22, "no render target could be attached"); return 0; }
+        if (!bare) {
+            static int no_target_reports;
+            if (no_target_reports < 32) {
+                no_target_reports++;
+                VLOG("no render target could be attached: colors %d, depth %s, viewport %.0fx%.0f",
+                     R.rt.n, R.rt.depth ? "set" : "unset", S.has_vp ? S.vp[0][2] : 0, S.has_vp ? S.vp[0][3] : 0);
+            }
+            RED_ONCE(22, "no render target could be attached");
+            return 0;
+        }
         double x1 = S.has_vp ? fmax(S.vp[0][0], S.vp[0][0] + S.vp[0][2]) : R.has_sc ? (double)R.sc.x + R.sc.w : 1, y1 = S.has_vp ? fmax(S.vp[0][1], S.vp[0][1] + S.vp[0][3]) : R.has_sc ? (double)R.sc.y + R.sc.h : 1;
         tw = (uint32_t)fmin(fmax(ceil(x1), 1), 16384); th = (uint32_t)fmin(fmax(ceil(y1), 1), 16384); P.samples = 1;
     }

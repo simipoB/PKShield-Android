@@ -3,7 +3,7 @@
 # the app sets the game up on the phone from the player's own dump.
 #
 #   bash scripts/build_apk_pc.sh            the app with the phone's own Vulkan driver
-#   TURNIP=1 bash scripts/build_apk_pc.sh   also libadrenotools, so players can pick a custom Adreno driver (Mesa Turnip) on the setup screen
+#   TURNIP=1 bash scripts/build_apk_pc.sh   also libadrenotools, so players can pick a custom Vulkan driver (Mesa Turnip / PanVK) on the setup screen
 #
 # What it fetches into $WORK (default ~/psa-build), each once:
 #   the Android NDK r27c, the .NET 10 SDK, the Android command-line tools (build-tools 35, android.jar 35), CPython 3.14 for Android (python.org),
@@ -80,15 +80,15 @@ step "6/8 capstone $CAPV and lz4 $LZ4V for Android (the code rewriter's disassem
 "$CC" -O2 -shared -fPIC "lz4-$LZ4V/lib/lz4.c" -o "$LIBS/liblz4.so"
 [ -d capstone-py ] || { python3 -m venv venv && venv/bin/pip install -q --target capstone-py capstone==$CAPV; }   # the Python binding (pure Python; its own library is not used)
 
-step "7/8 libadrenotools (custom Adreno drivers)"
-if [ "${TURNIP:-0}" = 1 ]; then
+step "7/8 libadrenotools (custom Vulkan drivers)"
+if [ "${TURNIP:-${CUSTOM_DRIVER:-0}}" = 1 ]; then
     need cmake ninja
     [ -d libadrenotools ] || git clone -q --recursive --depth 1 https://github.com/bylaws/libadrenotools.git
     cmake -S libadrenotools -B libadrenotools/build -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a \
         -DANDROID_PLATFORM=android-$API -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
     ninja -C libadrenotools/build >/dev/null
     find libadrenotools/build -name "*.so" -exec cp {} "$LIBS/" \;
-else echo "skipped (TURNIP=1 to include it)"; fi
+else echo "skipped (TURNIP=1 or CUSTOM_DRIVER=1 to include it)"; fi
 
 step "8/8 the APK"
 python3 "$A/tools/build_apk.py" --libs "$LIBS" --pylib "$PY/prefix/lib/python3.14" --capstone-py "$WORK/capstone-py/capstone" --bt "$BT" --jar "$JAR" \

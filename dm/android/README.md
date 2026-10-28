@@ -31,6 +31,8 @@ The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at sta
 - **Framebuffer compression**: render targets list their view formats instead of being freely mutable, which keeps Adreno's UBWC on; on Mali
   every plain colour image does, and those with a single format are not mutable at all (AFBC). With `VK_EXT_image_compression_control` the log
   says whether the first render targets are compressed.
+- **Attachment diagnostics**: when Mali rejects a render-target image or view format, the log records the NVN serial, Vulkan formats, usage
+  flags, and optimal-tiling features. This distinguishes an unsupported attachment format from a depth or presentation failure.
 - **Textures**: BC1–BC7 sampled by the GPU where it can, else decoded on the CPU as they load (`dm/gfx/tex/bc_decode.c`).
 - **Shaders**: SPIR-V made on the phone during setup (`shaders.pak`); pipelines recorded as the game makes them and built ahead at the next start.
 
