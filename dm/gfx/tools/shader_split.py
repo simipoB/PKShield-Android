@@ -533,7 +533,9 @@ def nvn_captured(cap):
     through the intro (they match no game file, and its GLSLC is never called). The stage is the Maxwell shader program header's type (bits 10–13 of its first word, right after the 0x30-byte
     code header; compute code has no header and its own magic); for Shield's file shaders it agrees with the BNSH stage on every one checked (76 vertex, 88 pixel)"""
     names = sorted(f[:-5] for f in os.listdir(cap) if f.endswith('.code') and os.path.exists(os.path.join(cap, f[:-5] + '.ctl'))) if os.path.isdir(cap) else []
-    if not names: print(f'[RED] the profile has shader_nvn_capture on, but there are no captured shaders in {cap}: shaders the game builds in memory will have no translation (DM_NVN_SHDUMP on the Mac)', flush=True)
+    # a first setup has none yet: the game captures them on its first run and the next setup translates them, so only an existing but empty capture dir is wrong
+    if not names and os.path.isdir(cap): print(f'[RED] the profile has shader_nvn_capture on, but there are no captured shaders in {cap}: shaders the game builds in memory will have no translation (DM_NVN_SHDUMP on the Mac)', flush=True)
+    elif not names: print(f'no captured shaders yet ({cap}): the game captures the shaders it builds in memory on its first run, and the next setup translates them', flush=True)
     out = []
     for k in names:
         ctl, code = open(os.path.join(cap, k + '.ctl'), 'rb').read(), open(os.path.join(cap, k + '.code'), 'rb').read()

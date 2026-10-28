@@ -22,7 +22,4 @@
     <Compile Include="$(MSBuildThisFileDirectory)../../tools/nx_extract/Program.cs" />
     <PackageReference Include="LibHac" Version="0.19.0" />
   </ItemGroup>
-  <ItemGroup>
-    <TrimmerRootDescriptor Include="ILLink.Descriptors.xml" />
-  </ItemGroup>
 </Project>
