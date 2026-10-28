@@ -1586,16 +1586,22 @@ static VkImageView att_view(const tex_t *t, const view_t *v, int has_v, vtex **o
             has_v && v->set_layers ? v->nlayers : 0, has_v && v->set_layers); } }
     VkFormat f = x->fmt;
     if (has_v && v->set_format) { uint32_t vf = 0; uint8_t s[4]; if (nvn_fmt_to_vk(v->format, &vf, s) && vf) f = (VkFormat)vf; }
-    VkImageUsageFlags attachment_usage = x->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    VkImageUsageFlags attachment_usage = x->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     VkFormatFeatureFlags features = 0;
     if (!format_supports_attachment(f, attachment_usage, &features)) {
-        static int rejected;
-        if (rejected < 64) {
-            rejected++;
-            VLOG("render target ser=%llu view format %d rejected: image format %d, image usage %#x, view usage %#x, optimal features %#x",
-                 (unsigned long long)t->serial, f, x->fmt, x->usage, attachment_usage, features);
+        if (f != x->fmt && format_supports_attachment(x->fmt, attachment_usage, &features)) {
+            VLOG("render target ser=%llu view format %d lacks attachment support; using native format %d (features %#x)",
+                 (unsigned long long)t->serial, f, x->fmt, features);
+            f = x->fmt;
+        } else {
+            static int rejected;
+            if (rejected < 64) {
+                rejected++;
+                VLOG("render target ser=%llu view format %d rejected: image format %d, image usage %#x, view usage %#x, optimal features %#x",
+                     (unsigned long long)t->serial, f, x->fmt, x->usage, attachment_usage, features);
+            }
+            return VK_NULL_HANDLE;
         }
-        return VK_NULL_HANDLE;
     }
     *w = x->w >> lv ? x->w >> lv : 1; *h = x->h >> lv ? x->h >> lv : 1;
     return view_get(x, x->is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D, f, lv, 1, ly, 1, SW_ID, x->aspect);
