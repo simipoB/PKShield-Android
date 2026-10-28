@@ -412,6 +412,7 @@ void android_main(struct android_app *app) {
     touch_ui_init(app->activity);
     for (;;) {
         int events; struct android_poll_source *src;
-        while (ALooper_pollOnce(-1, NULL, &events, (void **)&src) >= 0) { if (src) src->process(app, src); if (app->destroyRequested) { _exit(0); } }
+        // the game never started (GameActivity handed over to the setup screen before it had a window): the process goes on for that screen
+        while (ALooper_pollOnce(-1, NULL, &events, (void **)&src) >= 0) { if (src) src->process(app, src); if (app->destroyRequested) { if (g_started) _exit(0); return; } }
     }
 }

@@ -148,6 +148,7 @@ static void *haptic_main(void *p) {
 }
 void touch_ui_init(ANativeActivity *a) {
     g_vm = a->vm; g_act = a->clazz;
+    static int once; if (once++) return;   // a second GameActivity in the same process (the first handed over to the setup screen): one haptic thread
     pthread_t t; if (!pthread_create(&t, NULL, haptic_main, NULL)) pthread_detach(t);
 }
 static void click_locked(void) { g_hpend = 1; pthread_cond_signal(&g_hcv); }   // callers hold g_mu

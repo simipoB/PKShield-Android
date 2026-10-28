@@ -200,7 +200,11 @@ def pak_merge(path, add):   # merge a new uncompressed shader pack into the exis
 def captures(a):
     # The profile's map places each in-memory shader at a fixed index of <stage>_other.bin; the package is written with the captured ones there and an empty record
     # in each other slot (never read: only the captured keys are translated). They are translated on their own and merged into the shader pack, so nothing
-    # from the first setup has to be kept
+    # from the first setup has to be kept.
+    # Captured shaders the map does not know (the profile's slots only list those its recording reached) go after the slots in <stage>_other.bin, the stage from the
+    # shader program header (shader_split.py nvn_captured); they are translated in a run of their own that may fail without costing the others, and the ones translated
+    # are added to the game's shader_map.tsv. Compute ones wait for the next full setup (their thread group comes from shader_split's facts)
+    sys.path.insert(0, os.path.join(DM, 'gfx/tools')); import shader_split
     log = open(os.path.join(a.work, 'setup.log'), 'a', buffering=1); py = sys.executable
     env = dict(os.environ, PYTHONUNBUFFERED='1', PATH=a.bin + os.pathsep + os.environ.get('PATH', ''))
     def run(cmd, **kw):
@@ -214,35 +218,66 @@ def captures(a):
     for ln in open(PROFILE.table('shader_map.tsv'), encoding='utf-8'):
         c = ln.rstrip('\n').split('\t')
         if len(c) > 4 and c[4].startswith('/nvn_capture/'): slots[c[3]] = (c[0], int(c[1]))
+    gmap = os.path.join(a.out, 'shader_map.tsv'); mapped = set()
+    if os.path.exists(gmap):
+        for ln in open(gmap, encoding='utf-8'):
+            c = ln.rstrip('\n').split('\t')
+            if len(c) > 3 and not ln.startswith('#'): mapped.add(c[3])
     print(f'STEP 1/3 read the captured shaders', flush=True)
-    new = []
+    new, extra = [], []
     for f in sorted(os.listdir(a.captures)) if os.path.isdir(a.captures) else []:
         k = f[:-5]
-        if not f.endswith('.code') or k not in slots or bytes.fromhex(k) in have: continue
+        if not f.endswith('.code') or bytes.fromhex(k) in have or (k not in slots and k in mapped): continue
+        if not os.path.exists(os.path.join(a.captures, k + '.ctl')): continue
         ctl, code = open(os.path.join(a.captures, k + '.ctl'), 'rb').read(), open(os.path.join(a.captures, f), 'rb').read()
-        own = struct.unpack_from('<I', ctl, 0x20)[0]; n = own if 0x760 <= own < 0x880 else 0x880   # the key convention of shader_split.py / hle_nvn.c keys_hash
-        if hashlib.sha256(ctl[:n] + code).hexdigest()[:16] != k: log.write(f'capture {k}: the saved files do not hash to their key, skipped\n'); continue
-        new.append((k, ctl, code))
-    if not new: print('DONE', flush=True); return
+        if shader_split.skey(ctl, code) != k: log.write(f'capture {k}: the saved files do not hash to their key, skipped\n'); continue
+        if k in slots: new.append((k, ctl, code)); continue
+        st = 'cs' if code[:4] == shader_split.CS_MAGIC else shader_split.SPH_STAGE.get((struct.unpack_from('<I', code, 0x30)[0] >> 10) & 0xf) if len(code) >= 0x34 else None
+        why = 'no stage in the shader program header' if st is None else 'compute: waits for the next full setup' if st == 'cs' else shader_split.check(f'nvn_capture/{k}', st, ctl, code)
+        if why: log.write(f'capture {k} (not in the shader map): {why}, skipped\n'); continue
+        extra.append((k, st, ctl, code))
+    if not new and not extra: print('DONE', flush=True); return
     cw = os.path.join(a.work, 'capture'); shutil.rmtree(cw, ignore_errors=True)
     pkg, cache = os.path.join(cw, 'pkg'), os.path.join(cw, 'shader_cache'); vk, built = os.path.join(cw, 'vk', 'b-' + chain), os.path.join(cache, 'b-' + chain)
     os.makedirs(pkg); os.makedirs(vk)
     got = {k: (ctl, code) for k, ctl, code in new}
+    recs, rows = {}, []   # package name → records; the source map rows dmsh_build finds them by
     for name in sorted({p for p, _ in slots.values()}):
-        rows = sorted((i, k) for k, (p, i) in slots.items() if p == name); recs = []
-        for i, k in rows:
-            assert i == len(recs), f'{name}: index {i} out of order'
+        recs[name] = []
+        for i, k in sorted((i, k) for k, (p, i) in slots.items() if p == name):
+            assert i == len(recs[name]), f'{name}: index {i} out of order'
             ctl, code = got.get(k, (b'', b''))
-            rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); recs.append(bytes(rec) + code + ctl)
-        open(os.path.join(pkg, name), 'wb').write(b''.join(recs))
-    print(f'STEP 2/3 translate {len(new)} shaders', flush=True)
-    run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache, *got],
-        env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, XLATE=os.path.join(a.bin, 'dmsh_xlate'), DMSH_CAS=os.path.join(cw, 'cas'), WORK=cw))
-    for k in got: shutil.copyfile(os.path.join(built, k + '_b.json'), os.path.join(vk, k + '_b.json'))
+            rows.append((name, i, shader_split.STAGE_NAME[name[:2]], k, f'/nvn_capture/{k}'))
+            rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); recs[name].append(bytes(rec) + code + ctl)
+    added = []
+    for k, st, ctl, code in extra:
+        name = f'{st}_other.bin'; r = recs.setdefault(name, [])
+        added.append((name, len(r), shader_split.STAGE_NAME[st], k, f'/nvn_capture/{k}')); rows.append(added[-1])
+        rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); r.append(bytes(rec) + code + ctl)
+    for name, r in recs.items(): open(os.path.join(pkg, name), 'wb').write(b''.join(r))
+    smap = os.path.join(cw, 'capture_map.tsv')
+    with open(smap, 'w', encoding='utf-8') as f: f.write('package\tindex\tstage\tdm_ctl_sha16\tsource\n'); f.writelines('\t'.join(map(str, r)) + '\n' for r in rows)
+    print(f'STEP 2/3 translate {len(new) + len(extra)} shaders', flush=True)
+    benv = dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, XLATE=os.path.join(a.bin, 'dmsh_xlate'), DMSH_CAS=os.path.join(cw, 'cas'), WORK=cw, DMSH_SOURCE_MAP=smap)
+    if got: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache, *got], env=benv)
+    if added:
+        try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache, *(r[3] for r in added)], env=benv)
+        except RuntimeError as e: log.write(f'the captured shaders not in the shader map: {e}; the ones translated are kept\n')
+        ok = [r for r in added if os.path.exists(os.path.join(vk, r[3] + '.spv')) and os.path.exists(os.path.join(built, r[3] + '_b.json'))]
+        for r in added:
+            if r not in ok:
+                log.write(f'capture {r[3]} (not in the shader map): not translated\n')
+                if os.path.exists(os.path.join(vk, r[3] + '.spv')): os.unlink(os.path.join(vk, r[3] + '.spv'))
+        added = ok
+    for k in [*got, *(r[3] for r in added)]: shutil.copyfile(os.path.join(built, k + '_b.json'), os.path.join(vk, k + '_b.json'))
+    if not got and not added: shutil.rmtree(cw, ignore_errors=True); print('DONE', flush=True); return
     print(f'STEP 3/3 pack the shaders', flush=True)
     run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
     small = os.path.join(cw, 'new.pak'); run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, small])
     pak_merge(pak, small)
+    if added:   # the engine reads the map at start: the next one finds these keys and their stage
+        with open(gmap, 'a', encoding='utf-8') as f: f.writelines('\t'.join(map(str, r)) + '\n' for r in added)
+        log.write(f'{len(added)} captured shaders not in the shader map translated and added to it\n')
     shutil.rmtree(cw, ignore_errors=True)
     print('DONE', flush=True)
 

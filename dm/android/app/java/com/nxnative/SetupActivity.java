@@ -387,10 +387,11 @@ public final class SetupActivity extends Activity {
         });
     }
     // shaders the game saved on an earlier run (nvn_capture/<key>.code) and no setup has translated yet (captures_done lists those already done)
-    private List<String> pendingCaptures() {
-        String[] all = new File(gameDir(), "nvn_capture").list((d, n) -> n.endsWith(".code")); List<String> out = new ArrayList<>(); if (all == null) return out;
+    private List<String> pendingCaptures() { return pendingCaptures(gameDir()); }
+    static List<String> pendingCaptures(File gameDir) {   // GameActivity asks too
+        String[] all = new File(gameDir, "nvn_capture").list((d, n) -> n.endsWith(".code")); List<String> out = new ArrayList<>(); if (all == null) return out;
         Set<String> done = new HashSet<>();
-        try (BufferedReader r = new BufferedReader(new FileReader(new File(gameDir(), "captures_done")))) { String l; while ((l = r.readLine()) != null) done.add(l.trim()); } catch (IOException e) { }
+        try (BufferedReader r = new BufferedReader(new FileReader(new File(gameDir, "captures_done")))) { String l; while ((l = r.readLine()) != null) done.add(l.trim()); } catch (IOException e) { }
         for (String n : all) if (!done.contains(n)) out.add(n);
         return out;
     }
@@ -482,5 +483,5 @@ public final class SetupActivity extends Activity {
         try (FileWriter w = new FileWriter(stamp)) { w.write(ver + "\n"); }
         return to;
     }
-    private void startGame() { startActivity(new Intent(this, GameActivity.class)); finish(); }
+    private void startGame() { GameActivity.viaSetup = true; startActivity(new Intent(this, GameActivity.class)); finish(); }
 }

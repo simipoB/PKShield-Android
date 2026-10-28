@@ -1345,16 +1345,19 @@ static int pak_has(const uint8_t key[8]) {
     return 0;
 }
 // Shaders the game builds in memory match no game file, so the player's own setup cannot translate them from the dump (Shield: 45, profile shader_nvn_capture):
-// the first time one is handed over and the pack lacks it, its 0x880-byte control section and its code area are saved for the setup's next run to translate
+// the first time one is handed over and the pack lacks it, its 0x880-byte control section and its code area are saved for the setup's next run to translate.
+// Shaders not in the map at all are saved too (the profile's slots only list those its recording reached; the setup takes their stage from the shader program header)
 void mtl_shader_seen(const uint8_t key[8], const void *control, const void *code, uint32_t ncode) {
-    static const char *dir; static int init; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static nvn_hmap seen = {.klen = 8};
+    static const char *dir; static int init, unmapped; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static nvn_hmap seen = {.klen = 8};
     if (!init) { dir = getenv("DM_NVN_CAPTURE"); if (dir) mkdir(dir, 0755); init = 1; }
     if (!dir || !control || !code || !ncode || ncode >= (1u << 24)) return;
     pthread_mutex_lock(&mu);
     if (!nvn_hm_get(&seen, key)) {
         nvn_hm_put(&seen, key, (void *)1);
         shmap_load();
-        if (nvn_hm_get(&g_shmap, key) && !pak_has(key)) {
+        int mapped = nvn_hm_get(&g_shmap, key) != NULL;
+        if ((!mapped && unmapped < 512) || (mapped && !pak_has(key))) {   // 512 a run: a game that builds shaders without end does not fill the storage
+            if (!mapped) unmapped++;
             char hex[17], p[1200]; for (int i = 0; i < 8; i++) sprintf(hex + 2 * i, "%02x", key[i]);
             struct stat st; snprintf(p, sizeof p, "%s/%s.code", dir, hex);
             if (stat(p, &st)) {
@@ -1362,7 +1365,7 @@ void mtl_shader_seen(const uint8_t key[8], const void *control, const void *code
                 if ((f = fopen(p, "wb"))) { fwrite(control, 1, 0x880, f); fclose(f); }
                 snprintf(p, sizeof p, "%s/%s.code.tmp", dir, hex);
                 if ((f = fopen(p, "wb"))) { fwrite(code, 1, ncode, f); fclose(f); char q[1200]; snprintf(q, sizeof q, "%s/%s.code", dir, hex); rename(p, q); }
-                VLOG("shader %s captured for translation (%s)", hex, dir);
+                VLOG("shader %s captured for translation%s (%s)", hex, mapped ? "" : ", not in the shader map", dir);
             }
         }
     }
