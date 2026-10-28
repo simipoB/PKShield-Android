@@ -1562,7 +1562,16 @@ static int format_supports_attachment(VkFormat f, VkImageUsageFlags usage, VkFor
 }
 // the attachment view of a render target: one level, one layer (3D: one depth slice through a 2D-array view is not available, the slice is taken as layer 0 — first case reported)
 static VkImageView att_view(const tex_t *t, const view_t *v, int has_v, vtex **out, uint32_t *w, uint32_t *h) {
-    vtex *x = tex_res(t); *out = x; if (!x || !x->img) return VK_NULL_HANDLE;
+    vtex *x = tex_res(t); *out = x;
+    if (!x || !x->img) {
+        static int missing;
+        if (missing < 64) {
+            missing++;
+            VLOG("render target ser=%llu NVN format %#x has no Vulkan image%s",
+                 (unsigned long long)(t ? t->serial : 0), t ? t->d.format : 0, x ? " handle" : " resource");
+        }
+        return VK_NULL_HANDLE;
+    }
     if (!(x->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))) {
         RED_ONCE(19, "render target ser=%llu NVN format %#x / Vulkan format %d cannot be attached (image usage %#x)",
                  (unsigned long long)t->serial, t->d.format, x->fmt, x->usage);
