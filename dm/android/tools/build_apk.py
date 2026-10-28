@@ -6,13 +6,15 @@
 #   assets: python.zip (CPython's standard library, trimmed), dm.zip (the setup scripts, the game profile, the Python stand-ins for lz4 and capstone)
 # Usage: build_apk.py --libs <dir with the .so files> --pylib <CPython for Android's lib/python3.14> --capstone-py <the capstone Python package> --out <app.apk>
 #        [--ks <keystore> (default dm/android/probe/out/debug.keystore; made when missing)] [--bt <build-tools dir>] [--jar <android.jar>] [--name "Pokémon Shield"]
-import argparse, hashlib, io, os, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
+import argparse, hashlib, io, os, re, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ANDROID = os.path.dirname(HERE); DM = os.path.dirname(ANDROID)
 LIBS = ['libnxnative.so', 'libnx_extract.so', 'libdmsh_xlate.so', 'libspirv_cross.so', 'libpython3.14.so', 'libpython_exe.so', 'libcapstone.so', 'liblz4.so', 'libssl_python.so', 'libcrypto_python.so']
 OPTIONAL = ['libadrenotools.so', 'libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so']   # libadrenotools: custom Adreno drivers (Turnip); without them the phone's own driver only
 PY_SKIP = ('test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'pydoc_data', 'lib2to3', 'venv', 'sqlite3', '__pycache__', 'unittest', 'wsgiref', 'xmlrpc', 'curses', 'dbm')
 DM_PARTS = ['games/game.py', 'games/01008DB008C2C000', 'tools/patch_nso.py', 'gfx/tools', 'ios/tools/ios_metal.py', 'android/tools']
+CHAIN_HEADER = os.path.join(DM, 'games/01008DB008C2C000/dmsh_chain.h')
+CHAIN_TOOL = os.path.join(DM, 'gfx/tools/dmsh_chain.py')
 
 def png(size):   # the app's icon, drawn here (no game artwork ships): a red and white ball on dark blue
     px = []
@@ -45,6 +47,16 @@ def validate_extractor(path):
     if hashlib.sha256(data).hexdigest() == stale_release_hash or obsolete_error.encode('utf-8') in data or obsolete_error.encode('utf-16le') in data:
         sys.exit('[RED] stale libnx_extract.so: rebuild it from this checkout before packaging (run scripts/build_apk_pc.sh)')
 
+def shader_chain():
+    with open(CHAIN_HEADER, encoding='utf-8') as f: match = re.search(r'^#define DMSH_CHAIN "([0-9a-f]{12})"$', f.read(), re.M)
+    if not match: sys.exit('[RED] invalid shader-chain header: run dm/gfx/tools/dmsh_chain.py --header')
+    env = dict(os.environ, DM_GAME='01008DB008C2C000')
+    result = subprocess.run([sys.executable, CHAIN_TOOL], capture_output=True, check=False, env=env, text=True)
+    current = result.stdout.strip()
+    if result.returncode or current != match.group(1):
+        sys.exit(f'[RED] stale shader-chain header: header {match.group(1)}, current tools {current or result.stderr.strip()}; run dm/gfx/tools/dmsh_chain.py --header')
+    return current
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--libs', required=True); ap.add_argument('--pylib', required=True); ap.add_argument('--capstone-py', required=True); ap.add_argument('--out', required=True)
@@ -52,6 +64,7 @@ def main():
     ap.add_argument('--package', default='com.nxnative.pokemonshield'); ap.add_argument('--version', type=int, default=12)
     ap.add_argument('--debuggable', action='store_true', help='test builds: adb run-as can reach the private storage of the app')
     a = ap.parse_args()
+    chain = shader_chain()
     exe = '.exe' if os.name == 'nt' else ''; bat = '.bat' if os.name == 'nt' else ''
     bt = a.bt or os.path.expanduser('~/nxnative-work/tools/android-15'); jar = a.jar or os.path.expanduser('~/nxnative-work/tools/android-35/android.jar')
     missing = [l for l in LIBS if not os.path.isfile(os.path.join(a.libs, l))]
@@ -71,6 +84,7 @@ def main():
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <application android:label="{a.name}" android:icon="@mipmap/ic_launcher" android:hasCode="true" android:extractNativeLibs="true"
                  android:allowNativeHeapPointerTagging="false" android:isGame="true" android:appCategory="game" android:largeHeap="true" android:hasFragileUserData="true"{' android:debuggable="true"' if a.debuggable else ''}>
+        <meta-data android:name="com.nxnative.shader_chain" android:value="{chain}" />
         <activity android:name="com.nxnative.SetupActivity" android:exported="true" android:theme="@android:style/Theme.DeviceDefault">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>

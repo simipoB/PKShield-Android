@@ -32,6 +32,7 @@ $(GAME_H): $(GAME_DIR)/game.tsv ../games/game.py
 	@mkdir -p $(dir $@); python3 ../games/game.py header $(GAME) $@
 $(OUT)/obj/%.o: ../%.c $(GAME_H) $(wildcard compat/*.h compat/*/*.h)
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
+$(OUT)/obj/gfx/nvn/nvn_vk.o: $(GAME_DIR)/dmsh_chain.h
 $(OUT)/obj/android/%.o: %.c $(GAME_H) $(wildcard compat/*.h compat/*/*.h)
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
 $(OUT)/asm/entry.S: $(HOST)/entry.S elf_asm.py

@@ -4,10 +4,13 @@ import runpy
 import tempfile
 
 BUILDER = os.path.abspath(os.path.join(os.path.dirname(__file__), "../android/tools/build_apk.py"))
-validate_extractor = runpy.run_path(BUILDER, run_name="build_apk_test")["validate_extractor"]
+BUILD_APK = runpy.run_path(BUILDER, run_name="build_apk_test")
+validate_extractor = BUILD_APK["validate_extractor"]
+shader_chain = BUILD_APK["shader_chain"]
 
 
 def main():
+    assert len(shader_chain()) == 12
     with tempfile.TemporaryDirectory() as temp:
         current = os.path.join(temp, "current.so")
         with open(current, "wb") as stream:
