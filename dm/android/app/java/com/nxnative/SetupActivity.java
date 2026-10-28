@@ -490,16 +490,18 @@ public final class SetupActivity extends Activity {
     }
     private File unpackPython() throws IOException { return unpack("python.zip", new File(getFilesDir(), "python")); }
     private File unpackScripts() throws IOException { return unpack("dm.zip", new File(getFilesDir(), "dm")); }
-    // an asset zip unpacked once per app version (a stamp file records the version)
+    // asset archives are refreshed after every app install, even when the version code is unchanged
     private File unpack(String asset, File to) throws IOException {
-        long ver; try { ver = getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode(); } catch (Exception e) { ver = 0; }
-        File stamp = new File(to, ".unpacked"); try (BufferedReader r = new BufferedReader(new FileReader(stamp))) { if (Long.parseLong(r.readLine().trim()) == ver) return to; } catch (Exception e) { }
-        to.mkdirs();
-        try (ZipInputStream z = new ZipInputStream(new BufferedInputStream(getAssets().open(asset)))) { ZipEntry e;
-            while ((e = z.getNextEntry()) != null) { File f = new File(to, e.getName()); if (!f.getCanonicalPath().startsWith(to.getCanonicalPath())) continue;
-                if (e.isDirectory()) { f.mkdirs(); continue; } f.getParentFile().mkdirs(); try (OutputStream o = new FileOutputStream(f)) { copy(z, o); } } }
-        try (FileWriter w = new FileWriter(stamp)) { w.write(ver + "\n"); }
-        return to;
+        String revision;
+        try {
+            android.content.pm.PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            revision = AssetUnpacker.revision(info.getLongVersionCode(), info.lastUpdateTime, shaderChain);
+        } catch (PackageManager.NameNotFoundException e) {
+            throw new IOException("could not identify the installed app version", e);
+        }
+        try (InputStream source = getAssets().open(asset)) {
+            return AssetUnpacker.unpack(source, to, revision);
+        }
     }
     private void startGame() { startActivity(new Intent(this, GameActivity.class)); finish(); }
 }
