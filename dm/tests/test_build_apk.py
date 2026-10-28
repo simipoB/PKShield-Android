@@ -7,9 +7,11 @@ BUILDER = os.path.abspath(os.path.join(os.path.dirname(__file__), "../android/to
 BUILD_APK = runpy.run_path(BUILDER, run_name="build_apk_test")
 validate_extractor = BUILD_APK["validate_extractor"]
 shader_chain = BUILD_APK["shader_chain"]
+default_version = BUILD_APK["DEFAULT_VERSION"]
 
 
 def main():
+    assert default_version == 26
     assert len(shader_chain()) == 12
     with tempfile.TemporaryDirectory() as temp:
         current = os.path.join(temp, "current.so")

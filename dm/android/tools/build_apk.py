@@ -15,6 +15,7 @@ PY_SKIP = ('test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'pydoc_data'
 DM_PARTS = ['games/game.py', 'games/01008DB008C2C000', 'tools/patch_nso.py', 'gfx/tools', 'ios/tools/ios_metal.py', 'android/tools']
 CHAIN_HEADER = os.path.join(DM, 'games/01008DB008C2C000/dmsh_chain.h')
 CHAIN_TOOL = os.path.join(DM, 'gfx/tools/dmsh_chain.py')
+DEFAULT_VERSION = 26
 
 def png(size):   # the app's icon, drawn here (no game artwork ships): a red and white ball on dark blue
     px = []
@@ -61,7 +62,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--libs', required=True); ap.add_argument('--pylib', required=True); ap.add_argument('--capstone-py', required=True); ap.add_argument('--out', required=True)
     ap.add_argument('--ks', default=os.path.join(ANDROID, 'probe/out/debug.keystore')); ap.add_argument('--bt'); ap.add_argument('--jar'); ap.add_argument('--name', default='Pokémon Shield')
-    ap.add_argument('--package', default='com.nxnative.pokemonshield'); ap.add_argument('--version', type=int, default=12)
+    ap.add_argument('--package', default='com.nxnative.pokemonshield'); ap.add_argument('--version', type=int, default=DEFAULT_VERSION)
     ap.add_argument('--debuggable', action='store_true', help='test builds: adb run-as can reach the private storage of the app')
     a = ap.parse_args()
     chain = shader_chain()
