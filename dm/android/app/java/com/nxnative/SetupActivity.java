@@ -15,6 +15,7 @@ package com.nxnative;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
 import android.graphics.Bitmap;
@@ -37,6 +38,8 @@ import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -57,13 +60,40 @@ public final class SetupActivity extends Activity {
     }
     private TextView status, gameText, keysText; private ProgressBar bar; private Button setup, play, shortcut, saveExport, saveImport; private ImageView logo;
     private volatile boolean running;
+    private String shaderChain;
 
     private File gameDir() { return getExternalFilesDir(null); }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
-    private boolean ready() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists(); }
+    private boolean hasGameData() { File dir = gameDir(); return dir != null && new File(dir, "ready").exists() && new File(dir, "shaders.pak").exists(); }
+    private String expectedShaderChain() {
+        try {
+            Bundle metadata = getPackageManager().getApplicationInfo(getPackageName(), PackageManager.GET_META_DATA).metaData;
+            String chain = metadata == null ? null : metadata.getString("com.nxnative.shader_chain");
+            if (chain == null || !chain.matches("[0-9a-f]{12}")) throw new IllegalStateException("APK has no valid shader-chain version");
+            return chain;
+        } catch (PackageManager.NameNotFoundException e) {
+            throw new IllegalStateException("Could not read the app's shader-chain version", e);
+        }
+    }
+    private boolean ready() {
+        File dir = gameDir();
+        if (dir == null || shaderChain == null) return false;
+        try (BufferedReader r = new BufferedReader(new FileReader(new File(dir, "ready")))) {
+            if (!shaderChain.equals(r.readLine())) return false;
+        } catch (IOException e) { return false; }
+        try (DataInputStream in = new DataInputStream(new FileInputStream(new File(dir, "shaders.pak")))) {
+            byte[] header = new byte[28]; in.readFully(header);
+            if (header[0] != 'N' || header[1] != 'X' || header[2] != 'S' || header[3] != 'P') return false;
+            int version = ByteBuffer.wrap(header, 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt();
+            if (version < 1 || version > 4) return false;
+            int length = 0; while (length < 16 && header[12 + length] != 0) length++;
+            return shaderChain.equals(new String(header, 12, length, java.nio.charset.StandardCharsets.US_ASCII));
+        } catch (IOException e) { return false; }
+    }
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        shaderChain = expectedShaderChain();
         boolean asked = getIntent().getBooleanExtra("setup", false);
         if (ready()) setupShortcut();
         if (ready() && !asked) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
@@ -160,8 +190,8 @@ public final class SetupActivity extends Activity {
         boolean keys = new File(keysDir(), "prod.keys").exists();
         keysText.setText(keys ? "prod.keys" + (new File(keysDir(), "title.keys").exists() ? " + title.keys" : "") + " (kept in the app's private storage)" : "none chosen (prod.keys, and title.keys if needed)");
         setup.setEnabled(!running && keys && !games.isEmpty()); play.setEnabled(!running && ready());
-        saveExport.setEnabled(!running && ready());
-        saveImport.setEnabled(!running && ready());
+        saveExport.setEnabled(!running && hasGameData());
+        saveImport.setEnabled(!running && hasGameData());
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
     private void pick(int what, boolean multi) {
