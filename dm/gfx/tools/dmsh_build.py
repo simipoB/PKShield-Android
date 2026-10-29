@@ -718,35 +718,40 @@ for key in keys:
     if hit and key not in OVERRIDES: cache_hits.add(key)   # a replaced shader is always rebuilt (the cache holds the translation)
     else: jobs[key], c1s[key] = job_for(key, name, rec, w)
 misses = [key for key in keys if key not in cache_hits]
-chunks = [misses[i::NJ] for i in range(NJ)]
-def xl(ch):
-    jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); json.dump([jobs[k] for k in ch], open(jp, 'w'))
-    r = subprocess.run([XLATE, jp, w], capture_output=True, text=True); keep_spv([jobs[k] for k in ch], w); return r
-with cf.ThreadPoolExecutor(NJ) as ex: xr = list(ex.map(xl, [c for c in chunks if c]))
+GL_DEPTH = SPV_ONLY and VK_SPV_OUT
+# batches of about 128 rather than one per thread: a thread that drew slow shaders does not hold up the rest
+nch = max(NJ, -(-len(misses) // 128)); chunks = [misses[i::nch] for i in range(nch)]
+def xl(ch, wd=w, env=None, tag='job'):
+    jp = os.path.join(wd, f'{tag}_{abs(hash(ch[0]["key"]))}.json'); json.dump(ch, open(jp, 'w'))
+    r = subprocess.run([XLATE, jp, wd], capture_output=True, text=True, env=env)
+    if env is None: keep_spv(ch, wd)
+    return r
+with cf.ThreadPoolExecutor(NJ) as ex: xr = list(ex.map(xl, [[jobs[k] for k in c] for c in chunks if c]))
 xerr = {}
 for r in xr:
     for ln in r.stderr.splitlines():
         m = re.match(r'\[RED\] (\w+): (.*)', ln)
         if m: xerr[m.group(1)] = m.group(2)[:160]
-if SPV_ONLY and VK_SPV_OUT:
+if GL_DEPTH:
     # Keep an alternate vertex module with the GL [-w, w] depth range converted to Vulkan [0, w].
     # The replay selects it only when the device lacks depth clip control and NVN is in GL depth mode.
-    gl_jobs = [dict(jobs[k], depth_mode=True) for k in keys if jobs[k].get('stage') == 'vs' and k not in xerr and os.path.exists(os.path.join(w, k + '.spv'))]
+    gl_jobs = [dict(jobs[k], depth_mode=True) for k in keys if k in jobs and jobs[k].get('stage') == 'vs' and k not in xerr and os.path.exists(os.path.join(w, k + '.spv'))]
     if gl_jobs:
         gl_dir = os.path.join(w, 'gl_depth')
         os.makedirs(gl_dir, exist_ok=True)
-        gl_job_file = os.path.join(w, 'gl_depth_jobs.json')
-        json.dump(gl_jobs, open(gl_job_file, 'w'))
-        gr = subprocess.run([XLATE, gl_job_file, gl_dir], capture_output=True, text=True,
-                            env=dict(os.environ, VK_SPV_OUT=gl_dir))
+        gl_env = dict(os.environ, VK_SPV_OUT=gl_dir)
+        nch = max(NJ, -(-len(gl_jobs) // 128))   # in batches across the threads, as the first pass
+        with cf.ThreadPoolExecutor(NJ) as ex: grs = list(ex.map(lambda ch: xl(ch, gl_dir, gl_env, 'gl_depth'), [c for c in (gl_jobs[i::nch] for i in range(nch)) if c]))
         gl_errors = {}
-        for ln in gr.stderr.splitlines():
-            m = re.match(r'\[RED\] (\w+): (.*)', ln)
-            if m: gl_errors[m.group(1)] = m.group(2)[:160]
+        for gr in grs:
+            for ln in gr.stderr.splitlines():
+                m = re.match(r'\[RED\] (\w+): (.*)', ln)
+                if m: gl_errors[m.group(1)] = m.group(2)[:160]
+        gl_stderr = next((gr.stderr.strip()[:120] for gr in grs if gr.stderr.strip()), '')
         for j in gl_jobs:
             key = j['key']; gl_spv = os.path.join(gl_dir, key + '.spv')
             if key in gl_errors or not os.path.exists(gl_spv):
-                xerr[key] = 'GL depth fallback translation failed: ' + gl_errors.get(key, gr.stderr.strip()[:120] or 'no SPIR-V')
+                xerr[key] = 'GL depth fallback translation failed: ' + gl_errors.get(key, gl_stderr or 'no SPIR-V')
                 continue
             spv_single_lane(gl_spv)
             shutil.copyfile(gl_spv, os.path.join(VK_SPV_OUT, key + '.gl.spv'))
