@@ -12,7 +12,7 @@
 # Usage: setup_game.py --keys <dir with prod.keys [title.keys]> --base <.nsp|.xci> [--update <.nsp>] [--dlc <.nsp> ...] --out <game dir> --work <scratch dir>
 #                      --bin <dir with nx_extract, dmsh_xlate, spirv-cross> [--ext-font <nintendo_ext.ttf>] [--std-font <ttf>]
 # Environment: DM_GAME (the profile; default 01008DB008C2C000), J (jobs)
-import argparse, hashlib, os, shutil, signal, struct, subprocess, sys, time, zlib
+import argparse, glob, hashlib, os, shutil, signal, struct, subprocess, sys, threading, time, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__)); DM = os.path.normpath(os.path.join(HERE, '../..'))
 GAME = os.environ.setdefault('DM_GAME', '01008DB008C2C000')
@@ -32,6 +32,24 @@ def write_runtime_shader_map(found_map, profile_map, output):
             if len(c) > 4 and c[3] not in keys and c[4].startswith('/nvn_capture/'):
                 rows.append(line)
     with open(output, 'w', encoding='utf-8') as f: f.writelines(rows)
+
+def watch_translation(found_map, work, built, stop):
+    """'PROGRESS done/total' lines for the setup screen (SetupActivity.runSetup) while dmsh_build.py runs: it prints nothing until the end, and a phone takes hours.
+    Counted from what it writes (left unchanged, since any edit to it changes the shader chain version): every shader's SPIR-V in its dmsh_* scratch dir,
+    the vertex shaders' GL depth variants in gl_depth/ there, then every shader's reflection json in the cache"""
+    n = vs = 0
+    with open(found_map, encoding='utf-8') as f:
+        for line in f:
+            c = line.rstrip('\n').split('\t')
+            if len(c) > 4 and not line.startswith('#') and c[0] != 'package': n += 1; vs += c[2] == 'vertex'
+    total, shown = 2 * n + vs, -1
+    def count(d, end):
+        try: return sum(e.name.endswith(end) for e in os.scandir(d))
+        except OSError: return 0
+    while not stop.wait(5):
+        done = sum(count(d, '.spv') + count(os.path.join(d, 'gl_depth'), '.spv') for d in glob.glob(os.path.join(work, 'dmsh_*'))) + count(built, '_b.json')
+        done = min(done, total - 1)   # the map also lists shaders that wait for capture, so the count can fall short of it: 100% is the step's end
+        if done != shown: shown = done; print(f'PROGRESS {done}/{total}', flush=True)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -108,12 +126,16 @@ def main():
     chain = subprocess.run([py, os.path.join(DM, 'gfx/tools/dmsh_chain.py')], capture_output=True, text=True, env=env).stdout.strip()
     vk = os.path.join(a.work, 'vk', 'b-' + chain); shutil.rmtree(os.path.dirname(vk), ignore_errors=True); os.makedirs(vk)
     cache = os.path.join(a.work, 'shader_cache'); shutil.rmtree(cache, ignore_errors=True)
-    run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache],
+    for d in glob.glob(os.path.join(a.work, 'dmsh_*')): shutil.rmtree(d, ignore_errors=True)   # an interrupted run's scratch dir would count toward the progress
+    stop = threading.Event(); found = os.path.join(a.work, 'shader_map.found.tsv')
+    threading.Thread(target=watch_translation, args=(found, a.work, os.path.join(cache, 'b-' + chain), stop), daemon=True).start()
+    try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache],
         env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, XLATE=tool('dmsh_xlate'), DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
                  DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'),
                  DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
                  DMSH_PAIRS=os.path.join(a.work, 'shader_pairs.found.tsv'),
                  MAIN=os.path.join(exefs, 'main')))
+    finally: stop.set()
     built = os.path.join(cache, 'b-' + chain)
     for f in os.listdir(built):
         if f.endswith('_b.json'): shutil.copyfile(os.path.join(built, f), os.path.join(vk, f))

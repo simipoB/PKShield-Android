@@ -87,7 +87,7 @@ public final class SetupActivity extends Activity {
         button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); refresh(); });
         settings(root);
         setup = button(root, "Set up the game", v -> startSetup());
-        bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(6); root.addView(bar);
+        bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(600); root.addView(bar);
         status = new TextView(this); status.setPadding(0, 16, 0, 16); root.addView(status);
         play = button(root, "Play", v -> startGame()); play.setEnabled(ready());
         saveExport = button(root, "Export save data", v -> chooseSaveExport());
@@ -370,13 +370,13 @@ public final class SetupActivity extends Activity {
         List<String> a = new ArrayList<>(); a.add(base); a.add(upd); a.addAll(dlc); return a.toArray(new String[0]);
     }
     private void startSetup() {
-        bar.setMax(6); bar.setProgress(0); status.setText("Preparing...");
+        bar.setMax(600); bar.setProgress(0); status.setText("Preparing...");
         String[] g = sortGames(); List<String> cmd = new ArrayList<>();
         cmd.add("--keys"); cmd.add(keysDir().getPath()); cmd.add("--base"); cmd.add(g[0]);
         if (g[1] != null) { cmd.add("--update"); cmd.add(g[1]); }
         for (int k = 2; k < g.length; k++) { cmd.add("--dlc"); cmd.add(g[k]); }
         runSetup(cmd, err -> {
-            bar.setProgress(err == null ? 6 : bar.getProgress());
+            bar.setProgress(err == null ? 600 : bar.getProgress());
             status.setText(err == null ? "Ready. The setup log is in Android/data/" + getPackageName() + "/files/setup_work." : "Setup failed: " + err);
             if (err == null) {
                 for (File file : importedGames) file.delete();
@@ -397,18 +397,21 @@ public final class SetupActivity extends Activity {
     }
     private void startCaptures() {
         List<String> todo = pendingCaptures(); if (todo.isEmpty()) return;
-        bar.setMax(3); bar.setProgress(0); status.setText("Adding " + todo.size() + " shader" + (todo.size() == 1 ? "" : "s") + " the game made last time...");
+        bar.setMax(300); bar.setProgress(0); status.setText("Adding " + todo.size() + " shader" + (todo.size() == 1 ? "" : "s") + " the game made last time...");
         runSetup(new ArrayList<>(Arrays.asList("--captures", new File(gameDir(), "nvn_capture").getPath())), err -> {
             if (err != null) { status.setText("Could not add the new shaders (" + err + "); the game still plays without them."); return; }
             try (FileWriter w = new FileWriter(new File(gameDir(), "captures_done"), true)) { for (String n : todo) w.write(n + "\n"); } catch (IOException e) { }
             startGame();
         });
     }
-    // setup_game.py with the given arguments (plus the folders every run needs): progress from its "STEP n/total what" lines, done(null) or done(the reason it failed) on the UI thread
+    // setup_game.py with the given arguments (plus the folders every run needs): progress from its "STEP n/total what" lines (100 bar units a step) and, inside a step,
+    // its "PROGRESS done/total" lines (the shader translation, hours on a phone); done(null) or done(the reason it failed) on the UI thread.
+    // The screen stays on meanwhile: once it goes dark Android slows or stops the work
     private void runSetup(List<String> args, Consumer<String> done) {
         running = true; refresh();
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         new Thread(() -> {
-            String err = null;
+            String err = null; int[] stepNo = {1}; String[] stepName = {""};
             try {
                 File py = unpackPython(), dm = unpackScripts(), bin = binDir();
                 File work = new File(gameDir(), "setup_work"); work.mkdirs();
@@ -427,12 +430,16 @@ public final class SetupActivity extends Activity {
                 Process p = pb.start();
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String ln;
                 while ((ln = r.readLine()) != null) { final String l = ln;
-                    if (l.startsWith("STEP ")) { String[] f = l.split(" ", 3); int n = Integer.parseInt(f[1].split("/")[0]); runOnUiThread(() -> { bar.setProgress(n - 1); status.setText(f[2] + "..."); }); }
+                    if (l.startsWith("STEP ")) { String[] f = l.split(" ", 3); int n = Integer.parseInt(f[1].split("/")[0]); stepNo[0] = n; stepName[0] = f[2];
+                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100); status.setText(f[2] + "..."); }); }
+                    else if (l.startsWith("PROGRESS ")) {
+                        String[] f = l.substring(9).trim().split("/"); long a = Long.parseLong(f[0]), b = Math.max(1, Long.parseLong(f[1])); int pct = (int) Math.min(100, a * 100 / b), n = stepNo[0]; String s = stepName[0];
+                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100 + pct); status.setText(s + "... " + pct + "%\nThis takes a long time on a phone: keep this screen open, ideally plugged in."); }); }
                     else if (l.startsWith("FAILED")) err = l.substring(6).trim(); }
                 if (p.waitFor() != 0 && err == null) err = "setup stopped (" + p.exitValue() + ")";
             } catch (Exception e) { err = e.toString(); }
             final String e2 = err;
-            runOnUiThread(() -> { running = false; done.accept(e2); refresh(); });
+            runOnUiThread(() -> { getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); running = false; done.accept(e2); refresh(); });
         }).start();
     }
     private File iconFile() { return new File(gameDir(), "icon.jpg"); }
