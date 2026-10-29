@@ -2,13 +2,13 @@
 # Builds the installable app (PokemonShield.apk) from this repository on a PC: Linux, or Windows through WSL (Ubuntu). No game files or keys are involved:
 # the app sets the game up on the phone from the player's own dump.
 #
-#   bash scripts/build_apk_pc.sh            the app with the phone's own Vulkan driver
-#   TURNIP=1 bash scripts/build_apk_pc.sh   also libadrenotools, so players can pick a custom Vulkan driver (Mesa Turnip / PanVK) on the setup screen
+#   bash scripts/build_apk_pc.sh            the app, with libadrenotools so players can pick a custom Vulkan driver (Mesa Turnip / PanVK) on the setup screen
+#   TURNIP=0 bash scripts/build_apk_pc.sh   without it: the phone's own Vulkan driver only
 #
 # What it fetches into $WORK (default ~/psa-build), each once:
 #   the Android NDK r27c, the .NET 10 SDK, the Android command-line tools (build-tools 35, android.jar 35), CPython 3.14 for Android (python.org),
-#   capstone 5.0.7 and lz4 1.10.0 (sources), spirv-cross (Khronos), and with TURNIP=1 libadrenotools
-# Needs on the PC: git, curl, python3 (with venv), a C/C++ compiler (gcc / g++), make, and cmake + ninja for TURNIP=1,
+#   capstone 5.0.7 and lz4 1.10.0 (sources), spirv-cross (Khronos), and unless TURNIP=0 libadrenotools
+# Needs on the PC: git, curl, python3 (with venv), a C/C++ compiler (gcc / g++), make, and cmake + ninja unless TURNIP=0,
 #   e.g. sudo apt install git curl python3-venv build-essential cmake ninja-build   (a JDK is fetched too when none is installed)
 # The APK is signed with a debug key made on first use ($WORK/debug.keystore); keep it to install updates over a first install.
 set -euo pipefail
@@ -81,14 +81,16 @@ step "6/8 capstone $CAPV and lz4 $LZ4V for Android (the code rewriter's disassem
 [ -d capstone-py ] || { python3 -m venv venv && venv/bin/pip install -q --target capstone-py capstone==$CAPV; }   # the Python binding (pure Python; its own library is not used)
 
 step "7/8 libadrenotools (custom Vulkan drivers)"
-if [ "${TURNIP:-${CUSTOM_DRIVER:-0}}" = 1 ]; then
+if [ "${TURNIP:-${CUSTOM_DRIVER:-1}}" = 1 ]; then   # on by default: every release so far shipped it, and players on Turnip need it
     need cmake ninja
     [ -d libadrenotools ] || git clone -q --recursive --depth 1 https://github.com/bylaws/libadrenotools.git
     cmake -S libadrenotools -B libadrenotools/build -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a \
         -DANDROID_PLATFORM=android-$API -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
     ninja -C libadrenotools/build >/dev/null
     find libadrenotools/build -name "*.so" -exec cp {} "$LIBS/" \;
-else echo "skipped (TURNIP=1 or CUSTOM_DRIVER=1 to include it)"; fi
+else   # an earlier build's copies in $LIBS would otherwise still go into the APK (build_apk.py takes the optional libraries it finds)
+    for so in libadrenotools libhook_impl libmain_hook libfile_redirect_hook libgsl_alloc_hook; do rm -f "$LIBS/$so.so"; done   # build_apk.py OPTIONAL
+    echo "skipped (TURNIP=0)"; fi
 
 step "8/8 the APK"
 python3 "$A/tools/build_apk.py" --libs "$LIBS" --pylib "$PY/prefix/lib/python3.14" --capstone-py "$WORK/capstone-py/capstone" --bt "$BT" --jar "$JAR" \
