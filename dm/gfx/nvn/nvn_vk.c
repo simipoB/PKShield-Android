@@ -76,6 +76,7 @@ static PFN_vkGetImageSubresourceLayout2EXT p_layout2;   // VK_EXT_image_compress
 static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name) { for (uint32_t i = 0; i < n; i++) if (!strcmp(e[i].extensionName, name)) return 1; return 0; }
 static void completion_start(void);
 static void dummies_init(void);
+static int host_import_mark(int set);   // (queue_submit)
 static void pcache_open(void); static void *prewarm_main(void *arg);   // pipeline list and cache (below)
 // The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (an Adreno driver such as Mesa Turnip, chosen on the setup screen) is opened through libadrenotools
 // (BSD-2-Clause, shipped in the app with its hook libraries); without it, or when that fails, the system's libvulkan
@@ -179,6 +180,14 @@ void mtl_init(void) {
 #endif
     free(de);
     if (getenv("DM_VK_NO_HOST_IMPORT")) g_host_import = 0;
+    // Imported host memory pins the game's pools (about 3 GB) for every submission. Samsung's Xclipse driver of the late-2026 One UI update refuses that a few frames into play
+    // (vkQueueSubmit: VK_ERROR_OUT_OF_HOST_MEMORY with a gigabyte free, #39), so on Xclipse the driver's own memory is moved onto the pools instead (as on Mali); elsewhere a
+    // submission that fails while pools are imported leaves a marker (host_import_failed, next to the pipeline cache) and the next start does the same. DM_VK_HOST_IMPORT=1 forces import
+    if (g_host_import && !getenv("DM_VK_HOST_IMPORT")) {
+        const char *why = g_props.vendorID == 0x144D ? "Samsung Xclipse" : NULL;
+        if (!why && host_import_mark(0)) why = "a submission failed with it last time";
+        if (why) { g_host_import = 0; VLOG("memory pools: host import off (%s): driver memory moved onto the pools", why); }
+    }
     // Every feature the device has is enabled (the translated shaders declare what they use: 64-bit integers, image formats without a type, …), robust buffer access included:
     // uniform blocks are declared 64 KB and bound with the game's smaller ranges, and Maxwell reads 0 past them
     VkPhysicalDeviceCustomBorderColorFeaturesEXT fbc = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT };
@@ -735,11 +744,20 @@ static void barrier_all(VkCommandBuffer cb) {
     VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
 }
+// The marker of a submission that failed with imported pools (see mtl_init): set = 1 writes it, 0 tells whether it is there
+static int host_import_mark(int set) {
+    const char *pc = getenv("DM_VK_PCACHE"); if (!pc) return 0;
+    char m[1100]; snprintf(m, sizeof m, "%s", pc); char *sl = strrchr(m, '/'); if (!sl) return 0; snprintf(sl + 1, sizeof m - (size_t)(sl + 1 - m), "host_import_failed");
+    if (!set) return access(m, F_OK) == 0;
+    FILE *f = fopen(m, "w"); if (f) { fputs("vkQueueSubmit failed with imported host memory: the next start moves driver memory onto the pools instead\n", f); fclose(f); }
+    return f != NULL;
+}
 static void queue_submit(VkCommandBuffer *cbs, uint32_t n, uint64_t signal) {
     VkTimelineSemaphoreSubmitInfo ts = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &signal };
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &ts, .commandBufferCount = n, .pCommandBuffers = cbs, .signalSemaphoreCount = 1, .pSignalSemaphores = &g_tl };
     shadow_sync();
     pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, VK_NULL_HANDLE); pthread_mutex_unlock(&g_qmu);
+    if (r && g_host_import && host_import_mark(1)) VLOG("[RED] vkQueueSubmit failed with imported host memory: the next start will not import it");
     if (r) VDIE("vkQueueSubmit failed: %d", r);
 }
 // Fence values are handed out under g_cmu so the present thread's submissions (screenshots) and the game's stay in order on the timeline

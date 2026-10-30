@@ -62,6 +62,10 @@ def main():
     missing = [l for l in LIBS if not os.path.isfile(os.path.join(a.libs, l))]
     if missing: sys.exit('[RED] missing native libraries in ' + a.libs + ': ' + ', '.join(missing))
     validate_extractor(os.path.join(a.libs, 'libnx_extract.so'))
+    # the engine must be built for the chain setup makes (v0.36 shipped an engine built before a translation change: every fresh shader pack was refused, a blue screen)
+    with open(os.path.join(a.libs, 'libnxnative.so'), 'rb') as f:
+        if shader_chain().encode() not in f.read():
+            sys.exit('[RED] libnxnative.so was not built for shader chain ' + shader_chain() + ' (dmsh_chain.h): rebuild it (delete it and run win_build_lib.py)')
     w = tempfile.mkdtemp(prefix='apk_')
     # resources: the icon; the manifest: the setup screen launches, the native activity plays
     for dpi, sz in (('xxxhdpi', 192), ('xxhdpi', 144), ('xhdpi', 96)):
