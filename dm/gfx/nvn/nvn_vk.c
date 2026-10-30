@@ -752,10 +752,11 @@ static int host_import_mark(int set) {
     FILE *f = fopen(m, "w"); if (f) { fputs("vkQueueSubmit failed with imported host memory: the next start moves driver memory onto the pools instead\n", f); fclose(f); }
     return f != NULL;
 }
+static int mirror_ordered(void);
 static void queue_submit(VkCommandBuffer *cbs, uint32_t n, uint64_t signal) {
     VkTimelineSemaphoreSubmitInfo ts = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &signal };
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &ts, .commandBufferCount = n, .pCommandBuffers = cbs, .signalSemaphoreCount = 1, .pSignalSemaphores = &g_tl };
-    shadow_sync();
+    if (!mirror_ordered()) shadow_sync();   // (ordered: the submission's own command buffer copies them, shadow_sync_ordered)
     pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, VK_NULL_HANDLE); pthread_mutex_unlock(&g_qmu);
     if (r && g_host_import && host_import_mark(1)) VLOG("[RED] vkQueueSubmit failed with imported host memory: the next start will not import it");
     if (r) VDIE("vkQueueSubmit failed: %d", r);
@@ -769,9 +770,47 @@ static uint64_t submit_tracked(sub_t *s, VkCommandBuffer *cbs, uint32_t n) {
     pthread_mutex_unlock(&g_cmu);
     return f;
 }
+// Mirrored pools in submission order (Mali, the emulator; #21): the pages the game wrote are copied into the GPU's copy by the GPU itself, at the start of this submission,
+// after a full barrier: the CPU used to write them straight into the mirror before each submission, while earlier frames still ran on the GPU and read it (those frames
+// drew with the next frame's data), and over what earlier submissions' GPU work had written there (copies, uniform updates, storage writes) before it was copied back
+// to the game's pages (the copy-back then brought the game's stale bytes back: lost GPU results, white and black surfaces on a Mali-G615). The ranges earlier submissions
+// still in flight write are left out of the copy. DM_VK_MIRROR_ORDERED=0: the old CPU copy
+typedef struct { pool_ent *e; sub_t *s; VkCommandBuffer cb; const wb_t *ex; int nex; uint64_t bytes; } mirror_ctx;
+static void mirror_piece(mirror_ctx *c, uintptr_t a, size_t n) {
+    VkBuffer sb; VkDeviceSize so; uint8_t *m = arena_alloc(c->s, n, &sb, &so); memcpy(m, (const void *)a, n);
+    VkBufferCopy cp = { so, a - c->e->base, n }; vkCmdCopyBuffer(c->cb, sb, c->e->buf, 1, &cp); c->bytes += n;
+}
+static void mirror_run(uintptr_t a, size_t n, void *u) {   // the run's bytes but the ranges in flight (c->ex)
+    mirror_ctx *c = u; nvn_dirty_protect((void *)a, n);
+    for (uintptr_t at = a, end = a + n; at < end;) {
+        uintptr_t skip = at; for (int moved = 1; moved && skip < end;) { moved = 0;
+            for (int i = 0; i < c->nex; i++) { uintptr_t lo = (uintptr_t)c->ex[i].addr, hi = lo + (uintptr_t)c->ex[i].n; if (lo <= skip && hi > skip) { skip = hi; moved = 1; } } }
+        if (skip != at) { at = skip < end ? skip : end; continue; }
+        uintptr_t next = end; for (int i = 0; i < c->nex; i++) { uintptr_t lo = (uintptr_t)c->ex[i].addr; if (lo > at && lo < next) next = lo; }
+        mirror_piece(c, at, next - at); at = next;
+    }
+}
+static int mirror_ordered(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_MIRROR_ORDERED"); v = !(e && !strcmp(e, "0")); } return v; }
+static void shadow_sync_ordered(sub_t *s) {
+    if (!atomic_load(&g_nshadow) || !mirror_ordered()) return;
+    static wb_t *ex; static int cex; int nex = 0;
+    pthread_mutex_lock(&g_cmu);
+    for (int i = 0; i < g_nin; i++) { sub_t *q = g_inflight[i];
+        for (int k = 0; k < q->nwb; k++) { if (nex == cex) { cex = cex ? cex * 2 : 256; ex = realloc(ex, sizeof *ex * (size_t)cex); } ex[nex++] = q->wb[k]; } }
+    pthread_mutex_unlock(&g_cmu);
+    VkCommandBuffer cb = ucb(); if (!cb) return;
+    barrier_all(cb);   // what earlier submissions read and write in the mirrors is done first
+    mirror_ctx c = { NULL, s, cb, ex, nex, 0 };
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < g_npool; i++) { pool_ent *e = &g_pools[i]; if (!e->shadow) continue;
+        c.e = e; uint64_t s0 = nvn_dirty_now(); nvn_dirty_runs((void *)e->base, e->size, e->stamp, mirror_run, &c); e->stamp = s0; }
+    pthread_mutex_unlock(&g_mu);
+    { static int said; if (!said++) VLOG("memory pools: mirrors updated by the GPU in submission order (%.1f KB in the first submission, %d ranges in flight left out)", c.bytes / 1024.0, nex); }
+}
 uint64_t mtl_sub_commit(void) {
     sub_t *s = g_sub; if (!s) return g_fence;
     pass_end();
+    shadow_sync_ordered(s);   // (into the upload command buffer, which runs before this submission's work)
     if (g_tsq) vkCmdWriteTimestamp(s->cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_tsq, (uint32_t)(s - g_subs) * 2 + 1);
     VKCHECK(vkEndCommandBuffer(s->cb));
     VkCommandBuffer cbs[2]; uint32_t n = 0;
@@ -1126,7 +1165,10 @@ static VkSampler samp_vk(const samp_par *p) {
     ci.mipmapMode = p->minf >= 4 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     ci.addressModeU = wrapm(p->ws); ci.addressModeV = wrapm(p->wt); ci.addressModeW = wrapm(p->wr);
     ci.minLod = p->lod_min < 0 ? 0 : p->lod_min; ci.maxLod = p->minf <= 1 ? 0.25f : p->lod_max; ci.mipLodBias = p->lod_bias;   // no mip filter: the base level only (maxLod 0.25, as GL on Vulkan)
-    if (p->aniso > 1) { ci.anisotropyEnable = VK_TRUE; ci.maxAnisotropy = p->aniso > g_props.limits.maxSamplerAnisotropy ? g_props.limits.maxSamplerAnisotropy : p->aniso; }
+    // anisotropic filtering capped (DM_VK_MAX_ANISO, default 8): above 8x the texture units fetch far more for surfaces at a glancing angle for little visible gain
+    { static float cap = -1; if (cap < 0) { const char *e = getenv("DM_VK_MAX_ANISO"); cap = e ? (float)atof(e) : 8.0f; if (cap < 1) cap = 1; }
+      float want = p->aniso > cap ? cap : p->aniso;
+      if (want > 1) { ci.anisotropyEnable = VK_TRUE; ci.maxAnisotropy = want > g_props.limits.maxSamplerAnisotropy ? g_props.limits.maxSamplerAnisotropy : want; } }
     if (p->cmp_mode) { ci.compareEnable = VK_TRUE; ci.compareOp = (VkCompareOp)(p->cmp_func - 1); }
     VkSamplerReductionModeCreateInfo rd = { .sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO, .reductionMode = p->reduction == 1 ? VK_SAMPLER_REDUCTION_MODE_MIN : VK_SAMPLER_REDUCTION_MODE_MAX };
     VkSamplerCustomBorderColorCreateInfoEXT bc = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT, .format = VK_FORMAT_UNDEFINED };
