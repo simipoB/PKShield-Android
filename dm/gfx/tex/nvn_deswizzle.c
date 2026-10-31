@@ -46,15 +46,34 @@ static int move(const nvn_texdesc *d, unsigned level, unsigned layer, uint8_t *b
     if (nvn_deswizzle_geom(d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &bpb)) return -1;
     if (pitch < row_bytes) return -1;
     bl += base;
-    for (uint32_t z = 0; z < slices; z++)
+    uint32_t bh = 1u << th, bd = 1u << td;
+    uint64_t gobs_x = (row_bytes + 63) / 64, blocks_y = (rows + 8 * bh - 1) / (8 * bh), block = 512ull * bh * bd;
+    for (uint32_t z = 0; z < slices; z++) {
+        uint64_t z_off = (z / bd) * gobs_x * blocks_y * block + (uint64_t)(z % bd) * bh * 512ull;
         for (uint32_t y = 0; y < rows; y++) {
             uint8_t *row = lin + ((size_t)z * rows + y) * pitch;
-            for (uint32_t x = 0; x < row_bytes; x += 16) {             // 16-byte segments: 16 bytes are contiguous within a GOB, and 16 divides all block widths
+            uint8_t *gob_row = bl + z_off + (y / (8 * bh)) * gobs_x * block + (uint64_t)((y % (8 * bh)) / 8) * 512ull + ((y & 6) << 5) + ((y & 1) << 4);
+            uint32_t x = 0;
+            for (; x + 64 <= row_bytes; x += 64, gob_row += block) {    // full 64-byte GOB row: four 16-byte runs at +0, +32, +256, +288
+                if (to_linear) {
+                    memcpy(row + x,      gob_row,       16);
+                    memcpy(row + x + 16, gob_row + 32,  16);
+                    memcpy(row + x + 32, gob_row + 256, 16);
+                    memcpy(row + x + 48, gob_row + 288, 16);
+                } else {
+                    memcpy(gob_row,       row + x,      16);
+                    memcpy(gob_row + 32,  row + x + 16, 16);
+                    memcpy(gob_row + 256, row + x + 32, 16);
+                    memcpy(gob_row + 288, row + x + 48, 16);
+                }
+            }
+            for (; x < row_bytes; x += 16) {                            // tail (< 64 bytes) within the last GOB of this row
                 uint32_t n = row_bytes - x < 16 ? row_bytes - x : 16;
-                uint8_t *p = bl + nvn_bl_offset(x, y, z, row_bytes, rows, th, td);
+                uint8_t *p = gob_row + (((x & 32) << 3) | ((x & 16) << 1));
                 if (to_linear) memcpy(row + x, p, n); else memcpy(p, row + x, n);
             }
         }
+    }
     return 0;
 }
 

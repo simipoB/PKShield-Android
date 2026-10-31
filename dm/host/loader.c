@@ -408,6 +408,17 @@ static int hex_nib(char c) {
     if (c >= 'A' && c <= 'F') return c - 'A' + 10;
     return -1;
 }
+static int text_overlaps_stub(const module_t *m, uint64_t off, size_t nb, int64_t p0, int64_t p1) {
+    if (!nb || off >= m->text_end) return 0;
+    for (uint64_t a = off & ~3ull; a <= ((off + nb - 1) & ~3ull) && a + 4 <= m->text_end; a += 4) {
+        uint32_t w; memcpy(&w, m->base + a, 4);
+        if ((w & 0xfc000000u) == 0x14000000u) {
+            int64_t tgt = (int64_t)a + ((int64_t)(int32_t)(w << 6) >> 4);
+            if (tgt >= p0 && tgt < p1) return 1;
+        }
+    }
+    return 0;
+}
 // IPSwitch .pchtxt patches from DM_MODS_DIR (e.g. 20:9 camera / culling mods), applied while m->base is writable before sealing .text
 int dm_pchtxt_apply_file(module_t *m, uint64_t lim, int64_t p0, int64_t p1, const char *path) {
     if (!m->build_id[0]) return 0;
@@ -459,17 +470,7 @@ int dm_pchtxt_apply_file(module_t *m, uint64_t lim, int64_t p0, int64_t p1, cons
         if (bad || !nb) { LOG("[RED] pchtxt %s:%d: invalid value, skipped", path, line_no); continue; }
         int64_t off = (int64_t)addr + shift - 0x100;
         if (off < 0 || (uint64_t)off + nb > lim) { LOG("[RED] pchtxt %s:%d: +%#llx (%zu B) out of module bounds (%#llx), skipped", path, line_no, (unsigned long long)off, nb, (unsigned long long)lim); continue; }
-        int clash = 0;
-        if ((uint64_t)off < m->text_end) {
-            for (uint64_t a = (uint64_t)off & ~3ull; a <= (((uint64_t)off + nb - 1) & ~3ull) && a + 4 <= m->text_end; a += 4) {
-                uint32_t w; memcpy(&w, m->base + a, 4);
-                if ((w & 0xfc000000u) == 0x14000000u) {
-                    int64_t tgt = (int64_t)a + ((int64_t)(int32_t)(w << 6) >> 4);
-                    if (tgt >= p0 && tgt < p1) { clash = 1; break; }
-                }
-            }
-        }
-        if (clash) { LOG("[RED] pchtxt %s:%d: +%#llx overlaps rewritten host stub, skipped", path, line_no, (unsigned long long)off); continue; }
+        if (text_overlaps_stub(m, (uint64_t)off, nb, p0, p1)) { LOG("[RED] pchtxt %s:%d: +%#llx overlaps rewritten host stub, skipped", path, line_no, (unsigned long long)off); continue; }
         memcpy(m->base + off, buf, nb);
         applied++;
     }
@@ -492,6 +493,40 @@ static int apply_pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     }
     free(ents);
     return total;
+}
+int dm_apply_builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int pchtxt_applied) {
+    if (strcmp(m->name, "main")) return 0;
+    int applied = 0;
+    const char *asp = getenv("DM_ASPECT"), *wp = getenv("DM_WIDESCREEN_PATCH");
+    int is_20_9 = asp && (!strcasecmp(asp, "20:9") || !strcasecmp(asp, "20_9"));
+    // Built-in 20:9 3D camera aspect patch: replaces unique MOVK X9, #0x8e39, LSL #32 ; MOVK X9, #0x3fe3, LSL #48 (16/9) with 20/9 (2.2222223f = 0x400e38e4)
+    if (is_20_9 && !pchtxt_applied && !(wp && !strcmp(wp, "0"))) {
+        uint64_t hit = 0; int hits = 0;
+        for (uint64_t a = 0; a + 8 <= m->text_end && a + 8 <= lim; a += 4) {
+            uint32_t w0, w1; memcpy(&w0, m->base + a, 4); memcpy(&w1, m->base + a + 4, 4);
+            if (w0 == 0xf2d1c729u && w1 == 0xf2e7fc69u) { hit = a; if (++hits > 1) break; }
+        }
+        if (hits == 1 && !text_overlaps_stub(m, hit, 8, p0, p1)) {
+            const uint32_t p[2] = { 0xf2c71c89u, 0xf2e801c9u };
+            memcpy(m->base + hit, p, 8); applied++;
+            LOG("%s: applied built-in 20:9 3D camera aspect patch at +%#llx", m->name, (unsigned long long)hit);
+        }
+    }
+    // Pokémon Shield v1.3.2 (build_id a16802625e7826bf83b6f9708e475b91) native 60 FPS: NVN present interval 2 -> 1 (+0x018a2d18) and frame step 1/30s -> 1/60s (+0x0203eeb8)
+    const char *ft = getenv("DM_FPS_TARGET"); if (!ft || !*ft) ft = getenv("DM_FPS");
+    if (ft && atoi(ft) == 60 && !strncasecmp(m->build_id, "a16802625e7826bf83b6f9708e475b91", 32)) {
+        const uint64_t off_itv = 0x018a2d18ull, off_dt = 0x0203eeb8ull;
+        if (off_itv + 4 <= m->text_end && off_itv + 4 <= lim && off_dt + 4 <= lim &&
+            !text_overlaps_stub(m, off_itv, 4, p0, p1) && !text_overlaps_stub(m, off_dt, 4, p0, p1)) {
+            uint32_t w_itv, w_dt; memcpy(&w_itv, m->base + off_itv, 4); memcpy(&w_dt, m->base + off_dt, 4);
+            if (w_itv == 0x52800041u && w_dt == 0x01fca056u) {
+                w_itv = 0x52800021u; w_dt = 0x00fe502bu;
+                memcpy(m->base + off_itv, &w_itv, 4); memcpy(m->base + off_dt, &w_dt, 4); applied += 2;
+                LOG("%s: applied built-in 60 FPS patch (present interval 1 + 16.67 ms step)", m->name);
+            }
+        }
+    }
+    return applied;
 }
 static uint8_t *slurp(const char *path, size_t *n) {
     int fd = open(path, O_RDONLY);
@@ -518,6 +553,7 @@ static void map_image(module_t *m, const char *dir) {
         m->base = a + pre;
         memcpy(m->base, raw, fl); memcpy(a, raw + fl, sz - fl); free(raw);
         int modded = apply_pchtxt_dir(m, fl, m->patch_off, m->patch_off + (int64_t)m->patch_len);
+        modded += dm_apply_builtin_patches(m, fl, m->patch_off, m->patch_off + (int64_t)m->patch_len, modded);
         install_key_page(m);
         uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
         if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
@@ -531,6 +567,7 @@ static void map_image(module_t *m, const char *dir) {
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
     memcpy(m->base, raw, sz); free(raw);
     int modded = apply_pchtxt_dir(m, m->key_page_off, m->patch_off, (int64_t)sz);
+    modded += dm_apply_builtin_patches(m, m->key_page_off, m->patch_off, (int64_t)sz, modded);
     install_key_page(m);
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
     if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);

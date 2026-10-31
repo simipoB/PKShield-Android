@@ -124,7 +124,7 @@ public final class SetupActivity extends Activity {
         android.widget.RadioGroup arg = new android.widget.RadioGroup(this);
         String[][] aspects = {
             { "fit", "16:9: original aspect ratio (side bars on 20:9 phones)" },
-            { "20:9", "20:9: widescreen (use with a 20:9 .pchtxt mod to avoid stretching)" },
+            { "20:9", "20:9: widescreen (built-in 3D camera fix; optional .pchtxt override)" },
             { "crop", "20:9 Zoom: fills the screen without stretching (crops top and bottom)" },
             { "stretch", "Full screen: stretches to fill any screen" }
         };
@@ -135,6 +135,19 @@ public final class SetupActivity extends Activity {
         }
         arg.setOnCheckedChangeListener((g, id) -> envSet("DM_ASPECT", aspects[id - 1100][0]));
         root.addView(arg);
+        TextView fl = new TextView(this); fl.setText("Frame rate"); fl.setPadding(0, 16, 0, 0); root.addView(fl);
+        android.widget.RadioGroup frg = new android.widget.RadioGroup(this);
+        String[][] fpsModes = {
+            { "", "30 FPS: original console frame rate" },
+            { "60", "60 FPS: smooth 60 Hz + 1/60s step (Shield 1.3.2, uses more battery)" }
+        };
+        String fcur = envGet("DM_FPS_TARGET"); if (!"60".equals(fcur)) fcur = "";
+        for (int k = 0; k < fpsModes.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(1200 + k); b.setText(fpsModes[k][1]); frg.addView(b);
+            if (fpsModes[k][0].equals(fcur)) b.setChecked(true);
+        }
+        frg.setOnCheckedChangeListener((g, id) -> envSet("DM_FPS_TARGET", fpsModes[id - 1200][0]));
+        root.addView(frg);
         modsText = row(root, "Code patches (.pchtxt)", "Choose", v -> pick(PICK_MOD, true));
         button(root, "Clear code patches", v -> { deleteTree(modsDir()); modsDir(); refresh(); });
         slider(root, "Touch controls opacity", "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");

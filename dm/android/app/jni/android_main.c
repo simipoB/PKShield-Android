@@ -36,12 +36,15 @@
 int dm_main(int argc, char **argv);   // dm/host/main.c built with -Dmain=dm_main
 void dm_focus_set(int st);
 void dm_audio_suspend(int on);
+void guest_clock_freeze_for(int reason, int on);
+void dm_gfx_suspend(int on);
 #define ALOG(...) __android_log_print(ANDROID_LOG_INFO, "nxnative", __VA_ARGS__)
 
 static struct android_app *g_app;
 static _Atomic(ANativeWindow *) g_window;
+static _Atomic int g_paused;
 static char g_files[1024], g_game[1024];
-void *front_metal_layer(void) { return atomic_load(&g_window); }   // the window the Vulkan replay presents to (the name is the Apple front ends' interface)
+void *front_metal_layer(void) { return atomic_load(&g_paused) ? NULL : atomic_load(&g_window); }   // the window the Vulkan replay presents to (NULL while paused in the background)
 void *front_android_window(void) { return atomic_load(&g_window); }
 // The game's keyboard (its name entry): the app's Android dialog (app/java/com/nxnative/TextInput.java) with the phone's keyboard, on the UI thread; this game thread
 // waits for it (hle_swkbd.c stops the game's clock meanwhile). 1 OK (out holds the text, UTF-8), 0 cancelled, -1 no dialog (then the game takes it as cancelled)
@@ -396,15 +399,22 @@ static void *swapin_main(void *p) {
     return NULL;
 }
 static void swapin_start(void) { if (kb_of("/proc/self/status", "VmSwap:") < 32 * 1024) return; pthread_t t; if (!pthread_create(&t, NULL, swapin_main, NULL)) pthread_detach(t); }
-__attribute__((weak)) void nvn_vk_cache_save(void);   // the pipeline cache file (nvn_vk.c), written when the app goes to the background
+__attribute__((weak)) void nvn_vk_cache_save(void);   // the pipeline cache file (nvn_vk.c), written asynchronously when the app goes to the background
+__attribute__((weak)) void nvn_vk_window_term(void);  // tears down the Vulkan swapchain and surface before Android destroys the ANativeWindow
+static atomic_int g_cache_saving;
+static void *cache_save_main(void *p) { (void)p; if (nvn_vk_cache_save) nvn_vk_cache_save(); atomic_store(&g_cache_saving, 0); return NULL; }
+static void cache_save_async(void) {
+    if (!nvn_vk_cache_save || atomic_exchange(&g_cache_saving, 1)) return;
+    pthread_t t; if (pthread_create(&t, NULL, cache_save_main, NULL)) atomic_store(&g_cache_saving, 0); else pthread_detach(t);
+}
 static void on_cmd(struct android_app *app, int32_t cmd) {
     switch (cmd) {
         case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); host_start(); break;
-        case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); break;
+        case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); if (g_started && nvn_vk_window_term) nvn_vk_window_term(); break;
         case APP_CMD_GAINED_FOCUS: immersive(); if (g_started) { dm_focus_set(1); dm_audio_suspend(0); } break;
         case APP_CMD_LOST_FOCUS: if (g_started) { dm_focus_set(2); } break;
-        case APP_CMD_PAUSE: if (g_started) { dm_focus_set(3); dm_audio_suspend(1); if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;
-        case APP_CMD_RESUME: if (g_started) { dm_focus_set(1); dm_audio_suspend(0); swapin_start(); } break;
+        case APP_CMD_PAUSE: atomic_store(&g_paused, 1); if (g_started) { dm_focus_set(3); dm_audio_suspend(1); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); cache_save_async(); } break;
+        case APP_CMD_RESUME: atomic_store(&g_paused, 0); if (g_started) { dm_gfx_suspend(0); guest_clock_freeze_for(1, 0); dm_audio_suspend(0); dm_focus_set(1); swapin_start(); } break;
     }
 }
 void android_main(struct android_app *app) {
