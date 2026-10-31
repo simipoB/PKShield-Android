@@ -55,11 +55,13 @@ static void tsd_check(void) {   // the key page entry of K18 must lead patched c
 void dm_slot_set(int slot, void *v) { pthread_setspecific(key_value((unsigned)slot), v); }
 // K slot check: the pthread TSD layout is fixed, slot = tpidrro_el0 + 8*key
 static void tsd_check(void) {
+#ifdef __aarch64__
     pthread_setspecific(g_key18, (void *)0x1234);
     uint64_t base; __asm__ volatile("mrs %0, tpidrro_el0" : "=r"(base));
     uint64_t off = *(uint64_t *)(g_mod[0].base + g_mod[0].key_page_off + g_mod[0].key_idx[KEY_K18] * 8);
     if (((uint64_t *)(base & ~7ull))[off / 8] != 0x1234) die("TSD layout mismatch");
     pthread_setspecific(g_key18, 0);
+#endif
 }
 #endif
 
@@ -396,6 +398,101 @@ static void map_image(module_t *m, const char *dir) {
     m->base = (uint8_t *)base; install_key_page(m);
 }
 #else
+#include <ctype.h>
+#include <dirent.h>
+#include <strings.h>
+
+static int hex_nib(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+// IPSwitch .pchtxt patches from DM_MODS_DIR (e.g. 20:9 camera / culling mods), applied while m->base is writable before sealing .text
+int dm_pchtxt_apply_file(module_t *m, uint64_t lim, int64_t p0, int64_t p1, const char *path) {
+    if (!m->build_id[0]) return 0;
+    FILE *f = fopen(path, "r"); if (!f) return 0;
+    char ln[1024]; int bid_ok = 0, en = 0, applied = 0, line_no = 0; int64_t shift = 0;
+    while (fgets(ln, sizeof ln, f)) {
+        char *s = ln;
+        if (!line_no++ && (uint8_t)s[0] == 0xef && (uint8_t)s[1] == 0xbb && (uint8_t)s[2] == 0xbf) s += 3;
+        char *c1 = strstr(s, "//"), *c2 = strchr(s, '#');
+        if (c1) *c1 = 0;
+        if (c2) *c2 = 0;
+        while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+        for (size_t e = strlen(s); e && (s[e - 1] == ' ' || s[e - 1] == '\t' || s[e - 1] == '\r' || s[e - 1] == '\n'); ) s[--e] = 0;
+        if (!*s) continue;
+        if (*s == '@') {
+            if (!strncasecmp(s, "@nsobid-", 8)) {
+                const char *b = s + 8; size_t bl = 0; while (hex_nib(b[bl]) >= 0) bl++;
+                size_t cmp = bl < 32 ? bl : 32;
+                if (bl < 16 || strncasecmp(b, m->build_id, cmp)) { fclose(f); return 0; }
+                bid_ok = 1;
+            } else if (!strncasecmp(s, "@flag", 5) && (s[5] == ' ' || s[5] == '\t')) {
+                char *p = s + 5; while (*p == ' ' || *p == '\t') p++;
+                if (!strncasecmp(p, "offset_shift", 12) && (p[12] == ' ' || p[12] == '\t')) shift = strtoll(p + 12, NULL, 0);
+            } else if (!strcasecmp(s, "@enabled")) en = 1;
+            else if (!strcasecmp(s, "@disabled")) en = 0;
+            else if (!strcasecmp(s, "@stop")) break;
+            continue;
+        }
+        if (!bid_ok || !en) continue;
+        char *end = NULL; uint64_t addr = strtoull(s, &end, 16);
+        if (end == s || (*end != ' ' && *end != '\t')) continue;
+        char *v = end; while (*v == ' ' || *v == '\t') v++;
+        uint8_t buf[512]; size_t nb = 0; int bad = 0;
+        if (*v == '"') {
+            for (v++; *v && *v != '"'; v++) {
+                if (*v == '\\' && v[1]) v++;
+                if (nb >= sizeof buf) { bad = 1; break; }
+                buf[nb++] = (uint8_t)*v;
+            }
+            if (*v != '"') bad = 1;
+        } else {
+            while (*v) {
+                if (*v == ' ' || *v == '\t') { v++; continue; }
+                int hi = hex_nib(v[0]), lo = v[1] ? hex_nib(v[1]) : -1;
+                if (hi < 0 || lo < 0 || nb >= sizeof buf) { bad = 1; break; }
+                buf[nb++] = (uint8_t)((hi << 4) | lo); v += 2;
+            }
+        }
+        if (bad || !nb) { LOG("[RED] pchtxt %s:%d: invalid value, skipped", path, line_no); continue; }
+        int64_t off = (int64_t)addr + shift - 0x100;
+        if (off < 0 || (uint64_t)off + nb > lim) { LOG("[RED] pchtxt %s:%d: +%#llx (%zu B) out of module bounds (%#llx), skipped", path, line_no, (unsigned long long)off, nb, (unsigned long long)lim); continue; }
+        int clash = 0;
+        if ((uint64_t)off < m->text_end) {
+            for (uint64_t a = (uint64_t)off & ~3ull; a <= (((uint64_t)off + nb - 1) & ~3ull) && a + 4 <= m->text_end; a += 4) {
+                uint32_t w; memcpy(&w, m->base + a, 4);
+                if ((w & 0xfc000000u) == 0x14000000u) {
+                    int64_t tgt = (int64_t)a + ((int64_t)(int32_t)(w << 6) >> 4);
+                    if (tgt >= p0 && tgt < p1) { clash = 1; break; }
+                }
+            }
+        }
+        if (clash) { LOG("[RED] pchtxt %s:%d: +%#llx overlaps rewritten host stub, skipped", path, line_no, (unsigned long long)off); continue; }
+        memcpy(m->base + off, buf, nb);
+        applied++;
+    }
+    fclose(f);
+    if (applied) LOG("%s: applied %d patch(es) from %s", m->name, applied, path);
+    return applied;
+}
+static int apply_pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
+    const char *mdir = getenv("DM_MODS_DIR");
+    if (!mdir || !*mdir || !m->build_id[0]) return 0;
+    struct dirent **ents = NULL; int n = scandir(mdir, &ents, NULL, alphasort), total = 0;
+    if (n < 0) return 0;
+    for (int i = 0; i < n; i++) {
+        const char *nm = ents[i]->d_name; size_t l = strlen(nm);
+        if (l > 7 && !strcasecmp(nm + l - 7, ".pchtxt")) {
+            char p[1200]; snprintf(p, sizeof p, "%s/%s", mdir, nm);
+            total += dm_pchtxt_apply_file(m, lim, p0, p1, p);
+        }
+        free(ents[i]);
+    }
+    free(ents);
+    return total;
+}
 static uint8_t *slurp(const char *path, size_t *n) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) die("open %s", path);
@@ -419,9 +516,12 @@ static void map_image(module_t *m, const char *dir) {
         uint8_t *a = mmap(NULL, pre + m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (a == MAP_FAILED) die("%s mmap %#llx", m->name, (unsigned long long)(pre + m->size));
         m->base = a + pre;
-        memcpy(m->base, raw, fl); memcpy(a, raw + fl, sz - fl); free(raw); install_key_page(m);
+        memcpy(m->base, raw, fl); memcpy(a, raw + fl, sz - fl); free(raw);
+        int modded = apply_pchtxt_dir(m, fl, m->patch_off, m->patch_off + (int64_t)m->patch_len);
+        install_key_page(m);
         uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
         if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
+        if (modded) __builtin___clear_cache((char *)m->base, (char *)(m->base + rx));
         if (mprotect(a, m->patch_len, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
         if (pre > m->patch_len && mprotect(a + m->patch_len, pre - m->patch_len, PROT_NONE)) die("%s mprotect gap", m->name);
         return;
@@ -429,9 +529,12 @@ static void map_image(module_t *m, const char *dir) {
     m->size = (sz + 0x3FFF) & ~0x3FFFull;
     m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
-    memcpy(m->base, raw, sz); free(raw); install_key_page(m);
+    memcpy(m->base, raw, sz); free(raw);
+    int modded = apply_pchtxt_dir(m, m->key_page_off, m->patch_off, (int64_t)sz);
+    install_key_page(m);
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
     if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
+    if (modded) __builtin___clear_cache((char *)m->base, (char *)(m->base + rx));
     uint64_t po = m->patch_off & ~0x3FFFull;
     if (mprotect(m->base + po, m->size - po, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
 }

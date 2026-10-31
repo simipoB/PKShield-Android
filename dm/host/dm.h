@@ -81,6 +81,7 @@ enum { DM_SLOT_K18, DM_SLOT_KTLS, DM_SLOT_KTLR, DM_SLOT_KGATE };
 void dm_slot_set(int slot, void *v);
 
 void load_modules(const char *dir, const char **names, int n);
+int dm_pchtxt_apply_file(module_t *m, uint64_t lim, int64_t p0, int64_t p1, const char *path);
 void run_module_inits(void);
 void *module_sym(module_t *m, const char *name);
 int dm_sdk_major(void);   // SDK major version from the sdk module's version string (loader.c); 0 = unknown

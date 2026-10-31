@@ -47,8 +47,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class SetupActivity extends Activity {
-    private static final int PICK_GAME = 1, PICK_KEYS = 2, PICK_DRIVER = 3, PICK_SAVE_EXPORT = 4, PICK_SAVE_IMPORT = 5;
-    private TextView driverText;
+    private static final int PICK_GAME = 1, PICK_KEYS = 2, PICK_DRIVER = 3, PICK_SAVE_EXPORT = 4, PICK_SAVE_IMPORT = 5, PICK_MOD = 6;
+    private TextView driverText, modsText;
     private final List<String> games = new ArrayList<>();
     private final List<File> importedGames = new ArrayList<>();
     private static final class PickedGame {
@@ -59,6 +59,7 @@ public final class SetupActivity extends Activity {
     private volatile boolean running;
 
     private File gameDir() { return getExternalFilesDir(null); }
+    private File modsDir() { File d = new File(gameDir(), "mods"); d.mkdirs(); return d; }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
     private boolean setUp() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists(); }
     // set up for this app version: the shader pack's translation chain (the ready file) is the one the engine was built for (assets/shader_chain, build_apk.py);
@@ -119,6 +120,23 @@ public final class SetupActivity extends Activity {
         }
         rg.setOnCheckedChangeListener((g, id) -> envSet("DM_GRAPHICS", modes[id - 1000][0]));
         root.addView(rg);
+        TextView al = new TextView(this); al.setText("Aspect ratio"); al.setPadding(0, 16, 0, 0); root.addView(al);
+        android.widget.RadioGroup arg = new android.widget.RadioGroup(this);
+        String[][] aspects = {
+            { "fit", "16:9: original aspect ratio (side bars on 20:9 phones)" },
+            { "20:9", "20:9: widescreen (use with a 20:9 .pchtxt mod to avoid stretching)" },
+            { "crop", "20:9 Zoom: fills the screen without stretching (crops top and bottom)" },
+            { "stretch", "Full screen: stretches to fill any screen" }
+        };
+        String acur = envGet("DM_ASPECT"); if (acur.isEmpty()) acur = "fit";
+        for (int k = 0; k < aspects.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(1100 + k); b.setText(aspects[k][1]); arg.addView(b);
+            if (aspects[k][0].equals(acur)) b.setChecked(true);
+        }
+        arg.setOnCheckedChangeListener((g, id) -> envSet("DM_ASPECT", aspects[id - 1100][0]));
+        root.addView(arg);
+        modsText = row(root, "Code patches (.pchtxt)", "Choose", v -> pick(PICK_MOD, true));
+        button(root, "Clear code patches", v -> { deleteTree(modsDir()); modsDir(); refresh(); });
         slider(root, "Touch controls opacity", "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");
         slider(root, "Touch controls fade after", "DM_TOUCH_FADE", 0, 10, 3, v -> v == 0 ? "never fade" : v + " s without a touch");
     }
@@ -165,6 +183,8 @@ public final class SetupActivity extends Activity {
     private static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) deleteTree(c); f.delete(); }
     private void refresh() {
         if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? "the phone's own Vulkan driver" : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")"); }
+        if (modsText != null) { String[] ms = modsDir().list((d, n) -> n.toLowerCase().endsWith(".pchtxt")); if (ms != null) Arrays.sort(ms);
+            modsText.setText(ms == null || ms.length == 0 ? "none (optional IPSwitch .pchtxt mods, e.g. 20:9 camera)" : String.join("\n", ms)); }
         gameText.setText(games.isEmpty() ? "none chosen (.nsp / .xci: base game, update 1.3.2, DLC)" : String.join("\n", games));
         boolean keys = new File(keysDir(), "prod.keys").exists();
         keysText.setText(keys ? "prod.keys" + (new File(keysDir(), "title.keys").exists() ? " + title.keys" : "") + " (kept in the app's private storage)" : "none chosen (prod.keys, and title.keys if needed)");
@@ -195,6 +215,13 @@ public final class SetupActivity extends Activity {
         for (Uri u : uris) {
             String name = nameOf(u);
             if (req == PICK_DRIVER) { installDriver(u, name); continue; }
+            if (req == PICK_MOD) {
+                String safe = new File(name).getName();
+                if (!safe.toLowerCase().endsWith(".pchtxt")) { status.setText(safe + " is not a .pchtxt patch"); continue; }
+                try (InputStream in = getContentResolver().openInputStream(u); OutputStream out = new FileOutputStream(new File(modsDir(), safe))) { copy(in, out); status.setText("Installed patch " + safe + "."); }
+                catch (IOException e) { status.setText("could not read " + safe + ": " + e.getMessage()); }
+                continue;
+            }
             if (req == PICK_KEYS) {
                 String to = name.toLowerCase().contains("title") ? "title.keys" : "prod.keys";
                 try (InputStream in = getContentResolver().openInputStream(u); OutputStream out = new FileOutputStream(new File(keysDir(), to))) { copy(in, out); }

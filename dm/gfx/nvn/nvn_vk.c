@@ -2522,6 +2522,12 @@ static int swap_job_run(int make, void *win, int srgb) {
 }
 static void swap_destroy(void) { if (W.sc || W.surf) swap_job_run(0, NULL, 0); W.win = NULL; }
 static int swap_ensure(void *win, int srgb) {
+#ifdef __ANDROID__
+    if (W.sc && W.win == win) {
+        int32_t nw = ANativeWindow_getWidth((ANativeWindow *)win), nh = ANativeWindow_getHeight((ANativeWindow *)win);
+        if (nw > 0 && nh > 0 && ((uint32_t)nw != W.ext.width || (uint32_t)nh != W.ext.height)) swap_destroy();
+    }
+#endif
     if (W.sc && W.win == win && W.srgb == srgb) return 1;
     return swap_job_run(1, win, srgb);
 }
@@ -2547,6 +2553,7 @@ static int swap_ensure_now(void *win, int srgb) {
     W.ext = caps.currentExtent;
 #ifdef __ANDROID__
     if (W.ext.width == 0xffffffffu || 1) { W.ext.width = (uint32_t)ANativeWindow_getWidth((ANativeWindow *)win); W.ext.height = (uint32_t)ANativeWindow_getHeight((ANativeWindow *)win); }
+    if (!W.ext.width || !W.ext.height) return 0;
 #endif
     // MAILBOX when the window has it: the game paces its own frames (mtl_present), and with FIFO a slow compositor (a screen recording, the notification shade) held
     // presentation, which shares the queue lock with the game's submissions, so the whole game waited on the compositor (LAS Recomp's Android port measured 4–21 fps with
@@ -2674,7 +2681,7 @@ static int ovl_draw(VkCommandBuffer cb, VkImage img, VkImageView view, VkExtent2
 // DM_OVL_SHOT=<frame>:<path.png> (Mac Vulkan host): the game frame fitted into a phone-sized picture (2340x1080) with the touch overlay over it, as present_window composes it
 void touch_ui_demo(int c, float dx, float dy);
 static void ovl_shot(vtex *x, const int crop[4], const char *path) {
-    VkExtent2D ext = { 2340, 1080 }; VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM;
+    VkExtent2D ext = { dm_aspect_mode() == DM_ASPECT_20_9 ? 2400u : 2340u, 1080 }; VkFormat fmt = VK_FORMAT_R8G8B8A8_UNORM;
     VkImageCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = fmt, .extent = { ext.width, ext.height, 1 }, .mipLevels = 1, .arrayLayers = 1,
         .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT };
     VkImage im; if (vkCreateImage(g_dev, &ci, NULL, &im)) return;
@@ -2691,10 +2698,10 @@ static void ovl_shot(vtex *x, const int crop[4], const char *path) {
     vkCmdClearColorImage(cb, im, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rr);
     VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
-    int32_t cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int32_t)x->w, ch = crop && crop[3] ? crop[3] : (int32_t)x->h;
-    double sc = fmin((double)ext.width / cw, (double)ext.height / ch); int32_t dw = (int32_t)(cw * sc), dh = (int32_t)(ch * sc), dx = ((int32_t)ext.width - dw) / 2, dy = ((int32_t)ext.height - dh) / 2;
+    int32_t s[4], d[4]; dm_present_rect(dm_aspect_mode(), (int32_t)x->w, (int32_t)x->h, crop, (int32_t)ext.width, (int32_t)ext.height, s, d);
     int flip = atomic_load(&g_origin_ll);
-    VkImageBlit bl = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{cx, flip ? cy + ch : cy, 0}, {cx + cw, flip ? cy : cy + ch, 1}}, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{dx, dy, 0}, {dx + dw, dy + dh, 1}} };
+    VkImageBlit bl = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{s[0], flip ? s[1] + s[3] : s[1], 0}, {s[0] + s[2], flip ? s[1] : s[1] + s[3], 1}},
+                       { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{d[0], d[1], 0}, {d[0] + d[2], d[1] + d[3], 1}} };
     vkCmdBlitImage(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, im, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
     if (!ovl_draw(cb, im, vw, ext, fmt, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)) {
         ib.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; ib.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT; ib.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; ib.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -2729,10 +2736,10 @@ static void present_window(vtex *x, const int crop[4]) {
     vkCmdClearColorImage(cb, W.img[ii], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rr);
     VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
-    int32_t cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int32_t)x->w, ch = crop && crop[3] ? crop[3] : (int32_t)x->h;
-    double sc = fmin((double)W.ext.width / cw, (double)W.ext.height / ch); int32_t dw = (int32_t)(cw * sc), dh = (int32_t)(ch * sc), dx = ((int32_t)W.ext.width - dw) / 2, dy = ((int32_t)W.ext.height - dh) / 2;
+    int32_t s[4], d[4]; dm_present_rect(dm_aspect_mode(), (int32_t)x->w, (int32_t)x->h, crop, (int32_t)W.ext.width, (int32_t)W.ext.height, s, d);
     int flip = atomic_load(&g_origin_ll);
-    VkImageBlit bl = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{cx, flip ? cy + ch : cy, 0}, {cx + cw, flip ? cy : cy + ch, 1}}, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{dx, dy, 0}, {dx + dw, dy + dh, 1}} };
+    VkImageBlit bl = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{s[0], flip ? s[1] + s[3] : s[1], 0}, {s[0] + s[2], flip ? s[1] : s[1] + s[3], 1}},
+                       { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{d[0], d[1], 0}, {d[0] + d[2], d[1] + d[3], 1}} };
     vkCmdBlitImage(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, W.img[ii], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
     if (!ovl_draw(cb, W.img[ii], W.view[ii], W.ext, W.fmt, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)) {
         ib.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; ib.dstAccessMask = 0; ib.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; ib.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;

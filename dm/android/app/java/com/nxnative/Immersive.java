@@ -7,12 +7,18 @@ import android.app.Activity;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
+import android.view.WindowManager;
 
 public final class Immersive {
     public static void apply(final Activity a) {
         a.runOnUiThread(new Runnable() {
             public void run() {
                 Window w = a.getWindow();
+                WindowManager.LayoutParams lp = w.getAttributes();
+                if (lp.layoutInDisplayCutoutMode != WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES) {
+                    lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                    w.setAttributes(lp);
+                }
                 w.setDecorFitsSystemWindows(false);
                 WindowInsetsController c = w.getInsetsController();
                 if (c == null) return;

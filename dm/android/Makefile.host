@@ -55,7 +55,7 @@ $(OUT)/objl/android_main.o: app/jni/android_main.c $(GAME_H)
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -I$(GLUE) -c $< -o $@
 $(OUT)/objl/touch_ui.o: app/jni/touch_ui.c $(GFXD)/nvn/nvn_ovl.h
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -I$(GFXD)/nvn -c $< -o $@
-$(OUT)/objl/touch_menu.o: app/jni/touch_menu.c $(GAME_H)
+$(OUT)/objl/touch_menu.o: app/jni/touch_menu.c $(GAME_H) $(GFXD)/nvn/nvn_ovl.h
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
 $(OUT)/objl/glue.o: $(GLUE)/android_native_app_glue.c
 	@mkdir -p $(dir $@); $(CC) -O2 -fPIC -I$(GLUE) -c $< -o $@

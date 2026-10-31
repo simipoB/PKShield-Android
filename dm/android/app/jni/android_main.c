@@ -307,7 +307,7 @@ static void host_start(void) {
     { snprintf(p, sizeof p, "%s/aoc", g_game); struct stat as; if (!stat(p, &as)) setenv("DM_AOC_DIR", p, 0); }   // the DLC the player owns (Shield: the Expansion Pass keys; its content is in the update)
     SETP("DM_NVN_CAPTURE", "nvn_capture");   // shaders the game builds in memory, saved for the setup to translate (nvn_vk.c mtl_shader_seen)
     SETG("DM_ROMFS", "RomFS"); SETG("DM_SPV_DIR", "vk"); SETG("DM_NVN_SHMAP", "shader_map.tsv"); SETG("DM_FONT_DIR", "font");
-    SETP("DM_SAVE", "save"); SETP("DM_TEMP", "temp");
+    SETP("DM_SAVE", "save"); SETP("DM_TEMP", "temp"); SETP("DM_MODS_DIR", "mods");
     // A save archive imported by SetupActivity is staged as save_import/. Rename the directories on the same
     // filesystem so nested save layouts survive and the old save remains intact if the import cannot be installed.
     { char imp[1200], old[1300]; struct stat is, ss;
@@ -331,6 +331,7 @@ static void host_start(void) {
           }
       } }
     snprintf(p, sizeof p, "%s/save", g_files); mkdir(p, 0755); snprintf(p, sizeof p, "%s/temp", g_files); mkdir(p, 0755);
+    snprintf(p, sizeof p, "%s/mods", g_files); mkdir(p, 0755);
     snprintf(p, sizeof p, "%s/RomFS", g_game);
     if (stat(p, &st)) { fprintf(stderr, "boot: game files not found: %s (install the bundle, or copy RomFS, patched, shaders.pak, shader_map.tsv and font there)\n", p); ALOG("game files missing in %s", g_files); return; }
     chdir(g_files);
