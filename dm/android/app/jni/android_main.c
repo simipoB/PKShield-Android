@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <dirent.h>
@@ -110,13 +111,81 @@ static void pads_merge(void) {
         g_pad_lx = strongest(g_pad_lx, g_pads[i].lx); g_pad_ly = strongest(g_pad_ly, g_pads[i].ly); g_pad_rx = strongest(g_pad_rx, g_pads[i].rx); g_pad_ry = strongest(g_pad_ry, g_pads[i].ry); }
     dm_pad_set(g_pad_btn, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry);
 }
-static uint64_t key_bit(int32_t kc) {
-    switch (kc) {   // face buttons by letter, as the controller labels them (A = the bottom button on Xbox-style pads is AKEYCODE_BUTTON_A)
-        case AKEYCODE_BUTTON_A: return DM_BTN_B; case AKEYCODE_BUTTON_B: return DM_BTN_A; case AKEYCODE_BUTTON_X: return DM_BTN_Y; case AKEYCODE_BUTTON_Y: return DM_BTN_X;
-        case AKEYCODE_BUTTON_L1: return DM_BTN_L; case AKEYCODE_BUTTON_R1: return DM_BTN_R; case AKEYCODE_BUTTON_L2: return DM_BTN_ZL; case AKEYCODE_BUTTON_R2: return DM_BTN_ZR;
-        case AKEYCODE_BUTTON_THUMBL: return DM_BTN_LS; case AKEYCODE_BUTTON_THUMBR: return DM_BTN_RS; case AKEYCODE_BUTTON_START: return DM_BTN_PLUS; case AKEYCODE_BUTTON_SELECT: return DM_BTN_MINUS;
-        case AKEYCODE_DPAD_UP: return DM_BTN_UP; case AKEYCODE_DPAD_DOWN: return DM_BTN_DOWN; case AKEYCODE_DPAD_LEFT: return DM_BTN_LEFT; case AKEYCODE_DPAD_RIGHT: return DM_BTN_RIGHT;
+#define KC_MAP_SIZE 512
+static uint64_t g_kc_map[KC_MAP_SIZE];
+static int g_pad_map_inited;
+
+typedef struct { const char *name; uint64_t bit; int32_t def_kc; } pad_btn_def_t;
+static const pad_btn_def_t PAD_BTNS[] = {
+    { "A",     DM_BTN_A,     AKEYCODE_BUTTON_B },
+    { "B",     DM_BTN_B,     AKEYCODE_BUTTON_A },
+    { "X",     DM_BTN_X,     AKEYCODE_BUTTON_Y },
+    { "Y",     DM_BTN_Y,     AKEYCODE_BUTTON_X },
+    { "L",     DM_BTN_L,     AKEYCODE_BUTTON_L1 },
+    { "R",     DM_BTN_R,     AKEYCODE_BUTTON_R1 },
+    { "ZL",    DM_BTN_ZL,    AKEYCODE_BUTTON_L2 },
+    { "ZR",    DM_BTN_ZR,    AKEYCODE_BUTTON_R2 },
+    { "LS",    DM_BTN_LS,    AKEYCODE_BUTTON_THUMBL },
+    { "RS",    DM_BTN_RS,    AKEYCODE_BUTTON_THUMBR },
+    { "PLUS",  DM_BTN_PLUS,  AKEYCODE_BUTTON_START },
+    { "MINUS", DM_BTN_MINUS, AKEYCODE_BUTTON_SELECT },
+    { "UP",    DM_BTN_UP,    AKEYCODE_DPAD_UP },
+    { "DOWN",  DM_BTN_DOWN,  AKEYCODE_DPAD_DOWN },
+    { "LEFT",  DM_BTN_LEFT,  AKEYCODE_DPAD_LEFT },
+    { "RIGHT", DM_BTN_RIGHT, AKEYCODE_DPAD_RIGHT },
+};
+
+static void pad_map_init(void) {
+    memset(g_kc_map, 0, sizeof g_kc_map);
+    const char *layout = getenv("DM_PAD_LAYOUT");
+    int nintendo = layout && !strcmp(layout, "nintendo");
+
+    for (size_t i = 0; i < sizeof(PAD_BTNS) / sizeof(PAD_BTNS[0]); i++) {
+        int32_t kc = PAD_BTNS[i].def_kc;
+        if (nintendo) {
+            if (PAD_BTNS[i].bit == DM_BTN_A) kc = AKEYCODE_BUTTON_A;
+            else if (PAD_BTNS[i].bit == DM_BTN_B) kc = AKEYCODE_BUTTON_B;
+            else if (PAD_BTNS[i].bit == DM_BTN_X) kc = AKEYCODE_BUTTON_X;
+            else if (PAD_BTNS[i].bit == DM_BTN_Y) kc = AKEYCODE_BUTTON_Y;
+        }
+        if (kc >= 0 && kc < KC_MAP_SIZE) g_kc_map[kc] |= PAD_BTNS[i].bit;
     }
+
+    const char *map = getenv("DM_PAD_MAPPING");
+    if (map && *map) {
+        char buf[512];
+        strncpy(buf, map, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = 0;
+        char *saveptr = NULL;
+        char *tok = strtok_r(buf, ", ", &saveptr);
+        while (tok) {
+            char *sep = strchr(tok, ':');
+            if (!sep) sep = strchr(tok, '=');
+            if (sep) {
+                *sep = 0;
+                char *btn_name = tok;
+                int kc = atoi(sep + 1);
+                for (size_t i = 0; i < sizeof(PAD_BTNS) / sizeof(PAD_BTNS[0]); i++) {
+                    if (!strcasecmp(btn_name, PAD_BTNS[i].name)) {
+                        for (int k = 0; k < KC_MAP_SIZE; k++) {
+                            g_kc_map[k] &= ~PAD_BTNS[i].bit;
+                        }
+                        if (kc >= 0 && kc < KC_MAP_SIZE) {
+                            g_kc_map[kc] |= PAD_BTNS[i].bit;
+                        }
+                        break;
+                    }
+                }
+            }
+            tok = strtok_r(NULL, ", ", &saveptr);
+        }
+    }
+    g_pad_map_inited = 1;
+}
+
+static uint64_t key_bit(int32_t kc) {
+    if (!g_pad_map_inited) pad_map_init();
+    if (kc >= 0 && kc < KC_MAP_SIZE) return g_kc_map[kc];
     return 0;
 }
 static int32_t axis(float v) { if (fabsf(v) < 0.12f) return 0; float s = (fabsf(v) - 0.12f) / 0.88f; if (s > 1) s = 1; return (int32_t)(copysignf(s, v) * DM_STICK_MAX); }
@@ -153,7 +222,10 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
         float lt = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0), rt = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0);
         if (lt == 0) lt = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0); if (rt == 0) rt = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0);
         touch_ui_hide();
-        g_pads[k].hat = (hx < -0.5f ? DM_BTN_LEFT : 0) | (hx > 0.5f ? DM_BTN_RIGHT : 0) | (hy < -0.5f ? DM_BTN_UP : 0) | (hy > 0.5f ? DM_BTN_DOWN : 0) | (lt > 0.5f ? DM_BTN_ZL : 0) | (rt > 0.5f ? DM_BTN_ZR : 0);
+        uint64_t b_lt = key_bit(AKEYCODE_BUTTON_L2), b_rt = key_bit(AKEYCODE_BUTTON_R2);
+        uint64_t b_du = key_bit(AKEYCODE_DPAD_UP), b_dd = key_bit(AKEYCODE_DPAD_DOWN);
+        uint64_t b_dl = key_bit(AKEYCODE_DPAD_LEFT), b_dr = key_bit(AKEYCODE_DPAD_RIGHT);
+        g_pads[k].hat = (hx < -0.5f ? b_dl : 0) | (hx > 0.5f ? b_dr : 0) | (hy < -0.5f ? b_du : 0) | (hy > 0.5f ? b_dd : 0) | (lt > 0.5f ? b_lt : 0) | (rt > 0.5f ? b_rt : 0);
         pads_merge(); return 1;
     }
     if (type == AINPUT_EVENT_TYPE_MOTION && (src & AINPUT_SOURCE_TOUCHSCREEN)) { touch_update(e); return 1; }
@@ -292,6 +364,7 @@ static void host_start(void) {
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
     { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);
+    pad_map_init();
     // Game files: inside the installed APKs (the all-in-one .apks bundle, read through apkfs.c as /nxapk/...), else copied into the files folder
     struct stat st; int inapk = !stat("/nxapk/RomFS", &st);
     snprintf(g_game, sizeof g_game, "%s", inapk ? "/nxapk" : g_files);

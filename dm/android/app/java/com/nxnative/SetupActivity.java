@@ -14,6 +14,7 @@ package com.nxnative;
 
 import android.app.Activity;
 import android.app.ActivityManager;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
@@ -30,6 +31,7 @@ import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.widget.Button;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -40,7 +42,9 @@ import java.io.*;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.zip.ZipEntry;
@@ -221,6 +225,7 @@ public final class SetupActivity extends Activity {
         TextView h = new TextView(this); h.setText("Settings"); h.setTextSize(20); h.setPadding(0, 32, 0, 8); root.addView(h);
         displayOptions(root);
         driverRows(root);
+        controllerOptions(root);
         modsText = row(root, "Code patches (.pchtxt)", "Choose", v -> pick(PICK_MOD, true));
         button(root, "Clear code patches", v -> { deleteTree(modsDir()); modsDir(); refresh(); });
         slider(root, "Touch controls opacity", "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");
@@ -250,6 +255,236 @@ public final class SetupActivity extends Activity {
         if (!value.isEmpty()) lines.add(key + "=" + value.replace("\n", " "));
         try (FileWriter w = new FileWriter(envFile())) { for (String l : lines) w.write(l + "\n"); } catch (IOException e) { }
     }
+
+    private TextView controllerText;
+
+    private Map<String, Integer> loadPadMapping() {
+        return PadMapping.load(envGet("DM_PAD_LAYOUT"), envGet("DM_PAD_MAPPING"));
+    }
+
+    private void savePadMapping(Map<String, Integer> map, String layout) {
+        envSet("DM_PAD_LAYOUT", layout);
+        if ("custom".equals(layout)) {
+            envSet("DM_PAD_MAPPING", PadMapping.serialize(map));
+        } else {
+            envSet("DM_PAD_MAPPING", "");
+        }
+    }
+
+    private void controllerOptions(LinearLayout root) {
+        TextView cl = new TextView(this);
+        cl.setText(t("Physical controller (Gamepad)", "Mando físico (Gamepad)"));
+        cl.setTextSize(18);
+        cl.setPadding(0, 24, 0, 8);
+        root.addView(cl);
+
+        android.widget.RadioGroup crg = new android.widget.RadioGroup(this);
+        String[][] padModes = {
+            { "default", t("Xbox / Standard layout (face buttons labeled as Switch)", "Distribución Xbox / Estándar (botones con letra Switch)") },
+            { "nintendo", t("Nintendo layout (A=A, B=B, X=X, Y=Y direct)", "Distribución Nintendo (A=A, B=B, X=X, Y=Y directa)") },
+            { "custom", t("Custom button mapping", "Mapeo personalizado de botones") }
+        };
+        String curLayout = envGet("DM_PAD_LAYOUT");
+        if (curLayout.isEmpty()) {
+            curLayout = envGet("DM_PAD_MAPPING").isEmpty() ? "default" : "custom";
+        }
+        for (int k = 0; k < padModes.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this);
+            b.setId(1300 + k);
+            b.setText(padModes[k][1]);
+            crg.addView(b);
+            if (padModes[k][0].equals(curLayout)) b.setChecked(true);
+        }
+        crg.setOnCheckedChangeListener((g, id) -> {
+            String selected = padModes[id - 1300][0];
+            envSet("DM_PAD_LAYOUT", selected);
+            if (!"custom".equals(selected)) {
+                envSet("DM_PAD_MAPPING", "");
+            }
+            updateControllerSummary();
+        });
+        root.addView(crg);
+
+        controllerText = row(root, t("Remap controller buttons", "Remapear botones del mando"), t("Configure", "Configurar"), v -> showRemapDialog(crg));
+        updateControllerSummary();
+    }
+
+    private void updateControllerSummary() {
+        if (controllerText == null) return;
+        String layout = envGet("DM_PAD_LAYOUT");
+        if ("nintendo".equalsIgnoreCase(layout)) {
+            controllerText.setText(t("Active: Nintendo layout (A=A, B=B, X=X, Y=Y)", "Activo: Distribución Nintendo (A=A, B=B, X=X, Y=Y)"));
+        } else if ("custom".equalsIgnoreCase(layout)) {
+            controllerText.setText(t("Active: Custom button mapping", "Activo: Mapeo personalizado"));
+        } else {
+            controllerText.setText(t("Active: Xbox / Standard layout (A↔B, X↔Y)", "Activo: Distribución Xbox / Estándar (A↔B, X↔Y)"));
+        }
+    }
+
+    private void showRemapDialog(android.widget.RadioGroup crg) {
+        Map<String, Integer> currentMap = loadPadMapping();
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle(t("Remap controller buttons", "Remapear botones del mando"));
+
+        ScrollView sv = new ScrollView(this);
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(32, 24, 32, 24);
+
+        TextView info = new TextView(this);
+        info.setText(t("Tap any button to remap it, or choose a preset layout:", "Toca cualquier botón para remapearlo, o elige una distribución predefinida:"));
+        info.setPadding(0, 0, 0, 16);
+        content.addView(info);
+
+        LinearLayout presets = new LinearLayout(this);
+        presets.setOrientation(LinearLayout.HORIZONTAL);
+        Button btnXbox = new Button(this);
+        btnXbox.setText("Xbox / Std");
+        Button btnNin = new Button(this);
+        btnNin.setText("Nintendo");
+        Button btnReset = new Button(this);
+        btnReset.setText(t("Reset", "Restablecer"));
+        presets.addView(btnXbox, new LinearLayout.LayoutParams(0, -2, 1));
+        presets.addView(btnNin, new LinearLayout.LayoutParams(0, -2, 1));
+        presets.addView(btnReset, new LinearLayout.LayoutParams(0, -2, 1));
+        content.addView(presets);
+
+        TextView btnsHeader = new TextView(this);
+        btnsHeader.setText(t("Button bindings:", "Asignación de botones:"));
+        btnsHeader.setTextSize(16);
+        btnsHeader.setPadding(0, 20, 0, 8);
+        content.addView(btnsHeader);
+
+        final Button[] rowButtons = new Button[PadMapping.BUTTONS.length];
+        Runnable refreshRows = () -> {
+            for (int i = 0; i < PadMapping.BUTTONS.length; i++) {
+                PadMapping.PadButton pb = PadMapping.BUTTONS[i];
+                Integer kc = currentMap.get(pb.id);
+                rowButtons[i].setText(kc != null ? PadMapping.keyName(kc) : t("Not mapped", "No asignado"));
+            }
+            if (crg != null) {
+                String l = envGet("DM_PAD_LAYOUT");
+                if ("nintendo".equalsIgnoreCase(l)) crg.check(1301);
+                else if ("custom".equalsIgnoreCase(l)) crg.check(1302);
+                else crg.check(1300);
+            }
+            updateControllerSummary();
+        };
+
+        boolean es = "es".equals(java.util.Locale.getDefault().getLanguage());
+        for (int i = 0; i < PadMapping.BUTTONS.length; i++) {
+            final PadMapping.PadButton pb = PadMapping.BUTTONS[i];
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, 8, 0, 8);
+
+            TextView label = new TextView(this);
+            label.setText(pb.label(es));
+            label.setTextSize(15);
+            label.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+            row.addView(label);
+
+            Button valBtn = new Button(this);
+            rowButtons[i] = valBtn;
+            valBtn.setOnClickListener(v -> showButtonCaptureDialog(pb, currentMap, refreshRows));
+            row.addView(valBtn);
+
+            content.addView(row);
+        }
+
+        btnXbox.setOnClickListener(v -> {
+            for (PadMapping.PadButton pb : PadMapping.BUTTONS) currentMap.put(pb.id, pb.defXbox);
+            savePadMapping(currentMap, "default");
+            refreshRows.run();
+        });
+
+        btnNin.setOnClickListener(v -> {
+            for (PadMapping.PadButton pb : PadMapping.BUTTONS) currentMap.put(pb.id, pb.defNintendo);
+            savePadMapping(currentMap, "nintendo");
+            refreshRows.run();
+        });
+
+        btnReset.setOnClickListener(v -> {
+            for (PadMapping.PadButton pb : PadMapping.BUTTONS) currentMap.put(pb.id, pb.defXbox);
+            savePadMapping(currentMap, "default");
+            refreshRows.run();
+        });
+
+        refreshRows.run();
+        sv.addView(content);
+        builder.setView(sv);
+        builder.setPositiveButton(t("Done", "Listo"), (dialog, which) -> dialog.dismiss());
+        builder.show();
+    }
+
+    private void showButtonCaptureDialog(PadMapping.PadButton btn, Map<String, Integer> currentMap, Runnable onUpdated) {
+        boolean es = "es".equals(java.util.Locale.getDefault().getLanguage());
+        AlertDialog.Builder b = new AlertDialog.Builder(this);
+        b.setTitle(btn.label(es));
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(48, 32, 48, 32);
+        box.setGravity(Gravity.CENTER_HORIZONTAL);
+
+        TextView msg = new TextView(this);
+        msg.setText(t("Press any button on your physical controller...\n(or choose from the list below)",
+                       "Presiona cualquier botón en el mando físico...\n(o elígelo de la lista abajo)"));
+        msg.setTextSize(16);
+        msg.setPadding(0, 16, 0, 24);
+        msg.setGravity(Gravity.CENTER_HORIZONTAL);
+        box.addView(msg);
+
+        Button chooseList = new Button(this);
+        chooseList.setText(t("Choose from list", "Elegir de la lista"));
+        box.addView(chooseList);
+
+        b.setView(box);
+        b.setNegativeButton(t("Cancel", "Cancelar"), null);
+
+        AlertDialog dlg = b.create();
+
+        dlg.setOnKeyListener((dialog, keyCode, event) -> {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                if (keyCode == KeyEvent.KEYCODE_BACK) {
+                    dialog.dismiss();
+                    return true;
+                }
+                currentMap.put(btn.id, keyCode);
+                savePadMapping(currentMap, "custom");
+                onUpdated.run();
+                dialog.dismiss();
+                return true;
+            }
+            return false;
+        });
+
+        chooseList.setOnClickListener(v -> {
+            dlg.dismiss();
+            showKeyListDialog(btn, currentMap, onUpdated);
+        });
+
+        dlg.show();
+    }
+
+    private void showKeyListDialog(PadMapping.PadButton btn, Map<String, Integer> currentMap, Runnable onUpdated) {
+        boolean es = "es".equals(java.util.Locale.getDefault().getLanguage());
+        String[] names = new String[PadMapping.COMMON_KEYCODES.length];
+        for (int i = 0; i < PadMapping.COMMON_KEYCODES.length; i++) {
+            names[i] = PadMapping.keyName(PadMapping.COMMON_KEYCODES[i]);
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle(btn.label(es))
+            .setItems(names, (dialog, which) -> {
+                currentMap.put(btn.id, PadMapping.COMMON_KEYCODES[which]);
+                savePadMapping(currentMap, "custom");
+                onUpdated.run();
+            })
+            .setNegativeButton(t("Cancel", "Cancelar"), null)
+            .show();
+    }
     // a driver package into the app's private storage (libadrenotools loads drivers only from there): its meta.json names the library
     private void installDriver(Uri u, String name) {
         File dir = new File(getFilesDir(), "drivers/" + name.replaceAll("[^A-Za-z0-9._-]", "_").replaceAll("\\.zip$", "")); String lib = null;
@@ -275,6 +510,7 @@ public final class SetupActivity extends Activity {
     private void refresh() {
         if (wizard) { renderStep(); return; }
         fillDriverText();
+        updateControllerSummary();
         if (modsText != null) { String[] ms = modsDir().list((d, n) -> n.toLowerCase().endsWith(".pchtxt")); if (ms != null) Arrays.sort(ms);
             modsText.setText(ms == null || ms.length == 0 ? "none (optional IPSwitch .pchtxt mods, e.g. 20:9 camera)" : String.join("\n", ms)); }
         play.setEnabled(!running && ready());
@@ -355,7 +591,7 @@ public final class SetupActivity extends Activity {
             case W_OPTIONS:
                 head(t("Options", "Opciones"));
                 para(t("The recommended settings for this phone are selected. You can change them later in the app's settings.", "Se eligieron los ajustes recomendados para este teléfono. Podrás cambiarlos después en los ajustes de la app."));
-                displayOptions(wizBody); driverRows(wizBody); fillDriverText();
+                displayOptions(wizBody); driverRows(wizBody); fillDriverText(); controllerOptions(wizBody);
                 break;
             default:   // W_INSTALL
                 if (installedNow) {
