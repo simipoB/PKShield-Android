@@ -29,6 +29,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <math.h>
+#include <ctype.h>
+#include <strings.h>
+#include <sys/system_properties.h>
 #include "dm_input.h"
 #include "front.h"
 #include "game_profile.h"
@@ -165,6 +168,47 @@ static void env_file(const char *path) {   // KEY=VALUE lines, # comments; set o
         *eq = 0; char *v = eq + 1; char *e = strpbrk(v, "\r\n"); if (e) *e = 0; if (!getenv(p)) { setenv(p, v, 0); fprintf(stderr, "boot: env %s=%s\n", p, v); } }
     fclose(f);
 }
+// Device profiles: defaults by chip, from its model (ro.soc.manufacturer / ro.soc.model, Android 12+: SM8750, MT6989, s5e9945 ...). Set without overwriting, after env.txt,
+// so the player's own settings (the settings screen writes env.txt) always win; DM_PROFILE=<name> below picks one by hand, DM_PROFILE=none none.
+// Mali GPUs (MediaTek, Tensor, Exynos before the 2000 series) have no BC texture support: the game's textures are decoded on upload to 4 to 8 times their size, and the
+// game's memory is mirrored for the GPU (nvn_vk.c memory pools), so their profiles keep textures at half size sooner than Adreno's
+//   sd8   Snapdragon 8 series (SM8xxx)                                    nothing changed: the defaults these phones were tuned on (TV mode, 8x filtering, full textures)
+//   sd7   Snapdragon 7 series from 2021 (SM73xx and later)                TV mode, handheld mode while hot; 4x filtering; full textures
+//   sd6   Snapdragon 6 and 4 series, 7 series before 2021 (SM4xxx-SM72xx) handheld mode (720p); 2x filtering; half textures
+//   high  Dimensity 9000 series, Exynos 2000 series (Xclipse)             TV mode, handheld mode while hot; 4x filtering; full textures
+//   mid   Dimensity 8000 series and 1000-1200, Google Tensor              handheld mode; 4x filtering; half textures
+//   low   other MediaTek (Dimensity 7000 / 6000, Helio), Exynos 1000 series and older Exynos   handheld mode; 2x filtering; half textures
+// Other chips get no profile (as before)
+static const struct prof { const char *name, *what, *graphics, *aniso, *tex; } g_profiles[] = {
+    { "sd8", "Snapdragon 8 series", NULL, NULL, NULL }, { "sd7", "Snapdragon 7 series", "auto", "4", "full" }, { "sd6", "Snapdragon 6 / 4 series or older 7 series", "low", "2", "half" },
+    { "high", "Dimensity 9000 / Exynos 2000 series", "auto", "4", "full" }, { "mid", "Dimensity 8000 series / Google Tensor", "low", "4", "half" },
+    { "low", "MediaTek Dimensity 7000 and below / Exynos 1000 series", "low", "2", "half" },
+};
+static const struct prof *profile_of(const char *maker, const char *model) {
+    char m[PROP_VALUE_MAX]; size_t k = 0; for (; model[k] && k + 1 < sizeof m; k++) m[k] = (char)tolower((unsigned char)model[k]); m[k] = 0;
+    const char *name = NULL; int num;
+    if ((!strncmp(m, "sm", 2) && isdigit((unsigned char)m[2])) || (!strncmp(m, "sdm", 3) && isdigit((unsigned char)m[3]))) {   // Qualcomm
+        num = atoi(m + (m[1] == 'd' ? 3 : 2)); name = num >= 8000 && num < 9000 ? "sd8" : num >= 7300 && num < 8000 ? "sd7" : num >= 4000 && num < 7300 ? "sd6" : num > 0 && num < 1000 ? "sd6" : NULL;   // (SDM845 and the like: before the SMxxxx names)
+    } else if (!strncmp(m, "mt", 2) && isdigit((unsigned char)m[2])) {   // MediaTek: MT6983 / 6985 / 6989 / 6991 Dimensity 9000-9400; MT6889-6899 Dimensity 1000-1200 and 8000-8400
+        num = atoi(m + 2); name = num == 6983 || num == 6985 || num == 6989 || num == 6991 || num == 6993 ? "high" : num >= 6889 && num <= 6899 ? "mid" : "low";
+    } else if (!strncmp(m, "s5e", 3) || strstr(m, "exynos")) {   // Exynos: s5e99xx and "Exynos 2xxx" are the 2000 series (Xclipse); s5e88xx, Exynos 1xxx and 9xx Mali
+        const char *d = m; while (*d && !isdigit((unsigned char)*d)) d++; if (!strncmp(m, "s5e", 3)) d = m + 3;
+        num = atoi(d); name = (!strncmp(m, "s5e", 3) && num >= 9900 && num < 10000) || (strncmp(m, "s5e", 3) && num >= 2000 && num < 3000) ? "high" : "low";
+    } else if (strstr(m, "tensor") || (!strncasecmp(maker, "google", 6) && *m)) name = "mid";
+    for (unsigned i = 0; name && i < sizeof g_profiles / sizeof *g_profiles; i++) if (!strcmp(g_profiles[i].name, name)) return &g_profiles[i];
+    return NULL;
+}
+static void device_profile(void) {
+    char maker[PROP_VALUE_MAX] = "", model[PROP_VALUE_MAX] = ""; __system_property_get("ro.soc.manufacturer", maker); __system_property_get("ro.soc.model", model);
+    const char *force = getenv("DM_PROFILE"); const struct prof *p = NULL;
+    if (force) { for (unsigned i = 0; i < sizeof g_profiles / sizeof *g_profiles; i++) if (!strcmp(g_profiles[i].name, force)) p = &g_profiles[i]; }
+    else p = profile_of(maker, model);
+    if (!p) { fprintf(stderr, "boot: device profile none (chip %s %s)\n", *maker ? maker : "?", *model ? model : "unknown"); return; }
+    if (!p->graphics) { fprintf(stderr, "boot: device profile %s, %s (chip %s %s): the defaults, nothing changed\n", p->name, p->what, *maker ? maker : "?", *model ? model : "unknown"); return; }
+    setenv("DM_GRAPHICS", p->graphics, 0); setenv("DM_VK_MAX_ANISO", p->aniso, 0); setenv("DM_VK_TEX_QUALITY", p->tex, 0);
+    fprintf(stderr, "boot: device profile %s, %s (chip %s %s%s): graphics %s, anisotropic filtering %sx, textures %s\n", p->name, p->what, *maker ? maker : "?", *model ? model : "unknown",
+            force ? ", DM_PROFILE" : "", getenv("DM_GRAPHICS"), getenv("DM_VK_MAX_ANISO"), getenv("DM_VK_TEX_QUALITY"));
+}
 static pid_t g_game_tid;   // the game's main thread (performance hints below)
 static void *host_thread(void *a) {
     g_game_tid = gettid();
@@ -289,6 +333,7 @@ static void host_start(void) {
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
     { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);
+    device_profile();   // the chip tier's defaults, under env.txt
     // Game files: inside the installed APKs (the all-in-one .apks bundle, read through apkfs.c as /nxapk/...), else copied into the files folder
     struct stat st; int inapk = !stat("/nxapk/RomFS", &st);
     snprintf(g_game, sizeof g_game, "%s", inapk ? "/nxapk" : g_files);

@@ -66,6 +66,9 @@ static pthread_mutex_t g_qmu = PTHREAD_MUTEX_INITIALIZER;
 // Linux / Android pools: the driver's memory exported as a file descriptor and mapped a second time over the pool's pages (g_fdmap 1; -1 until the first pool tries it,
 // 0 when the driver has no such export or its mmap fails: then the mremap route below)
 static int g_fdmap = 0;   // queue submissions come from the submit thread and the present thread
+static VkExternalMemoryHandleTypeFlagBits g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;   // the fd route's handle type (mtl_init: a dma-buf where the driver exports one)
+static const VkBufferUsageFlags BUF_ALL = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT
+    | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 static PFN_vkCmdPushDescriptorSetKHR p_push;
 static int g_nopush;   // no VK_KHR_push_descriptor (the emulator's gfxstream, some phones): each draw's bindings go into a descriptor set from the submission's pools
 static uint32_t g_maxpush = 32;   // maxPushDescriptors: a program with more descriptors takes the descriptor-set path too (vprog np)
@@ -174,20 +177,36 @@ void mtl_init(void) {
     if ((g_divisor = has_ext(de, nde, "VK_EXT_vertex_attribute_divisor"))) dext[ndext++] = "VK_EXT_vertex_attribute_divisor";
     if ((g_eds2 = has_ext(de, nde, "VK_EXT_extended_dynamic_state2"))) dext[ndext++] = "VK_EXT_extended_dynamic_state2";
     int compctl = has_ext(de, nde, "VK_EXT_image_compression_control"); if (compctl) dext[ndext++] = "VK_EXT_image_compression_control";   // to read whether render targets stay compressed
-#ifdef __linux__
-    if (!g_host_import && has_ext(de, nde, "VK_KHR_external_memory_fd") && !(getenv("DM_VK_NO_FDMAP") && atoi(getenv("DM_VK_NO_FDMAP")))) { dext[ndext++] = "VK_KHR_external_memory_fd"; g_fdmap = -1; }
-    VLOG("memory pools: fd export %s (host import %d, VK_KHR_external_memory_fd %d)", g_fdmap ? "to try" : "off", g_host_import, has_ext(de, nde, "VK_KHR_external_memory_fd"));
-#endif
-    free(de);
     if (getenv("DM_VK_NO_HOST_IMPORT")) g_host_import = 0;
     // Imported host memory pins the game's pools (about 3 GB) for every submission. Samsung's Xclipse driver of the late-2026 One UI update refuses that a few frames into play
-    // (vkQueueSubmit: VK_ERROR_OUT_OF_HOST_MEMORY with a gigabyte free, #39), so on Xclipse the driver's own memory is moved onto the pools instead (as on Mali); elsewhere a
-    // submission that fails while pools are imported leaves a marker (host_import_failed, next to the pipeline cache) and the next start does the same. DM_VK_HOST_IMPORT=1 forces import
+    // (vkQueueSubmit: VK_ERROR_OUT_OF_HOST_MEMORY with a gigabyte free, #39), so on Xclipse the driver's own memory backs the pools instead (as on Mali); elsewhere a
+    // submission that fails while pools are imported leaves a marker (host_import_failed, next to the pipeline cache) and the next start does the same. DM_VK_HOST_IMPORT=1 forces import.
+    // Decided before the fd route below: deciding it after left Xclipse without the fd route, on mirrored pools (every pool twice in memory, swapping, multi-second stalls: #41)
     if (g_host_import && !getenv("DM_VK_HOST_IMPORT")) {
         const char *why = g_props.vendorID == 0x144D ? "Samsung Xclipse" : NULL;
-        if (!why && host_import_mark(0)) why = "a submission failed with it last time";
-        if (why) { g_host_import = 0; VLOG("memory pools: host import off (%s): driver memory moved onto the pools", why); }
+        // (never on Adreno, 0x5143: its fallback, moving the driver's mappings, is the route that crashed it on area changes; one failed submission must not switch it for good)
+        if (!why && g_props.vendorID != 0x5143 && host_import_mark(0)) why = "a submission failed with it last time";
+        if (why) { g_host_import = 0; VLOG("memory pools: host import off (%s): the driver's own memory backs the pools", why); }
     }
+#ifdef __linux__
+    // The fd route's handle type: a dma-buf where the driver exports buffers as one (Android's drivers: Mali refused opaque-fd buffers, #40; a dma-buf is mmap-able by definition,
+    // an opaque fd need not be), else an opaque fd
+    if (!g_host_import && has_ext(de, nde, "VK_KHR_external_memory_fd") && !(getenv("DM_VK_NO_FDMAP") && atoi(getenv("DM_VK_NO_FDMAP")))) {
+        VkExternalMemoryHandleTypeFlagBits cand[2] = { VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
+        int dmabuf = has_ext(de, nde, "VK_EXT_external_memory_dma_buf") && !(getenv("DM_VK_NO_DMABUF") && atoi(getenv("DM_VK_NO_DMABUF")));
+        for (int i = dmabuf ? 0 : 1; i < 2 && !g_fdmap; i++) {
+            if (!vkGetPhysicalDeviceExternalBufferProperties) { g_fdmap = -1; break; }   // (a 1.0 instance: the opaque fd, tried as before)
+            VkPhysicalDeviceExternalBufferInfo xi = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO, .usage = BUF_ALL, .handleType = cand[i] };
+            VkExternalBufferProperties xp = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES };
+            vkGetPhysicalDeviceExternalBufferProperties(g_pd, &xi, &xp);
+            if (xp.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) { g_fdtype = cand[i]; g_fdmap = -1; }
+        }
+        if (g_fdmap) { dext[ndext++] = "VK_KHR_external_memory_fd"; if (g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) dext[ndext++] = "VK_EXT_external_memory_dma_buf"; }
+    }
+    VLOG("memory pools: fd export %s (host import %d, VK_KHR_external_memory_fd %d, VK_EXT_external_memory_dma_buf %d)", !g_fdmap ? "off" : g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "to try, as a dma-buf" : "to try, as an opaque fd",
+         g_host_import, has_ext(de, nde, "VK_KHR_external_memory_fd"), has_ext(de, nde, "VK_EXT_external_memory_dma_buf"));
+#endif
+    free(de);
     // Every feature the device has is enabled (the translated shaders declare what they use: 64-bit integers, image formats without a type, …), robust buffer access included:
     // uniform blocks are declared 64 KB and bound with the game's smaller ranges, and Maxwell reads 0 past them
     VkPhysicalDeviceCustomBorderColorFeaturesEXT fbc = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT };
@@ -334,8 +353,6 @@ typedef struct { uintptr_t lo, hi, base; VkBuffer buf; VkDeviceMemory mem; VkDev
 static pool_ent *g_pools; static int g_npool, g_cpool; static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int g_nshadow;   // mirrored pools alive
 static int g_plast = -1;
-static const VkBufferUsageFlags BUF_ALL = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT
-    | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 // Pool memory of the mremap route is never given back to the driver: Adreno hands the mappings of freed allocations out again, and one whose pages had been moved
 // crashed the next pool (loading a save, leaving the house in Shield) or lost the device. A freed pool's buffer and memory, its pages moved back where the driver
 // mapped them, wait here for the next pool of the same size
@@ -364,12 +381,12 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     if (!g_host_import && !shadow_forced && !g_fdmap && pool_mem_take(n, &e.buf, &e.mem, &p)) { reused = 1; goto reuse; }
 #endif
     VkExternalMemoryBufferCreateInfo eb = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT };
-    VkExternalMemoryBufferCreateInfo ebfd = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
+    VkExternalMemoryBufferCreateInfo ebfd = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = g_fdtype };
     VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = g_host_import ? &eb : g_fdmap ? &ebfd : NULL, .size = n, .usage = BUF_ALL };
     VkResult br = vkCreateBuffer(g_dev, &bi, NULL, &e.buf);
 #ifdef __linux__
     if (br == VK_ERROR_INVALID_EXTERNAL_HANDLE && g_fdmap < 0) {
-        VLOG("[RED] opaque-fd external buffer rejected (%d): moving driver mappings instead (mremap)", br);
+        VLOG("[RED] %s external buffer rejected (%d): moving driver mappings instead (mremap)", g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "dma-buf" : "opaque-fd", br);
         g_fdmap = 0;
         bi.pNext = NULL;
         br = vkCreateBuffer(g_dev, &bi, NULL, &e.buf);
@@ -410,11 +427,11 @@ void mtl_pool_add(const void *mem, uint64_t size) {
         // the same pages are mapped once more, shared, over the pool, so the game's pointers and the GPU still address the same memory without copies
         if (g_fdmap) {
             static PFN_vkGetMemoryFdKHR getfd; if (!getfd) getfd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_dev, "vkGetMemoryFdKHR");
-            VkExportMemoryAllocateInfo ex = { .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .pNext = &ded, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
+            VkExportMemoryAllocateInfo ex = { .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .pNext = &ded, .handleTypes = g_fdtype };
             VkMemoryAllocateInfo xai = mai; xai.pNext = &ex;
             int fd = -1; void *tmp = MAP_FAILED;
             if (getfd && !vkAllocateMemory(g_dev, &xai, NULL, &e.mem)) {
-                VkMemoryGetFdInfoKHR gi = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = e.mem, .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
+                VkMemoryGetFdInfoKHR gi = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = e.mem, .handleType = g_fdtype };
                 if (!getfd(g_dev, &gi, &fd) && fd >= 0) tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
                 if (tmp != MAP_FAILED) {
                     memcpy(tmp, (void *)a, n);   // what the pool holds, into the GPU memory
@@ -422,7 +439,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
                     munmap(tmp, n);
                     if (q == (void *)a) {
                         close(fd); e.fdmapped = 1;
-                        if (g_fdmap < 0) { g_fdmap = 1; VLOG("memory pools: the driver's memory exported (fd) and mapped over the pool's pages"); }
+                        if (g_fdmap < 0) { g_fdmap = 1; VLOG("memory pools: the driver's memory exported (%s) and mapped over the pool's pages", g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "dma-buf" : "opaque fd"); }
                         goto bind;
                     }
                     if (g_fdmap > 0) VDIE("memory pool %p+%#llx: mapping the GPU memory over it failed (errno %d)", mem, (unsigned long long)size, errno);
@@ -430,9 +447,10 @@ void mtl_pool_add(const void *mem, uint64_t size) {
                 if (fd >= 0) close(fd);
                 vkFreeMemory(g_dev, e.mem, NULL); e.mem = VK_NULL_HANDLE;
             }
-            if (g_fdmap > 0) VDIE("memory pool %p+%#llx: GPU memory export failed", mem, (unsigned long long)size);
-            VLOG("memory pools: the driver's memory cannot be exported and mapped (errno %d): moving its mappings instead (mremap)", errno);
-            g_fdmap = 0;   // first pool: fall back for good (the buffer was made for export, which the plain allocation below also accepts)
+            // first pool: fall back for good (the buffer was made for export, which the plain allocation below also accepts); a later pool whose export fails (the pool's
+            // pages untouched so far) takes the route below on its own
+            if (g_fdmap > 0) RED_ONCE(103, "memory pool %p+%#llx: GPU memory export failed: this pool and any other that fails go the mremap route", mem, (unsigned long long)size);
+            else { VLOG("memory pools: the driver's memory cannot be exported and mapped (errno %d): moving its mappings instead (mremap)", errno); g_fdmap = 0; }
         }
 #endif
 #ifdef __linux__
@@ -865,6 +883,7 @@ typedef struct vtex {
     int pkg; uint64_t stamp, seen; const void *span;   // CPU-filled: write-tracking stamp of the uploaded content
     VkBufferView bview;                    // buffer texture (TARGET_BUFFER): a view of its memory pool
     int fixed_fmt; VkFormat twin;          // 1: not mutable (depth / stencil), 2: mutable within fmt / twin only (tex_make: keeps UBWC)
+    int drop;                              // mip levels left out (texture quality half: the image is the game's levels from this one on)
 } vtex;
 static pthread_mutex_t g_smu = PTHREAD_MUTEX_INITIALIZER;   // serial / sharing / CPU-written tables
 static nvn_hmap g_by_serial = {.klen = 8}, g_ghost = {.klen = 8}, g_tex_live = {.klen = 8}, g_cpu_tex = {.klen = 8};
@@ -918,6 +937,15 @@ static void img_init(vtex *t, int zero) {
     }
     if (once) once_end(cb);
 }
+// Texture quality (DM_VK_TEX_QUALITY=half, the device profile's choice for weaker GPUs): the game's own block-compressed textures of 512x512 and up with mip levels are kept
+// without their largest level, a quarter of the memory and bandwidth (and of the decode work on GPUs without BC). Only textures from the game's files: they are never drawn
+// into, so render targets and everything the screen is made of keep their size. Views shift their levels down by the same count; copies into or out of such a texture are
+// left out (not seen in Shield)
+static uint64_t g_drop_n, g_drop_saved;   // textures stored without their largest level, bytes not stored (the memory readout)
+static int tex_quality_half(void) {
+    static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_TEX_QUALITY"); v = e && !strcmp(e, "half"); if (v) VLOG("texture quality half: the game's large textures without their largest mip level"); }
+    return v;
+}
 static vtex *tex_new(const tex_t *t, int pkg) {
     uint32_t vf = 0; uint8_t swz[4];
     if (!nvn_fmt_to_vk(t->d.format, &vf, swz) || !vf) { RED_ONCE(2, "texture format %#x has no Vulkan equivalent (first case)", t->d.format); return NULL; }
@@ -935,6 +963,12 @@ static vtex *tex_new(const tex_t *t, int pkg) {
         case 8: ci.arrayLayers = 6; break;
         case 9: ci.arrayLayers = (t->d.depth ? t->d.depth : 1) * 6; break;
         default: break;
+    }
+    if (pkg && tex_quality_half() && t->has_layout && fmt_compressed(t->d.format) && !(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))
+        && (t->d.target == 1 || t->d.target == 4 || t->d.target == 8 || t->d.target == 9) && ci.mipLevels >= 2 && ci.extent.width >= 512 && ci.extent.height >= 512) {
+        int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
+        if (bpb) g_drop_saved += (uint64_t)((ci.extent.width + bw - 1) / bw) * ((ci.extent.height + bh - 1) / bh) * bpb * ci.arrayLayers;
+        ci.extent.width >>= 1; ci.extent.height >>= 1; ci.mipLevels--; x->drop = 1; g_drop_n++;
     }
     if (!x->is3d && ci.arrayLayers >= 6 && ci.extent.width == ci.extent.height && ci.samples == VK_SAMPLE_COUNT_1_BIT) { ci.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT; x->cube_ok = 1; }
     VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_pd, x->fmt, &fp); VkFormatFeatureFlags ff = fp.optimalTilingFeatures;
@@ -1022,7 +1056,7 @@ static int tex_upload(vtex *x, const tex_t *t) {
             uint8_t *dst = bck ? scratch : sp + off;
             if (linear) {   // LINEAR: rows at the texture's stride (one level, one layer)
                 size_t stride = t->d.stride ? t->d.stride : pitch; for (size_t r = 0; r < rows; r++) memcpy(dst + r * pitch, t->mem + r * stride, pitch);
-            } else if (nvn_deswizzle(&t->d, l, y, t->mem, dst, pitch)) { RED_ONCE(5, "deswizzle failed format %#x target %d", t->d.format, t->d.target); break; }
+            } else if (nvn_deswizzle(&t->d, l + (unsigned)x->drop, y, t->mem, dst, pitch)) { RED_ONCE(5, "deswizzle failed format %#x target %d", t->d.format, t->d.target); break; }
             if (bck) for (uint32_t s = 0; s < z; s++) bc_decode_image(bck, scratch + s * pitch * rows, pitch, (int)w, (int)h, sp + off + s * opitch * orows, opitch);
             rg[nrg++] = (VkBufferImageCopy){ .bufferOffset = so + off, .bufferRowLength = (uint32_t)(opitch / obpb * obw), .bufferImageHeight = (uint32_t)(orows * obh),
                 .imageSubresource = { x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : x->aspect, l, x->is3d ? 0 : y, 1 }, .imageExtent = { w, h, z } };
@@ -1271,7 +1305,8 @@ static VkImageView tex_view_for(int tid, const spv_res *r, int storage) {
     vtex *x = tex_res(&rg.t); if (!x || !x->img) return VK_NULL_HANDLE;
     VkFormat f = x->fmt; uint8_t fsw[4]; memcpy(fsw, x->fswz, 4);
     if (rg.has_v && rg.v.set_format) { uint32_t vf = 0; uint8_t s2[4]; if (nvn_fmt_to_vk(rg.v.format, &vf, s2) && vf) { f = (VkFormat)vf; memcpy(fsw, s2, 4); } }
-    uint32_t l0 = rg.has_v && rg.v.set_levels ? rg.v.base_level : 0, nl = rg.has_v && rg.v.set_levels && rg.v.nlevels ? rg.v.nlevels : x->levels - (l0 < x->levels ? l0 : 0);
+    uint32_t l0 = rg.has_v && rg.v.set_levels ? rg.v.base_level : 0, nl = rg.has_v && rg.v.set_levels && rg.v.nlevels ? rg.v.nlevels : x->levels + x->drop - (l0 < x->levels + x->drop ? l0 : 0);
+    if (x->drop) { uint32_t d = l0 < (uint32_t)x->drop ? l0 : (uint32_t)x->drop; l0 -= d; if (nl > (uint32_t)x->drop - d) nl -= (uint32_t)x->drop - d; }   // the game's level n is the image's n - drop
     uint32_t s0 = rg.has_v && rg.v.set_layers ? rg.v.min_layer : 0, ns = rg.has_v && rg.v.set_layers && rg.v.nlayers ? rg.v.nlayers : x->layers - (s0 < x->layers ? s0 : 0);
     if (l0 >= x->levels || s0 >= x->layers) return VK_NULL_HANDLE;
     if (l0 + nl > x->levels) nl = x->levels - l0; if (s0 + ns > x->layers) ns = x->layers - s0;
@@ -2295,6 +2330,7 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
 // ================= Texture copies and clears =================
 static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
     vtex *x = tex_res(c->tex); if (!x || !x->img) return;
+    if (x->drop) { RED_ONCE(104, "a texture kept at half quality copied %s a buffer: left out (DM_VK_TEX_QUALITY=full to compare)", to_buffer ? "to" : "from"); return; }
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh); if (!bpb) return;
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
     size_t row = S.copy_stride ? (size_t)S.copy_stride : (size_t)((c->r.width + bw - 1) / bw) * bpb, rows = (c->r.height + bh - 1) / bh, img = S.copy_img_stride ? (size_t)S.copy_img_stride : row * rows;
@@ -2319,6 +2355,7 @@ static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
 static void copy_t2t(const p_copy_t2t *c) {
     pass_flush();
     vtex *s = tex_res(c->src), *d = tex_res(c->dst); if (!s || !d || !s->img || !d->img) return;
+    if (s->drop || d->drop) { RED_ONCE(105, "a texture kept at half quality in a texture copy: left out (DM_VK_TEX_QUALITY=full to compare)"); return; }
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
     int nz = c->sr.depth ? c->sr.depth : 1;
@@ -2803,6 +2840,8 @@ static void mem_report(void) {
 #ifdef __ANDROID__
     { struct mallinfo mi = mallinfo(); heap = (long)mi.uordblks; }
 #endif
+    if (g_drop_n) VLOG("[mem] texture quality half: %llu textures uploaded without their largest level so far, about %.0f MB of game texture data left out",
+                       (unsigned long long)g_drop_n, g_drop_saved / 1048576.0);
     VLOG("[mem] device blocks %d: %.0f MB (%.0f MB in use); textures %ld live, %.0f MB; pools %d, %.0f MB; arenas %.0f MB; descriptor pools %d; deferred %d; "
          "shaders %u, pipelines %u, textures by serial %u, aliases %u, ghosts %u; host heap %.0f MB",
          nb, dev / 1048576, devused / 1048576, atomic_load(&g_live_tex), atomic_load(&g_live_tex_bytes) / 1048576.0, npool, pool / 1048576, arena / 1048576, ndp, ndf,

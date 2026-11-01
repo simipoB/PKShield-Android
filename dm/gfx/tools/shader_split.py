@@ -676,23 +676,37 @@ def pmap(J, fn, items, initargs):   # fn over items in J worker processes, resul
         import multiprocessing.synchronize
     except ImportError:
         import pickle, tempfile
-        kids = []
-        for w in range(J):
+        # Each result is written as soon as it is made, so a worker holds one file's shaders at a time and one the system kills keeps what it wrote. Android's low-memory
+        # killer took one of 8 workers holding all their results (status 9, #43): the rest of a killed worker's share runs again alone, after the others are done
+        def fork(part):
             fd, tmp = tempfile.mkstemp(suffix='.pk'); pid = os.fork()
             if not pid:
                 try:
                     _pool_init(*initargs)
-                    with os.fdopen(fd, 'wb') as f: pickle.dump([fn(x) for x in items[w::J]], f)
+                    with os.fdopen(fd, 'wb') as f:
+                        for x in part: pickle.dump(fn(x), f); f.flush()
                     os._exit(0)
                 except BaseException:
                     import traceback; traceback.print_exc(); os._exit(1)
-            os.close(fd); kids.append((pid, tmp))
+            os.close(fd); return pid, tmp
+        def collect(tmp):   # the whole results in the file (a kill can cut the last one short)
+            got = []
+            with open(tmp, 'rb') as f:
+                while True:
+                    try: got.append(pickle.load(f))
+                    except Exception: break
+            os.unlink(tmp); return got
+        parts = [items[w::J] for w in range(J)]
+        kids = [fork(p) for p in parts]
+        done = [(os.waitpid(pid, 0)[1], collect(tmp)) for pid, tmp in kids]
         out = [None] * len(items)
-        for w, (pid, tmp) in enumerate(kids):
-            st = os.waitpid(pid, 0)[1]
-            if st: red(f'shader scan worker {w} failed ({st})')
-            with open(tmp, 'rb') as f: out[w::J] = pickle.load(f)
-            os.unlink(tmp)
+        for w, (st, got) in enumerate(done):
+            for _ in range(3):
+                if not (st and os.WIFSIGNALED(st)): break
+                print(f'shader scan worker {w} was stopped (signal {os.WTERMSIG(st)}) after {len(got)} of {len(parts[w])} files: the rest again, alone', flush=True)
+                pid, tmp = fork(parts[w][len(got):]); st = os.waitpid(pid, 0)[1]; got += collect(tmp)
+            if st or len(got) != len(parts[w]): red(f'shader scan worker {w} failed ({st}, {len(got)} of {len(parts[w])} files)')
+            out[w::J] = got
         return out
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=initargs) as ex: return list(ex.map(fn, items, chunksize=16))
 

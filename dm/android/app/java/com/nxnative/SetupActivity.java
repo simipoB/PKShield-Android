@@ -56,7 +56,9 @@ public final class SetupActivity extends Activity {
         PickedGame(Uri uri, String name) { this.uri = uri; this.name = name; }
     }
     private TextView status, gameText, keysText; private ProgressBar bar; private Button setup, play, shortcut, saveExport, saveImport; private ImageView logo;
-    private volatile boolean running;
+    // static: the setup runs in its own thread and outlives this screen; a new screen (Android may still make one, despite configChanges in the manifest, which keeps it
+    // across rotation: #42) must not start a second setup next to it
+    private static volatile boolean running;
 
     private File gameDir() { return getExternalFilesDir(null); }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
@@ -75,7 +77,7 @@ public final class SetupActivity extends Activity {
         super.onCreate(b);
         boolean asked = getIntent().getBooleanExtra("setup", false);
         if (ready()) setupShortcut();
-        if (ready() && !asked) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
+        if (ready() && !asked && !running) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 48, 48, 48); root.setGravity(Gravity.CENTER_HORIZONTAL);
         logo = new ImageView(this); logo.setVisibility(android.view.View.GONE); root.addView(logo, new LinearLayout.LayoutParams(320, 320));
         TextView title = new TextView(this); title.setText("Pokémon Shield"); title.setTextSize(28); root.addView(title);
@@ -110,15 +112,28 @@ public final class SetupActivity extends Activity {
         TextView h = new TextView(this); h.setText("Settings"); h.setTextSize(20); h.setPadding(0, 32, 0, 8); root.addView(h);
         TextView gl = new TextView(this); gl.setText("Graphics"); root.addView(gl);
         android.widget.RadioGroup rg = new android.widget.RadioGroup(this);
-        String[][] modes = { { "high", "High: TV mode, 1080p, full effects" }, { "low", "Low: handheld mode, 720p, lighter (for weaker phones)" },
+        String[] prof = profile(); String rec = prof == null || prof[2].equals("high") ? "High" : prof[2].equals("auto") ? "Auto" : "Low";
+        String[][] modes = { { "", "Recommended for this phone (" + (prof != null ? prof[1] + ": " : "") + rec + ")" },
+                             { "high", "High: TV mode, 1080p, full effects" }, { "low", "Low: handheld mode, 720p, lighter (for weaker phones)" },
                              { "auto", "Auto: High, switching to Low while the phone is hot" } };
-        String cur = envGet("DM_GRAPHICS"); if (cur.isEmpty()) cur = "high";
+        String cur = envGet("DM_GRAPHICS");
         for (int k = 0; k < modes.length; k++) {
             android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(1000 + k); b.setText(modes[k][1]); rg.addView(b);
             if (modes[k][0].equals(cur)) b.setChecked(true);
         }
         rg.setOnCheckedChangeListener((g, id) -> envSet("DM_GRAPHICS", modes[id - 1000][0]));
         root.addView(rg);
+        TextView tl = new TextView(this); tl.setText("Textures"); tl.setPadding(0, 16, 0, 0); root.addView(tl);
+        android.widget.RadioGroup tg = new android.widget.RadioGroup(this);
+        String[][] tq = { { "", "Recommended for this phone (" + (prof != null && prof[3].equals("half") ? "Half" : "Full") + ")" },
+                          { "full", "Full: the game's textures as they are" }, { "half", "Half: large textures at half size, less memory and GPU work (for weaker phones)" } };
+        String tcur = envGet("DM_VK_TEX_QUALITY");
+        for (int k = 0; k < tq.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(2000 + k); b.setText(tq[k][1]); tg.addView(b);
+            if (tq[k][0].equals(tcur)) b.setChecked(true);
+        }
+        tg.setOnCheckedChangeListener((g, id) -> envSet("DM_VK_TEX_QUALITY", tq[id - 2000][0]));
+        root.addView(tg);
         slider(root, "Touch controls opacity", "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");
         slider(root, "Touch controls fade after", "DM_TOUCH_FADE", 0, 10, 3, v -> v == 0 ? "never fade" : v + " s without a touch");
     }
@@ -136,6 +151,28 @@ public final class SetupActivity extends Activity {
     }
     // env.txt in the game folder: KEY=VALUE lines the native side reads at start (android_main.c env_file)
     private File envFile() { return new File(gameDir(), "env.txt"); }
+    // The device profile the game uses (android_main.c profile_of, kept the same): { name, description, recommended graphics, recommended textures }, or null (no profile)
+    static String[] profile() {
+        String m = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MODEL : "", mk = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MANUFACTURER : "";
+        if (m == null) m = ""; if (mk == null) mk = ""; m = m.toLowerCase(java.util.Locale.ROOT); String n;
+        if (m.matches("sm\\d.*") || m.matches("sdm\\d.*")) { int v = lead(m.substring(m.charAt(1) == 'd' ? 3 : 2));
+            n = v >= 8000 && v < 9000 ? "sd8" : v >= 7300 && v < 8000 ? "sd7" : (v >= 4000 && v < 7300) || (v > 0 && v < 1000) ? "sd6" : null; }
+        else if (m.matches("mt\\d.*")) { int v = lead(m.substring(2)); n = v == 6983 || v == 6985 || v == 6989 || v == 6991 || v == 6993 ? "high" : v >= 6889 && v <= 6899 ? "mid" : "low"; }
+        else if (m.startsWith("s5e") || m.contains("exynos")) { boolean s5e = m.startsWith("s5e"); String d = s5e ? m.substring(3) : m.replaceAll("^\\D*", ""); int v = lead(d);
+            n = (s5e && v >= 9900 && v < 10000) || (!s5e && v >= 2000 && v < 3000) ? "high" : "low"; }
+        else if (m.contains("tensor") || (mk.toLowerCase(java.util.Locale.ROOT).startsWith("google") && !m.isEmpty())) n = "mid";
+        else n = null;
+        if (n == null) return null;
+        switch (n) {
+            case "sd8": return new String[] { n, "Snapdragon 8 series", "high", "full" };   // (the game leaves these phones as they were)
+            case "sd7": return new String[] { n, "Snapdragon 7 series", "auto", "full" };
+            case "sd6": return new String[] { n, "Snapdragon 6 / 4 series", "low", "half" };
+            case "high": return new String[] { n, "Dimensity 9000 / Exynos 2000 series", "auto", "full" };
+            case "mid": return new String[] { n, "Dimensity 8000 series / Google Tensor", "low", "half" };
+            default: return new String[] { n, "MediaTek / Exynos, lighter settings", "low", "half" };
+        }
+    }
+    private static int lead(String d) { int v = 0; for (int i = 0; i < d.length() && i < 4 && Character.isDigit(d.charAt(i)); i++) v = v * 10 + (d.charAt(i) - '0'); return v; }
     private String envGet(String key) {
         try (BufferedReader r = new BufferedReader(new FileReader(envFile()))) { String l; while ((l = r.readLine()) != null) if (l.startsWith(key + "=")) return l.substring(key.length() + 1); } catch (IOException e) { }
         return "";
@@ -171,6 +208,8 @@ public final class SetupActivity extends Activity {
         setup.setEnabled(!running && keys && !games.isEmpty()); play.setEnabled(!running && ready());
         saveExport.setEnabled(!running && setUp());
         saveImport.setEnabled(!running && setUp());
+        if (running && status.getText().length() == 0)   // a new screen while the setup (or a copy) another one started still runs
+            status.setText("Setup is still running in the background. Wait a few minutes, then close and reopen the app to see whether it has finished.");
         if (!running && setUp() && !chainCurrent() && status.getText().length() == 0)
             status.setText("This app version translates the game's shaders differently: choose your files and press Set up the game again (the save data is kept).");
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
@@ -426,7 +465,7 @@ public final class SetupActivity extends Activity {
                 // bin first: the .NET unpacker dlopens libssl.so.3 / libcrypto.so.3, which binDir() links to the OpenSSL 3 that ships with CPython for Android
                 pb.environment().put("LD_LIBRARY_PATH", bin.getPath() + ":" + lib); pb.environment().put("LIBCAPSTONE_PATH", lib); pb.environment().put("NX_NATIVE_LIB_DIR", lib);
                 pb.environment().put("DOTNET_OPENSSL_VERSION_OVERRIDE", "3"); pb.environment().put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
-                pb.environment().put("TMPDIR", getCacheDir().getPath()); pb.environment().put("J", String.valueOf(Math.max(2, Runtime.getRuntime().availableProcessors())));
+                pb.environment().put("TMPDIR", getCacheDir().getPath()); pb.environment().put("J", String.valueOf(setupWorkers()));
                 Process p = pb.start();
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String ln;
                 while ((ln = r.readLine()) != null) { final String l = ln;
@@ -441,6 +480,13 @@ public final class SetupActivity extends Activity {
             final String e2 = err;
             runOnUiThread(() -> { getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); running = false; done.accept(e2); refresh(); });
         }).start();
+    }
+    // Setup's parallel workers (the shader scan and translation): one per core, but at most one per 1.5 GB of the phone's memory and 4 on phones whose profile is a
+    // lighter one (handheld mode), whose memory the low-memory killer guards closely (a scan worker was killed at 8, #43)
+    private int setupWorkers() {
+        android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); ((ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
+        int j = Runtime.getRuntime().availableProcessors(); j = Math.min(j, (int) (mi.totalMem / (1536L << 20))); String[] p = profile(); if (p != null && p[2].equals("low")) j = Math.min(j, 4);
+        return Math.max(2, j);
     }
     private File iconFile() { return new File(gameDir(), "icon.jpg"); }
     // the game's icon from the player's dump: this screen and the recent-apps card
