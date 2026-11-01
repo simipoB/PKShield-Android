@@ -47,56 +47,117 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class SetupActivity extends Activity {
-    private static final int PICK_GAME = 1, PICK_KEYS = 2, PICK_DRIVER = 3, PICK_SAVE_EXPORT = 4, PICK_SAVE_IMPORT = 5, PICK_MOD = 6;
+    private static final int PICK_KEYS = 2, PICK_DRIVER = 3, PICK_SAVE_EXPORT = 4, PICK_SAVE_IMPORT = 5, PICK_MOD = 6, PICK_BASE = 7, PICK_UPDATE = 8, PICK_DLC = 9;
+    // the installation guide's steps, in order (W_ACCESS only shows while the all-files permission is missing)
+    private static final int W_WELCOME = 0, W_ACCESS = 1, W_KEYS = 2, W_BASE = 3, W_UPDATE = 4, W_DLC = 5, W_OPTIONS = 6, W_INSTALL = 7;
     private TextView driverText, modsText;
-    private final List<String> games = new ArrayList<>();
+    // what the guide has collected: paths read in place, or copies in the app's storage (importedGames) when the picked file has no readable path
+    private String baseGame, updateGame; private final List<String> dlcGames = new ArrayList<>();
     private final List<File> importedGames = new ArrayList<>();
     private static final class PickedGame {
-        final Uri uri; final String name;
-        PickedGame(Uri uri, String name) { this.uri = uri; this.name = name; }
+        final Uri uri; final String name; final int role; File dest;
+        PickedGame(Uri uri, String name, int role) { this.uri = uri; this.name = name; this.role = role; }
     }
-    private TextView status, gameText, keysText; private ProgressBar bar; private Button setup, play, shortcut, saveExport, saveImport; private ImageView logo;
+    private TextView status, wizTitle; private ProgressBar bar; private Button play, shortcut, saveExport, saveImport, wizBack, wizNext; private ImageView logo;
+    private LinearLayout wizBody;
+    private boolean wizard, installedNow, installFailed, defaultsDone; private int step;
     private volatile boolean running;
-
+    private static String t(String en, String es) { return "es".equals(java.util.Locale.getDefault().getLanguage()) ? es : en; }   // the guide's texts: English, Spanish on Spanish phones
+    private static String gb(long bytes) { return String.format(java.util.Locale.US, "%.1f GB", bytes / 1073741824.0); }
     private File gameDir() { return getExternalFilesDir(null); }
     private File modsDir() { File d = new File(gameDir(), "mods"); d.mkdirs(); return d; }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
-    private boolean setUp() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists(); }
+    private boolean inApk() {
+        try (InputStream is = getAssets().open("game/ready")) { return is != null; } catch (IOException e) { return false; }
+    }
+    private boolean setUp() { return inApk() || (new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists()); }
     // set up for this app version: the shader pack's translation chain (the ready file) is the one the engine was built for (assets/shader_chain, build_apk.py);
     // an update that changes the chain otherwise starts the game with a pack the engine refuses (every 3D shader "SPIR-V missing")
     private boolean ready() { return setUp() && chainCurrent(); }
     private boolean chainCurrent() {
-        String want, have;
+        String want, have = null;
         try (BufferedReader r = new BufferedReader(new InputStreamReader(getAssets().open("shader_chain")))) { want = r.readLine(); } catch (IOException e) { return true; }   // an older build without the asset
-        try (BufferedReader r = new BufferedReader(new FileReader(new File(gameDir(), "ready")))) { have = r.readLine(); } catch (IOException e) { return false; }
+        if (inApk()) {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(getAssets().open("game/ready")))) { have = r.readLine(); } catch (IOException e) { }
+        }
+        if (have == null) {
+            try (BufferedReader r = new BufferedReader(new FileReader(new File(gameDir(), "ready")))) { have = r.readLine(); } catch (IOException e) { return false; }
+        }
         return want != null && have != null && want.trim().equals(have.trim());
     }
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         boolean asked = getIntent().getBooleanExtra("setup", false);
+        if (b != null) {   // the guide's progress survives the process being recreated while a picker is open
+            wizard = b.getBoolean("wizard"); step = b.getInt("step"); baseGame = b.getString("base"); updateGame = b.getString("update");
+            String[] d = b.getStringArray("dlc"); if (d != null) dlcGames.addAll(Arrays.asList(d));
+            String[] im = b.getStringArray("imported"); if (im != null) for (String p : im) importedGames.add(new File(p));
+        }
         if (ready()) setupShortcut();
-        if (ready() && !asked) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
+        if (ready() && !asked && !wizard) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
+        if (!ready() || wizard) showWizard(); else showDashboard();
+        gameIcon();
+        if (ready() && !asked && !wizard) startCaptures();
+    }
+    @Override protected void onSaveInstanceState(Bundle o) {
+        super.onSaveInstanceState(o); o.putBoolean("wizard", wizard); o.putInt("step", step); o.putString("base", baseGame); o.putString("update", updateGame);
+        o.putStringArray("dlc", dlcGames.toArray(new String[0]));
+        String[] im = new String[importedGames.size()]; for (int k = 0; k < im.length; k++) im[k] = importedGames.get(k).getPath(); o.putStringArray("imported", im);
+    }
+    @Override protected void onResume() { super.onResume(); if (wizard && step == W_ACCESS) renderStep(); }   // back from the all-files permission screen
+    @Override public void onBackPressed() {
+        if (wizard && running) return;
+        if (wizard && step > W_WELCOME && !installedNow) { wizGo(-1); return; }
+        if (wizard && ready() && !installedNow) { showDashboard(); return; }   // the guide was started again from the settings screen
+        super.onBackPressed();
+    }
+    private LinearLayout page() {
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 48, 48, 48); root.setGravity(Gravity.CENTER_HORIZONTAL);
         logo = new ImageView(this); logo.setVisibility(android.view.View.GONE); root.addView(logo, new LinearLayout.LayoutParams(320, 320));
         TextView title = new TextView(this); title.setText("Pokémon Shield"); title.setTextSize(28); root.addView(title);
-        TextView note = new TextView(this); note.setText("Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone."); note.setPadding(0, 16, 0, 32); root.addView(note);
-        gameText = row(root, "Game files", "Choose", v -> pick(PICK_GAME, true));
-        keysText = row(root, "Keys", "Choose", v -> pick(PICK_KEYS, true));
-        // the Vulkan driver: the phone's own, or an Adreno driver package (a zip with meta.json and the library, e.g. Mesa Turnip) opened through libadrenotools
-        driverText = row(root, "Graphics driver", "Choose", v -> pick(PICK_DRIVER, false));
-        button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); refresh(); });
-        settings(root);
-        setup = button(root, "Set up the game", v -> startSetup());
-        bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(600); root.addView(bar);
-        status = new TextView(this); status.setPadding(0, 16, 0, 16); root.addView(status);
+        return root;
+    }
+    private void show(LinearLayout root) { ScrollView sv = new ScrollView(this); sv.addView(root); setContentView(sv); }
+    private TextView label(LinearLayout p, String s, int size, int top) { TextView v = new TextView(this); v.setText(s); v.setTextSize(size); v.setPadding(0, top, 0, 8); p.addView(v); return v; }
+
+    // the set-up game: Play, the settings, the guide again, save data
+    private void showDashboard() {
+        wizard = false; wizBody = null; wizTitle = null; wizBack = wizNext = null;
+        LinearLayout root = page();
         play = button(root, "Play", v -> startGame()); play.setEnabled(ready());
+        status = new TextView(this); status.setPadding(0, 16, 0, 16); root.addView(status);
+        bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(600); root.addView(bar);
+        settings(root);
+        button(root, t("Run the installation guide again", "Repetir la guía de instalación"), v -> { step = W_WELCOME; installedNow = installFailed = false; showWizard(); });
         saveExport = button(root, "Export save data", v -> chooseSaveExport());
         saveImport = button(root, "Import edited save data", v -> chooseSaveImport());
         shortcut = button(root, "Add Pokémon Shield to the home screen", v -> pinShortcut());
-        ScrollView sv = new ScrollView(this); sv.addView(root); setContentView(sv);
-        refresh(); gameIcon();
-        if (ready() && !asked) startCaptures();
+        show(root); refresh();
+    }
+    // the installation guide: one screen per thing the install needs (keys, base game, update, DLC), then options, then the install itself
+    private void showWizard() {
+        wizard = true; play = shortcut = saveExport = saveImport = null;
+        if (!defaultsDone) { defaultsDone = true; wizardDefaults(); }
+        LinearLayout root = page();
+        wizTitle = new TextView(this); wizTitle.setPadding(0, 8, 0, 16); root.addView(wizTitle);
+        wizBody = new LinearLayout(this); wizBody.setOrientation(LinearLayout.VERTICAL); root.addView(wizBody);
+        bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(600); root.addView(bar);
+        status = new TextView(this); status.setPadding(0, 16, 0, 16); root.addView(status);
+        LinearLayout nav = new LinearLayout(this); nav.setOrientation(LinearLayout.HORIZONTAL);
+        wizBack = new Button(this); wizBack.setText(t("Back", "Atrás")); wizBack.setOnClickListener(v -> wizGo(-1));
+        wizNext = new Button(this); wizNext.setOnClickListener(v -> wizAdvance());
+        nav.addView(wizBack, new LinearLayout.LayoutParams(0, -2, 1)); nav.addView(wizNext, new LinearLayout.LayoutParams(0, -2, 1));
+        root.addView(nav, new LinearLayout.LayoutParams(-1, -2));
+        show(root); renderStep();
+    }
+    // preselects what suits this phone, once per guide run: 20:9 on a wide screen, 60 FPS (a choice the player made earlier is kept)
+    private void wizardDefaults() {
+        if (envGet("DM_ASPECT").isEmpty()) {
+            android.util.DisplayMetrics m = getResources().getDisplayMetrics();
+            if ((float) Math.max(m.widthPixels, m.heightPixels) / Math.min(m.widthPixels, m.heightPixels) >= 2.0f) envSet("DM_ASPECT", "20:9");
+        }
+        if (envGet("DM_FPS_TARGET").isEmpty()) envSet("DM_FPS_TARGET", "60");
     }
     private TextView row(LinearLayout root, String label, String btn, android.view.View.OnClickListener l) {
         LinearLayout r = new LinearLayout(this); r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(Gravity.CENTER_VERTICAL);
@@ -106,9 +167,8 @@ public final class SetupActivity extends Activity {
     }
     private Button button(LinearLayout root, String text, android.view.View.OnClickListener l) { Button bt = new Button(this); bt.setText(text); bt.setOnClickListener(l); root.addView(bt); return bt; }
 
-    // Settings, read by the game at its next start (env.txt): graphics (the console mode the game renders for) and the touch controls' look
-    private void settings(LinearLayout root) {
-        TextView h = new TextView(this); h.setText("Settings"); h.setTextSize(20); h.setPadding(0, 32, 0, 8); root.addView(h);
+    // Settings, read by the game at its next start (env.txt): graphics (the console mode the game renders for), aspect ratio and frame rate; shared by the guide's Options step and the settings screen
+    private void displayOptions(LinearLayout root) {
         TextView gl = new TextView(this); gl.setText("Graphics"); root.addView(gl);
         android.widget.RadioGroup rg = new android.widget.RadioGroup(this);
         String[][] modes = { { "high", "High: TV mode, 1080p, full effects" }, { "low", "Low: handheld mode, 720p, lighter (for weaker phones)" },
@@ -135,19 +195,32 @@ public final class SetupActivity extends Activity {
         }
         arg.setOnCheckedChangeListener((g, id) -> envSet("DM_ASPECT", aspects[id - 1100][0]));
         root.addView(arg);
-        TextView fl = new TextView(this); fl.setText("Frame rate"); fl.setPadding(0, 16, 0, 0); root.addView(fl);
+        TextView fl = new TextView(this); fl.setText(t("Frame rate", "Velocidad de fotogramas")); fl.setPadding(0, 16, 0, 0); root.addView(fl);
         android.widget.RadioGroup frg = new android.widget.RadioGroup(this);
+        // 60 / 90 / 120: the game steps by the real time of each frame (hle_nvn.c vstep_tick), so its speed stays normal: when the phone cannot keep a rate it drops to a half or a third of it
         String[][] fpsModes = {
-            { "", "30 FPS: original console frame rate" },
-            { "60", "60 FPS: smooth 60 Hz + 1/60s step (Shield 1.3.2, uses more battery)" }
+            { "30", t("30 FPS: original console frame rate", "30 FPS: velocidad original de la consola") },
+            { "60", t("60 FPS: smooth, uses more battery (Shield 1.3.2)", "60 FPS: fluido, gasta más batería (Shield 1.3.2)") },
+            { "90", t("90 FPS: needs a 90 Hz or faster screen; falls back to 45 / 30 when the phone cannot keep up", "90 FPS: requiere pantalla de 90 Hz o más; baja a 45 / 30 si el teléfono no da abasto") },
+            { "120", t("120 FPS: needs a 120 Hz screen and a powerful phone; falls back to 60 / 40 when it cannot keep up (game speed stays normal)", "120 FPS: requiere pantalla de 120 Hz y un teléfono potente; baja a 60 / 40 si no da abasto (la velocidad del juego no cambia)") }
         };
-        String fcur = envGet("DM_FPS_TARGET"); if (!"60".equals(fcur)) fcur = "";
+        String fcur = envGet("DM_FPS_TARGET"); boolean known = false; for (String[] m : fpsModes) known |= m[0].equals(fcur); if (!known) fcur = "30";
         for (int k = 0; k < fpsModes.length; k++) {
             android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(1200 + k); b.setText(fpsModes[k][1]); frg.addView(b);
             if (fpsModes[k][0].equals(fcur)) b.setChecked(true);
         }
         frg.setOnCheckedChangeListener((g, id) -> envSet("DM_FPS_TARGET", fpsModes[id - 1200][0]));
         root.addView(frg);
+    }
+    // the Vulkan driver: the phone's own, or an Adreno driver package (a zip with meta.json and the library, e.g. Mesa Turnip) opened through libadrenotools
+    private void driverRows(LinearLayout root) {
+        driverText = row(root, "Graphics driver", "Choose", v -> pick(PICK_DRIVER, false));
+        button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); refresh(); });
+    }
+    private void settings(LinearLayout root) {
+        TextView h = new TextView(this); h.setText("Settings"); h.setTextSize(20); h.setPadding(0, 32, 0, 8); root.addView(h);
+        displayOptions(root);
+        driverRows(root);
         modsText = row(root, "Code patches (.pchtxt)", "Choose", v -> pick(PICK_MOD, true));
         button(root, "Clear code patches", v -> { deleteTree(modsDir()); modsDir(); refresh(); });
         slider(root, "Touch controls opacity", "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");
@@ -194,27 +267,152 @@ public final class SetupActivity extends Activity {
         } catch (IOException e) { status.setText("could not read " + name + ": " + e.getMessage()); }
     }
     private static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) deleteTree(c); f.delete(); }
+    private void fillDriverText() {
+        if (driverText == null) return;
+        String d = envGet("DM_VK_DRIVER");
+        driverText.setText(d.isEmpty() ? "the phone's own Vulkan driver" : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")");
+    }
     private void refresh() {
-        if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? "the phone's own Vulkan driver" : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")"); }
+        if (wizard) { renderStep(); return; }
+        fillDriverText();
         if (modsText != null) { String[] ms = modsDir().list((d, n) -> n.toLowerCase().endsWith(".pchtxt")); if (ms != null) Arrays.sort(ms);
             modsText.setText(ms == null || ms.length == 0 ? "none (optional IPSwitch .pchtxt mods, e.g. 20:9 camera)" : String.join("\n", ms)); }
-        gameText.setText(games.isEmpty() ? "none chosen (.nsp / .xci: base game, update 1.3.2, DLC)" : String.join("\n", games));
-        boolean keys = new File(keysDir(), "prod.keys").exists();
-        keysText.setText(keys ? "prod.keys" + (new File(keysDir(), "title.keys").exists() ? " + title.keys" : "") + " (kept in the app's private storage)" : "none chosen (prod.keys, and title.keys if needed)");
-        setup.setEnabled(!running && keys && !games.isEmpty()); play.setEnabled(!running && ready());
+        play.setEnabled(!running && ready());
         saveExport.setEnabled(!running && setUp());
         saveImport.setEnabled(!running && setUp());
-        if (!running && setUp() && !chainCurrent() && status.getText().length() == 0)
-            status.setText("This app version translates the game's shaders differently: choose your files and press Set up the game again (the save data is kept).");
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
+
+    // ---- the installation guide ----
+    private boolean stepShown(int s) { return s != W_ACCESS || (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()); }
+    private void wizGo(int d) {
+        if (running) return;
+        int s = step + d; while (s > W_WELCOME && s < W_INSTALL && !stepShown(s)) s += d;
+        step = Math.max(W_WELCOME, Math.min(W_INSTALL, s)); status.setText(""); renderStep();
+    }
+    private void wizAdvance() {
+        if (running) return;
+        if (step < W_INSTALL) wizGo(1); else if (installedNow) startGame(); else startSetup();
+    }
+    private TextView head(String s) { return label(wizBody, s, 22, 8); }
+    private TextView para(String s) { return label(wizBody, s, 16, 8); }
+    private Button choose(String text, int what, boolean multi) { Button b = button(wizBody, text, v -> pick(what, multi)); b.setEnabled(!running); return b; }
+    private static long sizeOf(String path) { return path == null ? 0 : new File(path).length(); }
+    private String nameOrNone(String path, String none) { return path == null ? none : "✓ " + new File(path).getName(); }
+    private void renderStep() {
+        if (wizBody == null) return;
+        while (step < W_INSTALL && !stepShown(step)) step++;   // the permission step disappears once the permission is granted
+        wizBody.removeAllViews(); driverText = null; modsText = null;
+        int cur = 0, total = 0; for (int s = 0; s <= W_INSTALL; s++) if (stepShown(s)) { total++; if (s <= step) cur = total; }
+        wizTitle.setText(t("Step ", "Paso ") + cur + " / " + total);
+        bar.setVisibility(step == W_INSTALL ? android.view.View.VISIBLE : android.view.View.GONE);
+        boolean keys = new File(keysDir(), "prod.keys").exists(), titleKeys = new File(keysDir(), "title.keys").exists(), ok = true;
+        String next = t("Next", "Siguiente");
+        switch (step) {
+            case W_WELCOME:
+                head(t("Install Pokémon Shield", "Instalar Pokémon Shield"));
+                para(t("This guide sets the game up from your own dump, asking for one thing at a time:\n\n1. Your console's keys (prod.keys)\n2. The base game (.nsp or .xci)\n3. Update 1.3.2 (.nsp), unless your base file already includes it\n4. DLC (optional)\n\nNothing is uploaded: your files and keys stay on this phone. The conversion takes a long time on a phone, so keep it plugged in with the screen on.",
+                       "Esta guía instala el juego a partir de tu propio dump y te pide un archivo a la vez:\n\n1. Las claves de tu consola (prod.keys)\n2. El juego base (.nsp o .xci)\n3. La actualización 1.3.2 (.nsp), salvo que tu archivo base ya la incluya\n4. DLC (opcional)\n\nNo se sube nada: tus archivos y claves se quedan en este teléfono. La conversión tarda mucho en un teléfono: déjalo conectado al cargador y con la pantalla encendida."));
+                para(t("Free space on this phone: ", "Espacio libre en este teléfono: ") + gb(new StatFs(gameDir().getPath()).getAvailableBytes()));
+                if (setUp() && !chainCurrent()) para(t("This app version translates the game's shaders differently, so the game has to be installed again. Your save data is kept.",
+                                                      "Esta versión de la app traduce los shaders de otra forma, así que hay que instalar el juego otra vez. Tus partidas se conservan."));
+                next = t("Start", "Comenzar"); break;
+            case W_ACCESS:
+                head(t("Allow access to files", "Permitir acceso a los archivos"));
+                para(t("The game files are several GB. With access to all files the app reads them where they are instead of copying them.\n\nTap the button, allow the access, and come back here.\n\nYou can skip this step, but then every file you choose is copied into the app first (it needs extra free space and time).",
+                       "Los archivos del juego pesan varios GB. Con acceso a todos los archivos, la app los lee donde están en lugar de copiarlos.\n\nToca el botón, permite el acceso y vuelve aquí.\n\nPuedes omitir este paso, pero entonces cada archivo que elijas se copiará primero dentro de la app (necesita más espacio libre y tiempo)."));
+                button(wizBody, t("Open settings", "Abrir ajustes"), v -> startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName()))));
+                next = t("Skip", "Omitir"); break;
+            case W_KEYS:
+                head(t("Console keys", "Claves de la consola"));
+                para(t("Choose prod.keys, dumped from your own console (for example with Lockpick_RCM). If your dump needs it, choose title.keys too: you can select both files at once.",
+                       "Elige prod.keys, extraído de tu propia consola (por ejemplo con Lockpick_RCM). Si tu dump lo necesita, elige también title.keys: puedes seleccionar los dos archivos a la vez."));
+                para((keys ? "✓ prod.keys" : "• prod.keys: " + t("not chosen yet", "aún sin elegir")) + "\n" + (titleKeys ? "✓ title.keys" : "• title.keys: " + t("optional", "opcional")));
+                choose(keys ? t("Replace keys", "Cambiar claves") : t("Choose keys", "Elegir claves"), PICK_KEYS, true);
+                ok = keys; break;
+            case W_BASE:
+                head(t("Base game", "Juego base"));
+                para(t("Choose the Pokémon Shield base game file (.nsp or .xci).", "Elige el archivo del juego base de Pokémon Shield (.nsp o .xci)."));
+                para(nameOrNone(baseGame, t("• Not chosen yet", "• Aún sin elegir")));
+                choose(baseGame == null ? t("Choose base game", "Elegir juego base") : t("Change", "Cambiar"), PICK_BASE, false);
+                ok = baseGame != null; break;
+            case W_UPDATE:
+                head(t("Update 1.3.2", "Actualización 1.3.2"));
+                para(t("This app needs Pokémon Shield version 1.3.2. Choose the update file (.nsp).\n\nSkip this step only if your base file is a dump that already includes 1.3.2: the installer checks the version and tells you if the update is missing.",
+                       "Esta app necesita Pokémon Shield versión 1.3.2. Elige el archivo de la actualización (.nsp).\n\nOmite este paso solo si tu archivo base ya incluye la 1.3.2: el instalador revisa la versión y te avisa si falta la actualización."));
+                para(nameOrNone(updateGame, t("• Not chosen", "• Sin elegir")));
+                choose(updateGame == null ? t("Choose update", "Elegir actualización") : t("Change", "Cambiar"), PICK_UPDATE, false);
+                if (updateGame == null) next = t("Skip", "Omitir"); break;
+            case W_DLC:
+                head(t("DLC (optional)", "DLC (opcional)"));
+                para(t("Isle of Armor / Crown Tundra DLC (.nsp). You can select several files at once, or skip this step.", "DLC de Isle of Armor / Crown Tundra (.nsp). Puedes seleccionar varios archivos a la vez u omitir este paso."));
+                { StringBuilder sb = new StringBuilder(); for (String d : dlcGames) sb.append("✓ ").append(new File(d).getName()).append('\n');
+                  para(dlcGames.isEmpty() ? t("• None chosen", "• Ninguno elegido") : sb.toString().trim()); }
+                choose(t("Add DLC files", "Añadir DLC"), PICK_DLC, true);
+                if (!dlcGames.isEmpty()) button(wizBody, t("Remove the DLC", "Quitar los DLC"), v -> { for (String d : dlcGames) dropImport(d); dlcGames.clear(); renderStep(); });
+                else next = t("Skip", "Omitir");
+                break;
+            case W_OPTIONS:
+                head(t("Options", "Opciones"));
+                para(t("The recommended settings for this phone are selected. You can change them later in the app's settings.", "Se eligieron los ajustes recomendados para este teléfono. Podrás cambiarlos después en los ajustes de la app."));
+                displayOptions(wizBody); driverRows(wizBody); fillDriverText();
+                break;
+            default:   // W_INSTALL
+                if (installedNow) {
+                    head(t("Done", "Listo"));
+                    para(t("✓ Pokémon Shield is installed. Press Play.", "✓ Pokémon Shield está instalado. Pulsa Jugar."));
+                    next = t("Play", "Jugar"); break;
+                }
+                head(t("Ready to install", "Listo para instalar"));
+                long need = sizeOf(baseGame) + sizeOf(updateGame); for (String d : dlcGames) need += sizeOf(d);
+                long free = new StatFs(gameDir().getPath()).getAvailableBytes();
+                para("✓ prod.keys" + (titleKeys ? " + title.keys" : "") + "\n" + t("Base game: ", "Juego base: ") + nameOrNone(baseGame, "-") + "\n" + t("Update: ", "Actualización: ") + nameOrNone(updateGame, t("none (the base file must include 1.3.2)", "ninguna (el archivo base debe incluir la 1.3.2)"))
+                     + "\nDLC: " + dlcGames.size() + "\n" + t("Free space: ", "Espacio libre: ") + gb(free));
+                if (free < need + (2L << 30)) para(t("⚠ Free space may not be enough: the installer unpacks the game's files (about " + gb(need) + " here). Free some space or it may fail.",
+                                                    "⚠ Puede que no alcance el espacio libre: el instalador descomprime los archivos del juego (unos " + gb(need) + " aquí). Libera espacio o podría fallar."));
+                para(t("It can take a long time. Keep this screen open and the phone plugged in.", "Puede tardar mucho. Mantén esta pantalla abierta y el teléfono conectado al cargador."));
+                next = running ? t("Installing...", "Instalando...") : installFailed ? t("Try again", "Reintentar") : t("Install", "Instalar");
+                ok = keys && baseGame != null; break;
+        }
+        wizBack.setEnabled(!running && step > W_WELCOME && !installedNow);
+        wizNext.setText(next); wizNext.setEnabled(ok && !running);
+    }
+
     private void pick(int what, boolean multi) {
-        if (running) { status.setText("Please wait for the current setup or file copy to finish."); return; }
-        if (what == PICK_GAME && Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {   // read the dump in place: all-files access
-            status.setText("Allow access to all files so the app can read your dump where it is (it is several GB; nothing is copied).");
-            startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName()))); return; }
+        if (running) { status.setText(t("Please wait for the current setup or file copy to finish.", "Espera a que termine la instalación o la copia de archivos en curso.")); return; }
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("*/*"); i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multi);
         startActivityForResult(i, what);
+    }
+    // the file for one role of the install: base game, update or DLC
+    private void assign(int role, String path) {
+        if (role == PICK_BASE) { dropImport(baseGame); baseGame = path; }
+        else if (role == PICK_UPDATE) { dropImport(updateGame); updateGame = path; }
+        else if (!dlcGames.contains(path)) dlcGames.add(path);
+    }
+    private void dropImport(String path) {   // a copy the guide made into the app's storage that is no longer wanted
+        if (path == null) return;
+        for (File f : new ArrayList<>(importedGames)) if (f.getPath().equals(path)) { f.delete(); importedGames.remove(f); }
+    }
+    // "prod.keys" (the console's keys: master_key_xx = hex ...), "title.keys" (rights ID = title key, 32 hex digits each) or null when the file is not a keys file, whatever it is called
+    private static String classifyKeys(File f) {
+        if (f.length() > (8L << 20)) return null;
+        int lines = 0; boolean prod = false, title = false;
+        try (BufferedReader r = new BufferedReader(new FileReader(f))) {
+            String l;
+            while ((l = r.readLine()) != null) {
+                int eq = l.indexOf('='); if (eq <= 0) continue;
+                String k = l.substring(0, eq).trim(), v = l.substring(eq + 1).trim();
+                if (k.isEmpty() || !v.matches("[0-9A-Fa-f]+")) continue;
+                lines++;
+                if (k.startsWith("master_key") || k.startsWith("aes_kek_generation_source") || k.equals("header_key")) prod = true;
+                else if (k.length() == 32 && k.matches("[0-9A-Fa-f]+")) title = true;
+            }
+        } catch (IOException e) { return null; }
+        return lines == 0 ? null : prod ? "prod.keys" : title ? "title.keys" : null;
+    }
+    private String titleHint(String name) {   // a title ID in the file name that is not Shield's (01008DB008C2C000 base, ...800 update, ...D00x DLC)
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("0100[0-9A-Fa-f]{12}").matcher(name);
+        return m.find() && !m.group().toUpperCase().startsWith("01008DB008C2") ? " " + t("(warning: its title ID " + m.group() + " is not Pokémon Shield's 01008DB008C2C000)", "(aviso: su title ID " + m.group() + " no es el de Pokémon Shield, 01008DB008C2C000)") : "";
     }
     @Override protected void onActivityResult(int req, int res, Intent data) {
         if (res != RESULT_OK) return;
@@ -235,15 +433,25 @@ public final class SetupActivity extends Activity {
                 catch (IOException e) { status.setText("could not read " + safe + ": " + e.getMessage()); }
                 continue;
             }
-            if (req == PICK_KEYS) {
-                String to = name.toLowerCase().contains("title") ? "title.keys" : "prod.keys";
-                try (InputStream in = getContentResolver().openInputStream(u); OutputStream out = new FileOutputStream(new File(keysDir(), to))) { copy(in, out); }
-                catch (IOException e) { status.setText("could not read " + name + ": " + e.getMessage()); }
-            } else {
-                String p = pathOf(u);
-                if (p == null) imports.add(new PickedGame(u, name));
-                else if (!games.contains(p)) games.add(p);
+            if (req == PICK_KEYS) {   // copied to a temporary file first: what it holds, not its name, says which keys file it is
+                long size = documentSize(u);
+                if (size > (8L << 20)) { status.setText(t(name + " is too big to be a keys file (prod.keys is a few KB). Choose prod.keys.", name + " pesa demasiado para ser un archivo de claves (prod.keys pesa pocos KB). Elige prod.keys.")); continue; }
+                File tmp = new File(keysDir(), "incoming.tmp");
+                try (InputStream in = getContentResolver().openInputStream(u); OutputStream out = new FileOutputStream(tmp)) { copy(in, out); }
+                catch (IOException | SecurityException e) { tmp.delete(); status.setText("could not read " + name + ": " + e.getMessage()); continue; }
+                String kind = classifyKeys(tmp);
+                if (kind == null) { tmp.delete(); status.setText(t(name + " does not look like a keys file (prod.keys has lines like master_key_00 = ...). Choose prod.keys.", name + " no parece un archivo de claves (prod.keys tiene líneas como master_key_00 = ...). Elige prod.keys.")); continue; }
+                File to = new File(keysDir(), kind); to.delete();
+                if (!tmp.renameTo(to)) { tmp.delete(); status.setText("could not save " + kind); continue; }
+                status.setText(t("Saved " + kind + " in the app's private storage.", "Se guardó " + kind + " en el almacenamiento privado de la app."));
+                continue;
             }
+            // base game, update or DLC
+            String low = name == null ? "" : name.toLowerCase();
+            if (!low.endsWith(".nsp") && !low.endsWith(".xci")) { status.setText(t(name + " is not a .nsp or .xci file.", name + " no es un archivo .nsp o .xci.")); continue; }
+            String p = pathOf(u);
+            if (p == null) imports.add(new PickedGame(u, name, req)); else assign(req, p);
+            status.setText(t("Selected ", "Seleccionado ") + name + titleHint(name));
         }
         refresh();
         if (!imports.isEmpty()) {
@@ -286,10 +494,9 @@ public final class SetupActivity extends Activity {
     }
     private void importGames(List<PickedGame> imports) {
         running = true; refresh();
-        gameText.setText("Copying " + imports.size() + " selected file" + (imports.size() == 1 ? "" : "s") + " into app storage...");
-        status.setText("Copying " + imports.size() + " selected game file" + (imports.size() == 1 ? "" : "s") + " into app storage; large files need extra free space...");
+        status.setText(t("Copying " + imports.size() + " selected file" + (imports.size() == 1 ? "" : "s") + " into app storage; large files need extra free space...",
+                         "Copiando " + imports.size() + " archivo" + (imports.size() == 1 ? "" : "s") + " seleccionado" + (imports.size() == 1 ? "" : "s") + " al almacenamiento de la app; los archivos grandes necesitan espacio libre extra..."));
         new Thread(() -> {
-            List<File> copied = new ArrayList<>();
             String error = null;
             try {
                 File dir = new File(gameDir(), "imported");
@@ -300,7 +507,7 @@ public final class SetupActivity extends Activity {
                     long available = new StatFs(dir.getPath()).getAvailableBytes();
                     if (size >= 0 && available < size + (512L << 20))
                         throw new IOException("not enough free space to copy " + picked.name + "; select it from phone storage where possible or free at least " + size / (1L << 20) + " MB");
-                    runOnUiThread(() -> status.setText("Copying " + picked.name + " (" + (size >= 0 ? size / (1L << 20) + " MB" : "size unknown") + ") into app storage..."));
+                    runOnUiThread(() -> status.setText(t("Copying ", "Copiando ") + picked.name + " (" + (size >= 0 ? size / (1L << 20) + " MB" : "size unknown") + ")..."));
                     try (InputStream in = getContentResolver().openInputStream(picked.uri);
                          OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) {
                         if (in == null) throw new IOException("the file provider could not open " + picked.name);
@@ -308,15 +515,16 @@ public final class SetupActivity extends Activity {
                         while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
                     } catch (IOException | SecurityException e) { destination.delete(); throw e; }
                     if (!destination.isFile() || destination.length() == 0) { destination.delete(); throw new IOException("the selected file was empty or could not be copied: " + picked.name); }
-                    copied.add(destination);
+                    picked.dest = destination;
                 }
             } catch (IOException | SecurityException | IllegalArgumentException e) { error = e.getMessage(); }
             final String failure = error;
             runOnUiThread(() -> {
                 running = false;
-                for (File file : copied) { games.add(file.getPath()); importedGames.add(file); }
-                if (failure == null) status.setText("Game file" + (copied.size() == 1 ? "" : "s") + " copied into app storage and selected.");
-                else status.setText("Could not import game file: " + failure + (copied.isEmpty() ? "" : " Previously copied selections are ready."));
+                int copied = 0;
+                for (PickedGame picked : imports) if (picked.dest != null) { assign(picked.role, picked.dest.getPath()); importedGames.add(picked.dest); copied++; }
+                if (failure == null) status.setText(t("Copied into app storage and selected.", "Copiado al almacenamiento de la app y seleccionado."));
+                else status.setText("Could not import game file: " + failure + (copied == 0 ? "" : " Previously copied selections are ready."));
                 refresh();
             });
         }).start();
@@ -401,27 +609,23 @@ public final class SetupActivity extends Activity {
         return count;
     }
 
-    // the game's base, update and DLC told apart by their file names (the title ID ends 000 for the base, 800 for the update; [UPD] / [DLC] tags), else by size
-    private String[] sortGames() {
-        String base = null, upd = null; List<String> dlc = new ArrayList<>();
-        for (String g : games) { String n = new File(g).getName().toUpperCase();
-            if (n.contains("[UPD]") || n.contains("800]")) upd = g; else if (n.contains("[DLC]") || n.contains("[AOC]")) dlc.add(g);
-            else if (base == null || new File(g).length() > new File(base).length()) { if (base != null) dlc.add(base); base = g; } else dlc.add(g); }
-        List<String> a = new ArrayList<>(); a.add(base); a.add(upd); a.addAll(dlc); return a.toArray(new String[0]);
-    }
     private void startSetup() {
-        bar.setMax(600); bar.setProgress(0); status.setText("Preparing...");
-        String[] g = sortGames(); List<String> cmd = new ArrayList<>();
-        cmd.add("--keys"); cmd.add(keysDir().getPath()); cmd.add("--base"); cmd.add(g[0]);
-        if (g[1] != null) { cmd.add("--update"); cmd.add(g[1]); }
-        for (int k = 2; k < g.length; k++) { cmd.add("--dlc"); cmd.add(g[k]); }
+        if (!new File(keysDir(), "prod.keys").exists() || baseGame == null) { status.setText(t("Choose the keys and the base game first.", "Elige primero las claves y el juego base.")); return; }
+        installedNow = installFailed = false;
+        bar.setMax(600); bar.setProgress(0); status.setText(t("Preparing...", "Preparando..."));
+        List<String> cmd = new ArrayList<>();
+        cmd.add("--keys"); cmd.add(keysDir().getPath()); cmd.add("--base"); cmd.add(baseGame);
+        if (updateGame != null) { cmd.add("--update"); cmd.add(updateGame); }
+        for (String d : dlcGames) { cmd.add("--dlc"); cmd.add(d); }
         runSetup(cmd, err -> {
             bar.setProgress(err == null ? 600 : bar.getProgress());
+            installedNow = err == null; installFailed = err != null;
             status.setText(err == null ? "Ready. The setup log is in Android/data/" + getPackageName() + "/files/setup_work." : "Setup failed: " + err);
             if (err == null) {
                 for (File file : importedGames) file.delete();
                 importedGames.clear();
                 new File(gameDir(), "imported").delete();
+                baseGame = updateGame = null; dlcGames.clear();
                 if (gameIcon() != null) pinShortcut();
             }
         });
@@ -486,7 +690,12 @@ public final class SetupActivity extends Activity {
     // the game's icon from the player's dump: this screen and the recent-apps card
     @SuppressWarnings("deprecation")
     private Bitmap gameIcon() {
-        Bitmap b = iconFile().exists() ? BitmapFactory.decodeFile(iconFile().getPath()) : null; if (b == null) return null;
+        Bitmap b = null;
+        if (inApk()) {
+            try (InputStream is = getAssets().open("game/icon.jpg")) { b = BitmapFactory.decodeStream(is); } catch (Exception e) { }
+        }
+        if (b == null && iconFile().exists()) b = BitmapFactory.decodeFile(iconFile().getPath());
+        if (b == null) return null;
         setTaskDescription(new ActivityManager.TaskDescription("Pokémon Shield", b));
         if (logo != null) { logo.setImageBitmap(b); logo.setVisibility(android.view.View.VISIBLE); }
         return b;

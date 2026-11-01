@@ -151,6 +151,19 @@ int main(int argc, char **argv) {
     memcpy(&got_itv, big + 0x018a2d18, 4);
     memcpy(&got_step, big + 0x0203eeb8, 4);
     assert(got_itv == want_itv && got_step == want_step);
+    assert(dm_step_hz == 60 && dm_step_word == big + 0x0203eeb8);
+
+    // 120 FPS: step = ceil(1e9 / 120) = 8,333,334 ns; out-of-range targets (30, 121) leave the code untouched
+    memcpy(big + 0x018a2d18, &orig_itv, 4); memcpy(big + 0x0203eeb8, &orig_step, 4);
+    setenv("DM_FPS_TARGET", "30", 1);
+    assert(dm_apply_builtin_patches(&bm, big_sz, 0x03000000, 0x03100000, 0) == 0);
+    setenv("DM_FPS_TARGET", "121", 1);
+    assert(dm_apply_builtin_patches(&bm, big_sz, 0x03000000, 0x03100000, 0) == 0);
+    memcpy(&got_step, big + 0x0203eeb8, 4); assert(got_step == orig_step);
+    setenv("DM_FPS_TARGET", "120", 1);
+    assert(dm_apply_builtin_patches(&bm, big_sz, 0x03000000, 0x03100000, 0) == 2);   // the 20:9 camera pair is already patched above
+    memcpy(&got_itv, big + 0x018a2d18, 4); memcpy(&got_step, big + 0x0203eeb8, 4);
+    assert(got_itv == want_itv && got_step == 8333334u && dm_step_hz == 120);
     free(big);
 
     // 7. rt_same serial comparison across distinct tex_t snapshots (hle_nvn copies tex_t per SetRenderTargets)

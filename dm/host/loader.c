@@ -494,6 +494,7 @@ static int apply_pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     free(ents);
     return total;
 }
+int dm_step_hz; uint8_t *dm_step_word;   // dm.h: Shield high frame rate (set by dm_apply_builtin_patches)
 int dm_apply_builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int pchtxt_applied) {
     if (strcmp(m->name, "main")) return 0;
     int applied = 0;
@@ -512,17 +513,20 @@ int dm_apply_builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, 
             LOG("%s: applied built-in 20:9 3D camera aspect patch at +%#llx", m->name, (unsigned long long)hit);
         }
     }
-    // Pokémon Shield v1.3.2 (build_id a16802625e7826bf83b6f9708e475b91) native 60 FPS: NVN present interval 2 -> 1 (+0x018a2d18) and frame step 1/30s -> 1/60s (+0x0203eeb8)
+    // Pokémon Shield v1.3.2 (build_id a16802625e7826bf83b6f9708e475b91) native 60..120 FPS: NVN present interval 2 -> 1 (+0x018a2d18) and frame step 1/30s -> 1/fps s (+0x0203eeb8, ns per frame, ceil(1e9 / fps)).
+    // From there the graphics layer paces presents at fps Hz and rewrites the step word every frame (hle_nvn.c vstep_tick): a frame that misses its slot is held k slots and the game steps k × 1/fps, so game speed stays real time
     const char *ft = getenv("DM_FPS_TARGET"); if (!ft || !*ft) ft = getenv("DM_FPS");
-    if (ft && atoi(ft) == 60 && !strncasecmp(m->build_id, "a16802625e7826bf83b6f9708e475b91", 32)) {
+    int fps = ft ? atoi(ft) : 0;
+    if (fps >= 60 && fps <= 120 && !strncasecmp(m->build_id, "a16802625e7826bf83b6f9708e475b91", 32)) {
         const uint64_t off_itv = 0x018a2d18ull, off_dt = 0x0203eeb8ull;
         if (off_itv + 4 <= m->text_end && off_itv + 4 <= lim && off_dt + 4 <= lim &&
             !text_overlaps_stub(m, off_itv, 4, p0, p1) && !text_overlaps_stub(m, off_dt, 4, p0, p1)) {
             uint32_t w_itv, w_dt; memcpy(&w_itv, m->base + off_itv, 4); memcpy(&w_dt, m->base + off_dt, 4);
             if (w_itv == 0x52800041u && w_dt == 0x01fca056u) {
-                w_itv = 0x52800021u; w_dt = 0x00fe502bu;
+                w_itv = 0x52800021u; w_dt = (uint32_t)((1000000000ull + (uint64_t)fps - 1) / (uint64_t)fps);
                 memcpy(m->base + off_itv, &w_itv, 4); memcpy(m->base + off_dt, &w_dt, 4); applied += 2;
-                LOG("%s: applied built-in 60 FPS patch (present interval 1 + 16.67 ms step)", m->name);
+                dm_step_hz = fps; dm_step_word = m->base + off_dt;
+                LOG("%s: applied built-in %d FPS patch (present interval 1 + %.2f ms step, adaptive hold)", m->name, fps, w_dt / 1e6);
             }
         }
     }

@@ -407,9 +407,19 @@ static void cache_save_async(void) {
     if (!nvn_vk_cache_save || atomic_exchange(&g_cache_saving, 1)) return;
     pthread_t t; if (pthread_create(&t, NULL, cache_save_main, NULL)) atomic_store(&g_cache_saving, 0); else pthread_detach(t);
 }
+// DM_FPS_TARGET 60..120: tells the compositor the window's frame rate so a 90 / 120 Hz phone switches its display to that mode (it otherwise stays on its 60 Hz game mode and drops frames).
+// Looked up at run time (ANativeWindow_setFrameRate* are API 30 / 31; the app's minSdk is 31); the change is allowed even when it is not seamless
+static void window_frame_rate(ANativeWindow *w) {
+    const char *e = getenv("DM_FPS_TARGET"); int fps = e ? atoi(e) : 0;
+    if (!w || fps < 60 || fps > 120) return;
+    int32_t (*strat)(ANativeWindow *, float, int8_t, int8_t) = (int32_t (*)(ANativeWindow *, float, int8_t, int8_t))dlsym(RTLD_DEFAULT, "ANativeWindow_setFrameRateWithChangeStrategy");
+    int32_t (*plain)(ANativeWindow *, float, int8_t) = (int32_t (*)(ANativeWindow *, float, int8_t))dlsym(RTLD_DEFAULT, "ANativeWindow_setFrameRate");
+    int r = strat ? strat(w, (float)fps, 1 /* FIXED_SOURCE */, 1 /* CHANGE_FRAME_RATE_ALWAYS */) : plain ? plain(w, (float)fps, 1) : -1;
+    ALOG("window frame rate hint %d Hz: %d", fps, r);
+}
 static void on_cmd(struct android_app *app, int32_t cmd) {
     switch (cmd) {
-        case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); host_start(); break;
+        case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); host_start(); window_frame_rate(app->window); break;
         case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); if (g_started && nvn_vk_window_term) nvn_vk_window_term(); break;
         case APP_CMD_GAINED_FOCUS: immersive(); if (g_started) { dm_focus_set(1); dm_audio_suspend(0); } break;
         case APP_CMD_LOST_FOCUS: if (g_started) { dm_focus_set(2); } break;

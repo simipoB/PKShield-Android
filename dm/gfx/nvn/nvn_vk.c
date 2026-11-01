@@ -3013,15 +3013,13 @@ uint32_t mtl_present_qos(void) { return 0; }
 int mtl_has_window(void) { return front_metal_layer() != NULL; }
 int mtl_display_hz(void) { return 60; }
 __attribute__((weak)) int nvn_game_fps(void) { return 60; }
-int mtl_fps_target(void) { const char *e = getenv("DM_FPS"); int f = e ? atoi(e) : 0; return f == 30 || f == 60 ? f : nvn_game_fps() == 30 ? 30 : 60; }
-int mtl_link_active(void) {
-    static int hz = -1; if (hz < 0) { const char *e = getenv("DM_PRESENT_HZ"); hz = e ? atoi(e) : 60; }
-    return hz > 0 && !vk_pace_present();
-}
+__attribute__((weak)) int dm_step_hz;   // loader.c: Shield 60..120 FPS patch target (0 = none)
+static int link_hz(void) { static int hz = -1; if (hz < 0) { const char *e = getenv("DM_PRESENT_HZ"); hz = e ? atoi(e) : dm_step_hz > 0 ? dm_step_hz : 60; } return hz; }
+int mtl_fps_target(void) { const char *e = getenv("DM_FPS"); if (!e || !*e) e = getenv("DM_FPS_TARGET"); int f = e ? atoi(e) : 0; return f >= 30 && f <= 120 ? f : nvn_game_fps() == 30 ? 30 : 60; }
+int mtl_link_active(void) { return link_hz() > 0 && !vk_pace_present(); }
 int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns) {
     if (!mtl_link_active()) return 0;
-    static int hz = -1; if (hz < 0) { const char *e = getenv("DM_PRESENT_HZ"); hz = e ? atoi(e) : 60; }
-    if (hz <= 0) return 1;
+    int hz = link_hz();
     uint64_t period = (uint64_t)(vsyncs > 0 ? vsyncs : 1) * 1000000000ull / (uint64_t)hz;
     static nvn_pacer pc;
     uint64_t w = nvn_pace(&pc, mono_ns(), period);

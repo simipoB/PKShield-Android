@@ -83,6 +83,9 @@ void dm_slot_set(int slot, void *v);
 void load_modules(const char *dir, const char **names, int n);
 int dm_pchtxt_apply_file(module_t *m, uint64_t lim, int64_t p0, int64_t p1, const char *path);
 int dm_apply_builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int pchtxt_applied);
+// Shield high frame rate (loader.c): the target (60..120 Hz) and the game's simulation step word (ns per frame) once the built-in patch is in; the graphics layer (hle_nvn.c vstep_tick) rewrites the word each frame so the game keeps real-time speed
+extern int dm_step_hz;
+extern uint8_t *dm_step_word;
 void run_module_inits(void);
 void *module_sym(module_t *m, const char *name);
 int dm_sdk_major(void);   // SDK major version from the sdk module's version string (loader.c); 0 = unknown
