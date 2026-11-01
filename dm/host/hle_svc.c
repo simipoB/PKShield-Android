@@ -128,6 +128,17 @@ static void *alias_windows_thread(void *arg) {
 
 int svc_thread(int num, uint64_t *regs);   // hle_thread.c: thread and synchronization kind
 
+// What UnmapPhysicalMemory does with the pages it takes back. MADV_FREE leaves them resident (counted in the process's RSS, which Android's low-memory killer looks at) until the kernel
+// is short of memory; on Android MADV_DONTNEED returns them at once (and they come back zeroed, as on Horizon). DM_UNMAP_FREE=1 restores MADV_FREE; other platforms keep it
+static int unmap_advice(void) {
+#ifdef __ANDROID__
+    static int mode = -1; if (mode < 0) { const char *e = getenv("DM_UNMAP_FREE"); mode = e && atoi(e) ? MADV_FREE : MADV_DONTNEED; }
+    return mode;
+#else
+    return MADV_FREE;
+#endif
+}
+
 uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
     { void hlecount_svc(int); hlecount_svc(num); }   // DM_HLECOUNT: svc counts by number
     mem_init();
@@ -145,7 +156,12 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         }
         int rc = 0;
         if (size > g_heap_cur) rc = mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE);
-        else if (size < g_heap_cur) rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
+        else if (size < g_heap_cur) {
+#ifdef __ANDROID__
+            madvise(g_heap + size, g_heap_cur - size, MADV_DONTNEED);   // mprotect alone keeps the pages resident (or in zram): give them back to the kernel now (Horizon hands out zeroed pages on the next grow, as MADV_DONTNEED does)
+#endif
+            rc = mprotect(g_heap + size, g_heap_cur - size, PROT_NONE);
+        }
         if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p mprotect=%d errno=%d", size, g_heap, rc, errno);
         else if (size > g_heap_cur) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
         g_heap_cur = size;
@@ -247,7 +263,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         uintptr_t mlo = num == 0x2C ? lo & ~(pg - 1) : (lo + pg - 1) & ~(pg - 1), mhi = num == 0x2C ? (hi + pg - 1) & ~(pg - 1) : hi & ~(pg - 1);
         int rc = 0;
         if (mhi > mlo) rc = num == 0x2C ? mprotect((void *)mlo, mhi - mlo, PROT_READ | PROT_WRITE)
-                                        : (madvise((void *)mlo, mhi - mlo, MADV_FREE), mprotect((void *)mlo, mhi - mlo, PROT_NONE));
+                                        : (madvise((void *)mlo, mhi - mlo, unmap_advice()), mprotect((void *)mlo, mhi - mlo, PROT_NONE));
         if (rc) { if (DM_GAME_MEM_MAP_LIMIT && num == 0x2C) pthread_mutex_unlock(&g_phys_mu); die("SVC %#x mprotect %p+%#zx errno=%d", num, a, size, errno); }
         if (g_flag.svc) LOG("%sPhysicalMemory %p+%#zx", num == 0x2C ? "Map" : "Unmap", a, size);
         // how deep the alias region is used (one line per 256 MB crossed): for sizing the reservation and alias region (iOS caps a single reservation at 6 GB)

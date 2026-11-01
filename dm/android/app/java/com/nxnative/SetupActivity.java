@@ -226,6 +226,11 @@ public final class SetupActivity extends Activity {
         displayOptions(root);
         driverRows(root);
         controllerOptions(root);
+        android.widget.CheckBox pin = new android.widget.CheckBox(this); pin.setPadding(0, 16, 0, 0);
+        pin.setText(t("Keep the game on the fast CPU cores (can steady the frame rate; uses a little more battery)", "Mantener el juego en los núcleos rápidos de la CPU (puede estabilizar los FPS; gasta algo más de batería)"));
+        pin.setChecked("1".equals(envGet("DM_CPU_PIN")));
+        pin.setOnCheckedChangeListener((b, on) -> envSet("DM_CPU_PIN", on ? "1" : ""));
+        root.addView(pin);
         modsText = row(root, "Code patches (.pchtxt)", "Choose", v -> pick(PICK_MOD, true));
         button(root, "Clear code patches", v -> { deleteTree(modsDir()); modsDir(); refresh(); });
         slider(root, "Touch controls opacity", "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");

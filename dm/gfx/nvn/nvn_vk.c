@@ -325,6 +325,24 @@ static void defer_drain(void) {
     }
     pthread_mutex_unlock(&g_dfmu);
 }
+// Memory pressure (Android onTrimMemory / low memory, android_main.c): destroy what the GPU is done with, then give the driver back every device block that holds nothing (blocks are
+// otherwise kept for the whole run, so the device memory only ever grew to its peak). A block with used == 0 has no live allocation and none queued in the deferred list, so nothing
+// can still point into it. Safe from any thread: the deferred list and the block list have their own locks
+void nvn_vk_trim(void) {
+    if (!g_dev) return;
+    defer_drain();
+    pthread_mutex_lock(&g_amu);
+    int keep = 0, freed = 0; double mb = 0;
+    for (int k = 0; k < g_nblocks; k++) {
+        vblock *b = g_blocks[k];
+        if (b->used > 0) { g_blocks[keep++] = b; continue; }
+        vkFreeMemory(g_dev, b->mem, NULL); mb += b->size / 1048576.0; freed++;
+        free(b->fr); free(b);
+    }
+    g_nblocks = keep;
+    pthread_mutex_unlock(&g_amu);
+    if (freed) VLOG("[mem] trim: %d empty device blocks returned to the driver (%.0f MB), %d kept", freed, mb, keep);
+}
 
 // ================= Memory pools: GPU buffers over the game's pages =================
 // Three ways a pool's pages and the GPU share memory: imported host memory (VK_EXT_external_memory_host), the driver's memory moved onto the pool (mremap, needs every

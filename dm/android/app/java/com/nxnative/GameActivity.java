@@ -12,8 +12,15 @@ import android.view.InputDevice;
 public final class GameActivity extends NativeActivity implements InputManager.InputDeviceListener {
     static { System.loadLibrary("nxnative"); }   // loaded through this class's loader, so the native method below resolves (NativeActivity then opens the same library)
     private static native void nativePadConnected(boolean connected);
+    private static native void nativeTrimMemory(int level);
     private InputManager im;
     static boolean viaSetup;   // this process started the game from the setup screen (SetupActivity.startGame)
+
+    // The system is short of memory (or the game left the screen): the engine gives back the device memory and the allocator pages it no longer uses, before the low-memory killer looks at this process
+    @Override public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        try { nativeTrimMemory(level); } catch (UnsatisfiedLinkError e) { }
+    }
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);

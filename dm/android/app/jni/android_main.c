@@ -23,6 +23,7 @@
 #include <errno.h>
 #include <string.h>
 #include <strings.h>
+#include <malloc.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <dirent.h>
@@ -241,8 +242,30 @@ static void env_file(const char *path) {   // KEY=VALUE lines, # comments; set o
     fclose(f);
 }
 static pid_t g_game_tid;   // the game's main thread (performance hints below)
+// DM_CPU_PIN=1 (settings screen, off by default): the game's main thread, and the threads it starts (a thread keeps its creator's CPU set), stay off the slowest cores of the
+// phone. A scheduler that parks the render / game thread on a small core halves the frame rate for a moment. The cores are told apart by cpu_capacity, or the top frequency when
+// the phone does not show it; a phone whose cores are all alike, or whose files cannot be read, is left alone
+#include <sys/syscall.h>
+static long kb_of(const char *path, const char *key);   // below: the first number of the line that starts with key (an empty key: the file's first line)
+static long cpu_speed(int c) {
+    char p[96]; static const char *const f[2] = { "cpu%d/cpu_capacity", "cpu%d/cpufreq/cpuinfo_max_freq" };
+    for (int k = 0; k < 2; k++) { char n[64]; snprintf(n, sizeof n, f[k], c); snprintf(p, sizeof p, "/sys/devices/system/cpu/%s", n);
+        long v = kb_of(p, ""); if (v > 0) return v; }
+    return -1;
+}
+static void pin_fast_cores(void) {
+    const char *e = getenv("DM_CPU_PIN"); if (!e || !atoi(e)) return;
+    int n = (int)sysconf(_SC_NPROCESSORS_CONF); if (n < 2 || n > 64) return;
+    long sp[64], lo = 1L << 60, hi = 0;
+    for (int c = 0; c < n; c++) { sp[c] = cpu_speed(c); if (sp[c] <= 0) { ALOG("cpu pin: core %d speed unknown, left alone", c); return; } if (sp[c] < lo) lo = sp[c]; if (sp[c] > hi) hi = sp[c]; }
+    if (lo == hi) { ALOG("cpu pin: all cores alike, left alone"); return; }
+    uint64_t mask = 0; for (int c = 0; c < n; c++) if (sp[c] > lo) mask |= 1ull << c;
+    long r = syscall(__NR_sched_setaffinity, 0, sizeof mask, &mask);
+    fprintf(stderr, "[cpu] game thread kept off the %d slowest cores: mask %#llx (%s)\n", n - __builtin_popcountll(mask), (unsigned long long)mask, r ? "failed" : "ok");
+}
 static void *host_thread(void *a) {
     g_game_tid = gettid();
+    pin_fast_cores();
     (void)a; static char alt[65536]; stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt}; sigaltstack(&ss, 0);
     char patched[1100]; snprintf(patched, sizeof patched, "%s/patched", g_game);
     char *argv[3] = { "dmhost", patched, NULL };
@@ -480,6 +503,25 @@ static void cache_save_async(void) {
     if (!nvn_vk_cache_save || atomic_exchange(&g_cache_saving, 1)) return;
     pthread_t t; if (pthread_create(&t, NULL, cache_save_main, NULL)) atomic_store(&g_cache_saving, 0); else pthread_detach(t);
 }
+// Memory pressure (Android's onTrimMemory, GameActivity.java; APP_CMD_LOW_MEMORY): the renderer returns the device memory blocks it no longer uses (nvn_vk.c nvn_vk_trim) and the
+// C allocator gives its free pages back (scudo's M_PURGE). Nothing the game holds is touched. Done on a thread of its own: the system's callback must not wait on the driver.
+// Levels: 5 running-moderate (ignored: nothing is short yet), 10 running-low, 15 running-critical, 20 UI hidden, 40+ in the background
+__attribute__((weak)) void nvn_vk_trim(void);
+static atomic_int g_trimming;
+static void *trim_main(void *p) {
+    (void)p; long before = kb_of("/proc/self/status", "VmRSS:");
+    if (nvn_vk_trim) nvn_vk_trim();
+#ifdef M_PURGE
+    mallopt(M_PURGE, 0);
+#endif
+    fprintf(stderr, "[mem] trim: resident %ld → %ld MB\n", before / 1024, kb_of("/proc/self/status", "VmRSS:") / 1024);
+    atomic_store(&g_trimming, 0); return NULL;
+}
+static void trim_memory(int level) {
+    if (level < 10 || !g_started || atomic_exchange(&g_trimming, 1)) return;
+    pthread_t t; if (pthread_create(&t, NULL, trim_main, NULL)) atomic_store(&g_trimming, 0); else pthread_detach(t);
+}
+JNIEXPORT void JNICALL Java_com_nxnative_GameActivity_nativeTrimMemory(JNIEnv *env, jclass c, jint level) { (void)env; (void)c; trim_memory((int)level); }   // GameActivity.java onTrimMemory
 // DM_FPS_TARGET 60..120: tells the compositor the window's frame rate so a 90 / 120 Hz phone switches its display to that mode (it otherwise stays on its 60 Hz game mode and drops frames).
 // Looked up at run time (ANativeWindow_setFrameRate* are API 30 / 31; the app's minSdk is 31); the change is allowed even when it is not seamless
 static void window_frame_rate(ANativeWindow *w) {
@@ -496,6 +538,7 @@ static void on_cmd(struct android_app *app, int32_t cmd) {
         case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); if (g_started && nvn_vk_window_term) nvn_vk_window_term(); break;
         case APP_CMD_GAINED_FOCUS: immersive(); if (g_started) { dm_focus_set(1); dm_audio_suspend(0); } break;
         case APP_CMD_LOST_FOCUS: if (g_started) { dm_focus_set(2); } break;
+        case APP_CMD_LOW_MEMORY: trim_memory(15); break;
         case APP_CMD_PAUSE: atomic_store(&g_paused, 1); if (g_started) { dm_focus_set(3); dm_audio_suspend(1); guest_clock_freeze_for(1, 1); dm_gfx_suspend(1); cache_save_async(); } break;
         case APP_CMD_RESUME: atomic_store(&g_paused, 0); if (g_started) { dm_gfx_suspend(0); guest_clock_freeze_for(1, 0); dm_audio_suspend(0); dm_focus_set(1); swapin_start(); } break;
     }
