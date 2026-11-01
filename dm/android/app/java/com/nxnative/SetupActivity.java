@@ -231,10 +231,28 @@ public final class SetupActivity extends Activity {
         pin.setChecked("1".equals(envGet("DM_CPU_PIN")));
         pin.setOnCheckedChangeListener((b, on) -> envSet("DM_CPU_PIN", on ? "1" : ""));
         root.addView(pin);
+        presentOptions(root);
         modsText = row(root, "Code patches (.pchtxt)", "Choose", v -> pick(PICK_MOD, true));
         button(root, "Clear code patches", v -> { deleteTree(modsDir()); modsDir(); refresh(); });
         slider(root, "Touch controls opacity", "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");
         slider(root, "Touch controls fade after", "DM_TOUCH_FADE", 0, 10, 3, v -> v == 0 ? "never fade" : v + " s without a touch");
+    }
+    // Vulkan presentation mode (DM_VK_PRESENT, read by nvn_vk.c at the window's creation; falls back to FIFO when the phone lacks the mode)
+    private void presentOptions(LinearLayout root) {
+        TextView pl = new TextView(this); pl.setText(t("Presentation mode", "Modo de presentación")); pl.setPadding(0, 16, 0, 0); root.addView(pl);
+        android.widget.RadioGroup prg = new android.widget.RadioGroup(this);
+        String[][] modes = {
+            { "mailbox", t("Mailbox: no tearing, low latency (default)", "Mailbox: sin cortes, baja latencia (predeterminado)") },
+            { "immediate", t("Immediate: no V-Sync, may tear, lowest latency", "Immediate: sin V-Sync, puede haber cortes, mínima latencia") },
+            { "fifo", t("FIFO: strict V-Sync (steadiest, a slow compositor can stall)", "FIFO: V-Sync estricto (más estable, un compositor lento puede frenar el juego)") }
+        };
+        String cur = envGet("DM_VK_PRESENT"); if (cur.isEmpty()) cur = "mailbox";
+        for (int k = 0; k < modes.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(1300 + k); b.setText(modes[k][1]); prg.addView(b);
+            if (modes[k][0].equals(cur)) b.setChecked(true);
+        }
+        prg.setOnCheckedChangeListener((g, id) -> envSet("DM_VK_PRESENT", modes[id - 1300][0]));
+        root.addView(prg);
     }
     private void slider(LinearLayout root, String label, String key, int min, int max, int def, java.util.function.IntFunction<String> fmt) {
         TextView t = new TextView(this); t.setPadding(0, 16, 0, 0); root.addView(t);
