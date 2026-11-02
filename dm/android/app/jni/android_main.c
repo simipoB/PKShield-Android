@@ -137,8 +137,7 @@ static void pad_map_init(void) {
                 g_kc_map[kc] |= B[i].bit; moved++; }
         const char *c = strchr(m, ','); if (!c) break; m = c + 1;
     }
-    fprintf(stderr, "boot: controller buttons by %s%s
-", labels ? "label" : "position", moved ? ", some remapped (DM_PAD_MAPPING)" : "");
+    fprintf(stderr, "boot: controller buttons by %s%s\n", labels ? "label" : "position", moved ? ", some remapped (DM_PAD_MAPPING)" : "");
 }
 static uint64_t key_bit(int32_t kc) {
     static int init; if (!init) { init = 1; pad_map_init(); }   // (the input thread only)
