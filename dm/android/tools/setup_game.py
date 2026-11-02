@@ -67,6 +67,25 @@ def sync_dl_log(tag, work_log):
                 break
             except Exception: pass
 
+def migrate_legacy_install(game_dir, incoming_tag):
+    other_tag = 'shield' if incoming_tag == 'sword' else 'sword'
+    other_ready = os.path.join(game_dir, f'ready_{other_tag}')
+    inc_ready = os.path.join(game_dir, f'ready_{incoming_tag}')
+    legacy_ready = os.path.join(game_dir, 'ready')
+    if os.path.isfile(legacy_ready) and not os.path.isfile(other_ready) and not os.path.isfile(inc_ready):
+        for base, ext in [('shaders', '.pak'), ('shader_map', '.tsv'), ('ready', ''), ('icon', '.jpg')]:
+            src = os.path.join(game_dir, base + ext)
+            dst = os.path.join(game_dir, f'{base}_{other_tag}{ext}')
+            if os.path.isfile(src) and not os.path.isfile(dst):
+                try: shutil.copyfile(src, dst)
+                except OSError: pass
+        for d in ('patched', 'aoc'):
+            src = os.path.join(game_dir, d)
+            dst = os.path.join(game_dir, f'{d}_{other_tag}')
+            if os.path.isdir(src) and not os.path.isdir(dst):
+                try: shutil.copytree(src, dst)
+                except OSError: pass
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--keys'); ap.add_argument('--base'); ap.add_argument('--captures'); ap.add_argument('--update'); ap.add_argument('--dlc', action='append', default=[])
@@ -155,6 +174,7 @@ def main():
             game_id = a.game if getattr(a, 'game', None) else os.environ.get('DM_GAME', '01008DB008C2C000')
             tag = 'sword' if game_id == '0100ABF008968000' else 'shield'
     PROFILE = _game.load(game_id)
+    migrate_legacy_install(a.out, tag)
     game_name = PROFILE.get('name', 'Pokémon')
     builds = PROFILE.builds(); want = ', '.join(sorted(b['display'] for b in builds.values()))
     if not any(build_id.lower().startswith(b.get('main', '').lower()) for b in builds.values()):

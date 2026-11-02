@@ -77,18 +77,56 @@ public final class SetupActivity extends Activity {
     private File modsDir() { File d = new File(gameDir(), "mods"); d.mkdirs(); return d; }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
     private boolean hasShield() {
-        return (new File(gameDir(), "ready_shield").exists() || (new File(gameDir(), "ready").exists() && !"sword".equalsIgnoreCase(envGet("DM_GAME_VERSION"))))
-            && (new File(gameDir(), "shaders_shield.pak").exists() || new File(gameDir(), "shaders.pak").exists());
+        File d = gameDir();
+        if (new File(d, "ready_shield").exists() && (new File(d, "shaders_shield.pak").exists() || new File(d, "shaders.pak").exists())) return true;
+        if (new File(d, "ready").exists() && new File(d, "shaders.pak").exists()) {
+            if (new File(d, "ready_sword").exists() || new File(d, "shaders_sword.pak").exists()) return false;
+            File fixup = new File(d, "patched/main.fixups.tsv");
+            if (fixup.exists()) {
+                String bid = readBuildId(fixup);
+                return bid == null || !bid.toLowerCase().startsWith("a3b75bcd");
+            }
+            return true;
+        }
+        return false;
     }
     private boolean hasSword() {
-        return (new File(gameDir(), "ready_sword").exists() || (new File(gameDir(), "ready").exists() && "sword".equalsIgnoreCase(envGet("DM_GAME_VERSION"))))
-            && (new File(gameDir(), "shaders_sword.pak").exists() || (new File(gameDir(), "shaders.pak").exists() && "sword".equalsIgnoreCase(envGet("DM_GAME_VERSION"))));
+        File d = gameDir();
+        if (new File(d, "ready_sword").exists() && (new File(d, "shaders_sword.pak").exists() || new File(d, "shaders.pak").exists())) return true;
+        if (new File(d, "ready").exists() && new File(d, "shaders.pak").exists()) {
+            if (new File(d, "ready_shield").exists() || new File(d, "shaders_shield.pak").exists()) return false;
+            File fixup = new File(d, "patched/main.fixups.tsv");
+            if (fixup.exists()) {
+                String bid = readBuildId(fixup);
+                return bid != null && bid.toLowerCase().startsWith("a3b75bcd");
+            }
+        }
+        return false;
+    }
+    private static String readBuildId(File fixup) {
+        if (!fixup.exists()) return null;
+        try (BufferedReader r = new BufferedReader(new FileReader(fixup))) {
+            String ln;
+            while ((ln = r.readLine()) != null) {
+                if (ln.startsWith("# BUILD_ID")) {
+                    String[] parts = ln.split("\\s+");
+                    if (parts.length >= 3) return parts[2].trim();
+                }
+            }
+        } catch (Exception ignored) { }
+        return null;
     }
     private String currentVersion() {
         String v = envGet("DM_GAME_VERSION");
         if (v.isEmpty()) v = envGet("DM_VERSION");
-        if ("sword".equalsIgnoreCase(v)) return "sword";
-        if ("shield".equalsIgnoreCase(v)) return "shield";
+        if ("sword".equalsIgnoreCase(v)) {
+            if (hasSword() || !hasShield()) return "sword";
+            return "shield";
+        }
+        if ("shield".equalsIgnoreCase(v)) {
+            if (hasShield() || !hasSword()) return "shield";
+            return "sword";
+        }
         if (hasSword() && !hasShield()) return "sword";
         return "shield";
     }
@@ -285,6 +323,7 @@ public final class SetupActivity extends Activity {
             String otherVer = isSword() ? "shield" : "sword";
             button(root, t("Install " + other + " as second game", "Instalar " + other + " como segundo juego"), v -> {
                 setVersion(otherVer);
+                baseGame = null; updateGame = null; dlcGames.clear();
                 step = W_WELCOME; installedNow = installFailed = false; showWizard();
             });
         }
@@ -690,7 +729,7 @@ public final class SetupActivity extends Activity {
         play.setEnabled(!running && ready());
         saveExport.setEnabled(!running && setUp());
         saveImport.setEnabled(!running && setUp());
-        shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
+        if (shortcut != null) shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
 
     // ---- the installation guide ----

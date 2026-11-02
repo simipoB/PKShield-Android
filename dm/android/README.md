@@ -40,3 +40,17 @@ The game's NVN commands are recorded and replayed on Vulkan. Paths chosen at sta
 
 `DM_GRAPHICS=low` starts the game in the console's handheld mode (720p, the game's own lighter settings); `auto` switches between TV and
 handheld mode from the phone's thermal status, as a Switch does when it leaves or enters its dock.
+
+## Memory and CPU
+
+- Pages the game gives back (SetHeapSize shrinking, UnmapPhysicalMemory) go straight back to the kernel with MADV_DONTNEED on Android, so the resident size (what the low-memory killer reads) falls at once. DM_UNMAP_FREE=1 restores the lazy MADV_FREE for unmaps.
+- Memory pressure (GameActivity.onTrimMemory at level 10 or more, APP_CMD_LOW_MEMORY): the renderer frees its empty device-memory blocks (nvn_vk_trim) and the allocator purges its free pages (scudo M_PURGE). The log shows a [mem] trim line with the resident size before and after.
+- DM_VK_PRESENT=mailbox|immediate|fifo (settings, "Presentation mode"; default mailbox) picks the Vulkan swapchain present mode; a mode the phone lacks falls back to FIFO. Render resolution is untouched.
+- DM_CPU_PIN=1 (settings checkbox, off by default) keeps the game thread, and the threads it starts, off the slowest CPU cores. Phones whose cores are alike, or whose core speeds cannot be read, are left alone.
+
+## Dual Support (Pokémon Sword & Pokémon Shield)
+
+The app supports both **Pokémon Shield** (`01008DB008C2C000`) and **Pokémon Sword** (`0100ABF008968000`) within the same installation:
+- **Shared Storage**: Common assets in `RomFS` (~95% of data) are shared without duplication; only version-specific code, shaders (`shaders_sword.pak`, `shaders_shield.pak`), DLC, and saves (`save_sword`, `save_shield`) are stored separately.
+- **Version Selector**: When both games are installed, the dashboard displays a version switcher to toggle between Sword and Shield.
+- **Shortcuts**: Dedicated pinned and dynamic home screen shortcuts can launch either Pokémon Sword or Pokémon Shield directly with their respective icons and titles.
