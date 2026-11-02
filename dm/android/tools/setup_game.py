@@ -106,7 +106,7 @@ def main():
         name = nacp[:0x200].split(b'\0')[0].decode('utf-8', 'replace')
         if tid and tid != int(GAME, 16) and 'shield' not in name.lower():
             name = name or 'another game'
-            raise RuntimeError(f'your files are {name} ({tid:016X}), not Pokémon Shield ({GAME}): this app runs Pokémon Shield only')
+            raise RuntimeError(f'your files are {name} ({tid:016X}), not Pokémon Shield ({GAME}): this app runs Pokémon Shield only for now (Pokémon Sword support is planned)')
     except (OSError, struct.error): pass
     # the game's version, checked now rather than as a failure ten minutes later in the shader steps: the code (main's build ID) must be one the profile knows
     with open(os.path.join(exefs, 'main'), 'rb') as f: build_id = f.read(0x50)[0x40:0x50].hex()
