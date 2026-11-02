@@ -17,7 +17,13 @@ import argparse, glob, hashlib, os, shutil, signal, struct, subprocess, sys, thr
 HERE = os.path.dirname(os.path.abspath(__file__)); DM = os.path.normpath(os.path.join(HERE, '../..'))
 GAME = os.environ.setdefault('DM_GAME', '01008DB008C2C000')
 sys.path.insert(0, os.path.join(DM, 'games')); import game as _game
-PROFILE = _game.load()
+try:
+    PROFILE = _game.load()
+except SystemExit:
+    try:
+        PROFILE = _game.load('01008DB008C2C000')
+    except SystemExit:
+        PROFILE = None
 
 def write_runtime_shader_map(found_map, profile_map, output):
     """Use shader locations found in this dump, retaining profile slots for runtime-captured shaders."""
@@ -51,32 +57,59 @@ def watch_translation(found_map, work, built, stop):
         done = min(done, total - 1)   # the map also lists shaders that wait for capture, so the count can fall short of it: 100% is the step's end
         if done != shown: shown = done; print(f'PROGRESS {done}/{total}', flush=True)
 
+def sync_dl_log(tag, work_log):
+    if not work_log or not os.path.exists(work_log): return
+    for dl_dir in ('/storage/emulated/0/Download', '/sdcard/Download'):
+        if os.path.isdir(dl_dir):
+            try:
+                dest = os.path.join(dl_dir, f'Pokemon{tag.capitalize()}-setup-log.txt')
+                shutil.copyfile(work_log, dest)
+                break
+            except Exception: pass
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--keys'); ap.add_argument('--base'); ap.add_argument('--captures'); ap.add_argument('--update'); ap.add_argument('--dlc', action='append', default=[])
     ap.add_argument('--out', required=True); ap.add_argument('--work', required=True); ap.add_argument('--bin', required=True)
-    ap.add_argument('--ext-font'); ap.add_argument('--std-font')
+    ap.add_argument('--ext-font'); ap.add_argument('--std-font'); ap.add_argument('--game')
     a = ap.parse_args()
+    if a.game:
+        os.environ['DM_GAME'] = a.game
+        global PROFILE
+        PROFILE = _game.load(a.game)
     if a.captures: return captures(a)
     if not (a.keys and a.base): ap.error('--keys and --base are needed (or --captures)')
     os.makedirs(a.work, exist_ok=True); os.makedirs(a.out, exist_ok=True)
+    tag = 'sword' if '0100ABF008968000' in (a.game or os.environ.get('DM_GAME', '')) else 'shield'
     log = open(os.path.join(a.work, 'setup.log'), 'a', buffering=1)
+    sync_dl_log(tag, log.name)
     py = sys.executable; env = dict(os.environ, PYTHONUNBUFFERED='1')
     env['PATH'] = a.bin + os.pathsep + env.get('PATH', '')
     tool = lambda n: os.path.join(a.bin, n)
     steps = ['unpack the game', 'rewrite the code', 'find the shaders', 'translate the shaders', 'pack the shaders', 'finish']
     def step(i, extra=''):
         print(f'STEP {i}/{len(steps)} {steps[i - 1]}{extra}', flush=True); log.write(f'== {time.strftime("%H:%M:%S")} {steps[i - 1]}{extra}\n')
+        log.flush()
+        sync_dl_log(tag, log.name)
     def run(cmd, **kw):
-        log.write('$ ' + ' '.join(map(str, cmd)) + '\n')
+        log.write('$ ' + ' '.join(map(str, cmd)) + '\n'); log.flush()
+        sync_dl_log(tag, log.name)
         r = subprocess.run(list(map(str, cmd)), stdout=log, stderr=subprocess.STDOUT, env=kw.pop('env', env), **kw)
+        log.flush()
+        sync_dl_log(tag, log.name)
         if r.returncode:
             name = os.path.basename(str(cmd[1] if str(cmd[0]) == py else cmd[0]))
+            err_details = ''
+            try:
+                with open(log.name, 'r', errors='replace') as lf:
+                    all_lines = [ln.strip() for ln in lf.readlines() if ln.strip()]
+                    err_details = '\n'.join(all_lines[-15:])
+            except Exception: pass
             if r.returncode < 0:
                 try: reason = signal.Signals(-r.returncode).name
                 except ValueError: reason = f'signal {-r.returncode}'
-                raise RuntimeError(f'{name} terminated by {reason} ({r.returncode}); see {log.name}')
-            raise RuntimeError(f'{name} failed ({r.returncode}); see {log.name}')
+                raise RuntimeError(f'{name} terminated by {reason} ({r.returncode})\n{err_details}')
+            raise RuntimeError(f'{name} failed ({r.returncode})\n{err_details}')
     keys = os.path.join(a.keys, 'prod.keys')
     if not os.path.isfile(keys): raise RuntimeError(f'no prod.keys in {a.keys}')
     ex = os.path.join(a.work, 'extract')
@@ -97,22 +130,53 @@ def main():
     except OSError as e: log.write(f'free-space check failed: {e}\n')
     run([tool('nx_extract'), keys, files[0], '-', ex, '--aoc-dir', aoc] + [x for f in files[1:] for x in ('--more', f)])
     exefs, romfs = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS')
-    if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError('the dump has no main module: is it Pokémon Shield?')
+    if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError('the dump has no main module: is it Pokémon Sword or Shield?')
     # the game's version, checked now rather than as a failure ten minutes later in the shader steps: the code (main's build ID) must be one the profile knows
     with open(os.path.join(exefs, 'main'), 'rb') as f: build_id = f.read(0x50)[0x40:0x50].hex()
+    if build_id.lower().startswith('a3b75bcd'):
+        game_id = '0100ABF008968000'
+        tag = 'sword'
+    elif build_id.lower().startswith('a1680262'):
+        game_id = '01008DB008C2C000'
+        tag = 'shield'
+    else:
+        nacp_f = os.path.join(ex, 'control.nacp')
+        is_sw = False
+        if os.path.isfile(nacp_f):
+            try:
+                ndata = open(nacp_f, 'rb').read()
+                if b'Sword' in ndata or b'Espada' in ndata or b'\x00\x80\x96\x08\xf0\xab\x00\x01' in ndata:
+                    is_sw = True
+            except OSError: pass
+        if is_sw:
+            game_id = '0100ABF008968000'
+            tag = 'sword'
+        else:
+            game_id = a.game if getattr(a, 'game', None) else os.environ.get('DM_GAME', '01008DB008C2C000')
+            tag = 'sword' if game_id == '0100ABF008968000' else 'shield'
+    PROFILE = _game.load(game_id)
+    game_name = PROFILE.get('name', 'Pokémon')
     builds = PROFILE.builds(); want = ', '.join(sorted(b['display'] for b in builds.values()))
-    if build_id not in {b.get('main') for b in builds.values()}:
+    if not any(build_id.lower().startswith(b.get('main', '').lower()) for b in builds.values()):
         have = ''
         try: have = open(os.path.join(ex, 'control.nacp'), 'rb').read()[0x3060:0x3070].split(b'\0')[0].decode()
         except OSError: pass
-        raise RuntimeError(f'your files hold Pokémon Shield {have or "of an unknown version"}, and this app needs update {want}: '
+        raise RuntimeError(f'your files hold {game_name} {have or "of an unknown version"}, and this app needs update {want}: '
                            f'choose the {want} update too (a separate update file, or a dump that includes it)')
 
     step(2)
-    pat = os.path.join(a.out, 'patched'); shutil.rmtree(pat, ignore_errors=True); os.makedirs(pat)
+    pat = os.path.join(a.out, 'patched')
+    pat_ver = os.path.join(a.out, f'patched_{tag}')
+    shutil.rmtree(pat, ignore_errors=True); os.makedirs(pat, exist_ok=True)
+    shutil.rmtree(pat_ver, ignore_errors=True); os.makedirs(pat_ver, exist_ok=True)
     for m in PROFILE.words('modules'):
         if os.path.isfile(os.path.join(exefs, m)):
             run([py, os.path.join(DM, 'tools/patch_nso.py'), os.path.join(exefs, m), pat, m], env=dict(env, DM_PATCH_TARGET='android'))
+    for f in os.listdir(pat):
+        src_f = os.path.join(pat, f)
+        dst_f = os.path.join(pat_ver, f)
+        if os.path.isfile(src_f):
+            shutil.copyfile(src_f, dst_f)
 
     step(3)
     pkg = os.path.join(a.work, 'shader_pkg'); shutil.rmtree(pkg, ignore_errors=True)
@@ -142,25 +206,55 @@ def main():
 
     step(5)
     run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
-    run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, os.path.join(a.out, 'shaders.pak')])
+    pak = os.path.join(a.out, 'shaders.pak')
+    pak_ver = os.path.join(a.out, f'shaders_{tag}.pak')
+    run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, pak])
+    shutil.copyfile(pak, pak_ver)
 
     step(6)
+    shmap = os.path.join(a.out, 'shader_map.tsv')
+    shmap_ver = os.path.join(a.out, f'shader_map_{tag}.tsv')
     write_runtime_shader_map(os.path.join(a.work, 'shader_map.found.tsv'),
                              str(PROFILE.table('shader_map.tsv')),
-                             os.path.join(a.out, 'shader_map.tsv'))
+                             shmap)
+    shutil.copyfile(shmap, shmap_ver)
     font = os.path.join(a.out, 'font'); os.makedirs(font, exist_ok=True)
     std = a.std_font or next((f for f in ('/system/fonts/Roboto-Regular.ttf', '/system/fonts/NotoSans-Regular.ttf') if os.path.isfile(f)), None)
     if std: shutil.copyfile(std, os.path.join(font, 'standard.ttf'))
     if a.ext_font: shutil.copyfile(a.ext_font, os.path.join(font, 'nintendo_ext.ttf'))
-    if os.path.isfile(os.path.join(ex, 'icon.jpg')): shutil.copyfile(os.path.join(ex, 'icon.jpg'), os.path.join(a.out, 'icon.jpg'))   # the game's icon from the player's dump: the setup screen puts it on the home screen shortcut
+    if os.path.isfile(os.path.join(ex, 'icon.jpg')):
+        shutil.copyfile(os.path.join(ex, 'icon.jpg'), os.path.join(a.out, f'icon_{tag}.jpg'))
+        shutil.copyfile(os.path.join(ex, 'icon.jpg'), os.path.join(a.out, 'icon.jpg'))
+    if os.path.isdir(aoc):
+        aoc_ver = os.path.join(a.out, f'aoc_{tag}')
+        shutil.rmtree(aoc_ver, ignore_errors=True)
+        shutil.copytree(aoc, aoc_ver)
     rom = os.path.join(a.out, 'RomFS')
     if os.path.realpath(rom) != os.path.realpath(romfs):
-        shutil.rmtree(rom, ignore_errors=True); os.replace(romfs, rom)   # same storage: a rename, nothing copied
+        if not os.path.exists(rom):
+            os.replace(romfs, rom)   # first install: move RomFS
+        else:
+            # Dual support: merge new/unique files into existing RomFS without re-copying duplicates
+            for root, dirs, files in os.walk(romfs):
+                rel = os.path.relpath(root, romfs)
+                dest_dir = os.path.join(rom, rel)
+                os.makedirs(dest_dir, exist_ok=True)
+                for f in files:
+                    src_f = os.path.join(root, f)
+                    dst_f = os.path.join(dest_dir, f)
+                    if not os.path.exists(dst_f):
+                        try: os.link(src_f, dst_f)
+                        except OSError:
+                            try: os.replace(src_f, dst_f)
+                            except OSError: shutil.copyfile(src_f, dst_f)
+            shutil.rmtree(romfs, ignore_errors=True)
     for d in ('shader_pkg', 'cas', 'vk', 'shader_cache', 'extract'): shutil.rmtree(os.path.join(a.work, d), ignore_errors=True)   # only setup.log stays
     # the new pack holds every capture there is, so the launcher's list of captures already added is stale: the next start checks them against the pack again
     try: os.remove(os.path.join(a.out, 'captures_done'))
     except FileNotFoundError: pass
     open(os.path.join(a.out, 'ready'), 'w').write(chain + '\n')
+    open(os.path.join(a.out, f'ready_{tag}'), 'w').write(chain + '\n')
+    sync_dl_log(tag, log.name)
     print('DONE', flush=True)
 
 def pak_keys(path):   # the keys an NXSP shader pack holds, and its chain version
@@ -237,7 +331,9 @@ def captures(a):
     pak = os.path.join(a.out, 'shaders.pak'); have, pchain = pak_keys(pak)
     if pchain != chain: raise RuntimeError(f'the shader pack is version {pchain}, this app makes {chain}: set the game up again')
     slots = {}
-    for ln in open(PROFILE.table('shader_map.tsv'), encoding='utf-8'):
+    c_game = a.game if getattr(a, 'game', None) else os.environ.get('DM_GAME', '01008DB008C2C000')
+    c_prof = _game.load(c_game)
+    for ln in open(c_prof.table('shader_map.tsv'), encoding='utf-8'):
         c = ln.rstrip('\n').split('\t')
         if len(c) > 4 and c[4].startswith('/nvn_capture/'): slots[c[3]] = (c[0], int(c[1]))
     gmap = os.path.join(a.out, 'shader_map.tsv'); mapped = set()
@@ -297,6 +393,9 @@ def captures(a):
     run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
     small = os.path.join(cw, 'new.pak'); run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, small])
     pak_merge(pak, small)
+    for tag in ('sword', 'shield'):
+        tag_pak = os.path.join(a.out, f'shaders_{tag}.pak')
+        if os.path.isfile(tag_pak): pak_merge(tag_pak, small)
     if added:   # the engine reads the map at start: the next one finds these keys and their stage
         with open(gmap, 'a', encoding='utf-8') as f: f.writelines('\t'.join(map(str, r)) + '\n' for r in added)
         log.write(f'{len(added)} captured shaders not in the shader map translated and added to it\n')
@@ -305,4 +404,19 @@ def captures(a):
 
 if __name__ == '__main__':
     try: main()
-    except Exception as e: print(f'FAILED {e}', flush=True); sys.exit(1)
+    except (Exception, SystemExit) as e:
+        if isinstance(e, SystemExit) and (e.code == 0 or e.code is None):
+            sys.exit(0)
+        import traceback
+        tb = traceback.format_exc()
+        err_msg = str(e)
+        try:
+            cur_tag = 'sword' if '0100ABF008968000' in os.environ.get('DM_GAME', '') else 'shield'
+            for dl_dir in ('/storage/emulated/0/Download', '/sdcard/Download'):
+                if os.path.isdir(dl_dir):
+                    dest = os.path.join(dl_dir, f'Pokemon{cur_tag.capitalize()}-setup-log.txt')
+                    with open(dest, 'a', encoding='utf-8', errors='replace') as f:
+                        f.write(f'\n== FATAL SETUP ERROR ({time.strftime("%H:%M:%S")}) ==\n{err_msg}\n{tb}\n')
+                    break
+        except Exception: pass
+        print(f'FAILED {err_msg}', flush=True); sys.exit(1)

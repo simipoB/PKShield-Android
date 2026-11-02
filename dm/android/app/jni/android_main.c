@@ -267,7 +267,18 @@ static void *host_thread(void *a) {
     g_game_tid = gettid();
     pin_fast_cores();
     (void)a; static char alt[65536]; stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt}; sigaltstack(&ss, 0);
-    char patched[1100]; snprintf(patched, sizeof patched, "%s/patched", g_game);
+    const char *ver = getenv("DM_GAME_VERSION");
+    if (!ver || !*ver) ver = getenv("DM_VERSION");
+    const char *tag = (ver && !strcasecmp(ver, "sword")) ? "sword" : "shield";
+    char patched[1100];
+    struct stat pst;
+    char fixup[1200];
+    snprintf(fixup, sizeof fixup, "%s/patched_%s/main.fixups.tsv", g_game, tag);
+    if (!stat(fixup, &pst)) {
+        snprintf(patched, sizeof patched, "%s/patched_%s", g_game, tag);
+    } else {
+        snprintf(patched, sizeof patched, "%s/patched", g_game);
+    }
     char *argv[3] = { "dmhost", patched, NULL };
     int rc = dm_main(2, argv);
     fprintf(stderr, "boot: dm_main returned %d\n", rc);
@@ -320,7 +331,10 @@ static void *log_mirror(void *p) {
         graphics_auto();
         if (n % 6 == 0) fprintf(stderr, "[mem] app %ld MB resident (%ld MB swapped), phone %ld MB available of %ld MB; heat %s\n", kb_of("/proc/self/status", "VmRSS:") / 1024,
                                 kb_of("/proc/self/status", "VmSwap:") / 1024, kb_of("/proc/meminfo", "MemAvailable:") / 1024, kb_of("/proc/meminfo", "MemTotal:") / 1024, thermal_text(th, sizeof th));
-        copy_file(src, DL "/PokemonShield-log.txt");
+        const char *ver = getenv("DM_GAME_VERSION");
+        if (!ver || !*ver) ver = getenv("DM_VERSION");
+        int is_sword = ver && !strcasecmp(ver, "sword");
+        copy_file(src, is_sword ? DL "/PokemonSword-log.txt" : DL "/PokemonShield-log.txt");
     }
     return NULL;
 }
@@ -383,17 +397,23 @@ static void host_start(void) {
     char p[1200], q[1200];
     snprintf(p, sizeof p, "%s/log.txt", g_files); snprintf(q, sizeof q, "%s/log.prev.txt", g_files); rename(p, q);
     if (freopen(p, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
-    copy_file(q, DL "/PokemonShield-log-previous.txt");
-    { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
-    { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);
     pad_map_init();
+    const char *ver = getenv("DM_GAME_VERSION");
+    if (!ver || !*ver) ver = getenv("DM_VERSION");
+    int is_sword = ver && !strcasecmp(ver, "sword");
+    const char *tag = is_sword ? "sword" : "shield";
+    copy_file(q, is_sword ? DL "/PokemonSword-log-previous.txt" : DL "/PokemonShield-log-previous.txt");
+    { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
+    { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     // Game files: inside the installed APKs (the all-in-one .apks bundle, read through apkfs.c as /nxapk/...), else copied into the files folder
     struct stat st; int inapk = !stat("/nxapk/RomFS", &st);
     snprintf(g_game, sizeof g_game, "%s", inapk ? "/nxapk" : g_files);
     #define SETG(k, sub) do { snprintf(p, sizeof p, "%s/%s", g_game, sub); setenv(k, p, 0); } while (0)
     #define SETP(k, sub) do { snprintf(p, sizeof p, "%s/%s", g_files, sub); setenv(k, p, 0); } while (0)
     setenv("DM_AUDIO", "1", 0);
+    if (is_sword) setenv("DM_PROGRAM_ID", "0100abf008968000", 0);
+    else setenv("DM_PROGRAM_ID", "01008db008c2c000", 0);
     // graphics (the app's settings screen): high = the console's TV mode (1080p, full effects), low = handheld mode (720p, the game's own lighter settings),
     // auto = TV mode, switched to handheld while the phone is hot (graphics_auto below). DM_OPMODE in env.txt still wins
     { const char *g = getenv("DM_GRAPHICS"); if (g && !strcmp(g, "low")) setenv("DM_OPMODE", "0", 0); else if (g && (!strcmp(g, "high") || !strcmp(g, "auto"))) setenv("DM_OPMODE", "1", 0); }
@@ -402,16 +422,38 @@ static void host_start(void) {
 #endif   // real sound output (AAudio, compat/aaudio_unit.c); env.txt can set 0
     // pipelines: every one the game makes is recorded here and built ahead at the next start, the list shipped with the game too, and the driver's compiled code kept
     SETP("DM_VK_PSO_RECORD", "vk_pipelines.bin"); SETP("DM_VK_PCACHE", "vk_pipeline_cache.bin"); SETG("DM_VK_PSO_SEED", "vk_pipelines_seed.bin");
-    snprintf(q, sizeof q, "%s/shaders.pak", g_game); if (!stat(q, &st)) setenv("DM_SPV_PAK", q, 0);   // the packed shader set, else vk/b-<chain>/
-    { snprintf(p, sizeof p, "%s/aoc", g_game); struct stat as; if (!stat(p, &as)) setenv("DM_AOC_DIR", p, 0); }   // the DLC the player owns (Shield: the Expansion Pass keys; its content is in the update)
+    char sp_pak[1300]; snprintf(sp_pak, sizeof sp_pak, "%s/shaders_%s.pak", g_game, tag);
+    if (!stat(sp_pak, &st)) setenv("DM_SPV_PAK", sp_pak, 1);
+    else { snprintf(q, sizeof q, "%s/shaders.pak", g_game); if (!stat(q, &st)) setenv("DM_SPV_PAK", q, 0); }
+    char aoc_tag[1300]; snprintf(aoc_tag, sizeof aoc_tag, "%s/aoc_%s", g_game, tag);
+    if (!stat(aoc_tag, &st)) setenv("DM_AOC_DIR", aoc_tag, 1);
+    else { snprintf(p, sizeof p, "%s/aoc", g_game); struct stat as; if (!stat(p, &as)) setenv("DM_AOC_DIR", p, 0); }
     SETP("DM_NVN_CAPTURE", "nvn_capture");   // shaders the game builds in memory, saved for the setup to translate (nvn_vk.c mtl_shader_seen)
-    SETG("DM_ROMFS", "RomFS"); SETG("DM_SPV_DIR", "vk"); SETG("DM_NVN_SHMAP", "shader_map.tsv"); SETG("DM_FONT_DIR", "font");
-    SETP("DM_SAVE", "save"); SETP("DM_TEMP", "temp"); SETP("DM_MODS_DIR", "mods");
+    SETG("DM_ROMFS", "RomFS"); SETG("DM_SPV_DIR", "vk");
+    char shm_tag[1300]; snprintf(shm_tag, sizeof shm_tag, "shader_map_%s.tsv", tag);
+    char shm_path[1300]; snprintf(shm_path, sizeof shm_path, "%s/%s", g_game, shm_tag);
+    if (!stat(shm_path, &st)) SETG("DM_NVN_SHMAP", shm_tag);
+    else SETG("DM_NVN_SHMAP", "shader_map.tsv");
+    SETG("DM_FONT_DIR", "font");
+    char save_tag[1300]; snprintf(save_tag, sizeof save_tag, "save_%s", tag);
+    char save_path[1300]; snprintf(save_path, sizeof save_path, "%s/%s", g_files, save_tag);
+    if (!stat(save_path, &st)) {
+        SETP("DM_SAVE", save_tag);
+    } else if (!strcmp(tag, "shield")) {
+        snprintf(p, sizeof p, "%s/save", g_files); mkdir(p, 0755);
+        SETP("DM_SAVE", "save");
+    } else {
+        mkdir(save_path, 0755);
+        SETP("DM_SAVE", save_tag);
+    }
+    SETP("DM_TEMP", "temp"); SETP("DM_MODS_DIR", "mods");
     // A save archive imported by SetupActivity is staged as save_import/. Rename the directories on the same
     // filesystem so nested save layouts survive and the old save remains intact if the import cannot be installed.
     { char imp[1200], old[1300]; struct stat is, ss;
       snprintf(imp, sizeof imp, "%s/save_import", g_files);
-      snprintf(p, sizeof p, "%s/save", g_files);
+      const char *cur_save = getenv("DM_SAVE");
+      if (cur_save && *cur_save) snprintf(p, sizeof p, "%s", cur_save);
+      else snprintf(p, sizeof p, "%s/save", g_files);
       if (!lstat(imp, &is) && S_ISDIR(is.st_mode)) {
           int moved_old = 0, can_install = 1;
           int save_status = stat(p, &ss);

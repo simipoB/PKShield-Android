@@ -15,11 +15,15 @@ package com.nxnative;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Typeface;
 import android.graphics.drawable.Icon;
 import android.database.Cursor;
 import android.net.Uri;
@@ -33,6 +37,7 @@ import android.provider.Settings;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.widget.Button;
+import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -62,7 +67,7 @@ public final class SetupActivity extends Activity {
         final Uri uri; final String name; final int role; File dest;
         PickedGame(Uri uri, String name, int role) { this.uri = uri; this.name = name; this.role = role; }
     }
-    private TextView status, wizTitle; private ProgressBar bar; private Button play, shortcut, saveExport, saveImport, wizBack, wizNext; private ImageView logo;
+    private TextView status, wizTitle, titleView; private ProgressBar bar; private Button play, shortcut, saveExport, saveImport, wizBack, wizNext; private ImageView logo;
     private LinearLayout wizBody;
     private boolean wizard, installedNow, installFailed, defaultsDone; private int step;
     private volatile boolean running;
@@ -71,10 +76,124 @@ public final class SetupActivity extends Activity {
     private File gameDir() { return getExternalFilesDir(null); }
     private File modsDir() { File d = new File(gameDir(), "mods"); d.mkdirs(); return d; }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
+    private boolean hasShield() {
+        return (new File(gameDir(), "ready_shield").exists() || (new File(gameDir(), "ready").exists() && !"sword".equalsIgnoreCase(envGet("DM_GAME_VERSION"))))
+            && (new File(gameDir(), "shaders_shield.pak").exists() || new File(gameDir(), "shaders.pak").exists());
+    }
+    private boolean hasSword() {
+        return (new File(gameDir(), "ready_sword").exists() || (new File(gameDir(), "ready").exists() && "sword".equalsIgnoreCase(envGet("DM_GAME_VERSION"))))
+            && (new File(gameDir(), "shaders_sword.pak").exists() || (new File(gameDir(), "shaders.pak").exists() && "sword".equalsIgnoreCase(envGet("DM_GAME_VERSION"))));
+    }
+    private String currentVersion() {
+        String v = envGet("DM_GAME_VERSION");
+        if (v.isEmpty()) v = envGet("DM_VERSION");
+        if ("sword".equalsIgnoreCase(v)) return "sword";
+        if ("shield".equalsIgnoreCase(v)) return "shield";
+        if (hasSword() && !hasShield()) return "sword";
+        return "shield";
+    }
+    private boolean isSword() { return "sword".equalsIgnoreCase(currentVersion()); }
+    private String gameTitle() { return isSword() ? "Pokémon Sword" : "Pokémon Shield"; }
+    private void setVersion(String v) {
+        envSet("DM_GAME_VERSION", v);
+        envSet("DM_VERSION", v);
+        if ("sword".equalsIgnoreCase(v)) {
+            envSet("DM_PROGRAM_ID", "0100abf008968000");
+            envSet("DM_GAME", "0100ABF008968000");
+        } else {
+            envSet("DM_PROGRAM_ID", "01008db008c2c000");
+            envSet("DM_GAME", "01008DB008C2C000");
+        }
+        if (titleView != null) titleView.setText(gameTitle());
+    }
+    private String detectGameVersion(InputStream in) {
+        if (in == null) return null;
+        try {
+            byte[] buf = new byte[131072];
+            int read = in.read(buf);
+            if (read > 0) {
+                String head = new String(buf, 0, read, java.nio.charset.StandardCharsets.ISO_8859_1).toUpperCase();
+                if (head.contains("0100ABF00896") || head.contains("SWORD") || head.contains("ESPADA")) return "sword";
+                if (head.contains("01008DB008C2") || head.contains("SHIELD") || head.contains("ESCUDO")) return "shield";
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+    private String detectGameVersion(Uri u, String name) {
+        if (name != null) {
+            String n = name.toUpperCase();
+            if (n.contains("0100ABF00896") || n.contains("SWORD") || n.contains("ESPADA")) return "sword";
+            if (n.contains("01008DB008C2") || n.contains("SHIELD") || n.contains("ESCUDO")) return "shield";
+        }
+        if (u != null) {
+            try (InputStream in = getContentResolver().openInputStream(u)) {
+                return detectGameVersion(in);
+            } catch (Exception ignored) { }
+        }
+        return null;
+    }
+    private String detectGameVersion(File f) {
+        if (f == null || !f.exists()) return null;
+        String v = detectGameVersion(null, f.getName());
+        if (v != null) return v;
+        try (InputStream in = new FileInputStream(f)) {
+            return detectGameVersion(in);
+        } catch (Exception ignored) { }
+        return null;
+    }
+    private static File setupLogFile(String ver) {
+        boolean sw = "sword".equalsIgnoreCase(ver);
+        String fname = sw ? "PokemonSword-setup-log.txt" : "PokemonShield-setup-log.txt";
+        File dl = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+        if (dl != null && (dl.isDirectory() || dl.mkdirs())) return new File(dl, fname);
+        return new File("/storage/emulated/0/Download", fname);
+    }
+    private void logSetup(String msg) { logSetup(currentVersion(), msg); }
+    private static synchronized void logSetup(String ver, String msg) {
+        android.util.Log.i("PKSetup", msg);
+        String stamp = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", java.util.Locale.US).format(new java.util.Date());
+        String line = "[" + stamp + "] " + msg + "\n";
+        File f = setupLogFile(ver);
+        try (FileWriter fw = new FileWriter(f, true)) { fw.write(line); } catch (Exception ignored) { }
+    }
+    private void showLogDialog() {
+        File lf = setupLogFile(currentVersion());
+        File alt = new File(new File(gameDir(), "setup_work"), "setup.log");
+        StringBuilder sb = new StringBuilder();
+        File target = lf.exists() ? lf : (alt.exists() ? alt : null);
+        if (target != null) {
+            try (BufferedReader br = new BufferedReader(new FileReader(target))) {
+                List<String> lines = new ArrayList<>(); String l;
+                while ((l = br.readLine()) != null) { lines.add(l); if (lines.size() > 400) lines.remove(0); }
+                for (String s : lines) sb.append(s).append("\n");
+            } catch (Exception e) { sb.append("Error reading log: ").append(e.getMessage()); }
+        } else {
+            sb.append(t("No setup log found yet.", "Aún no se ha generado ningún registro de instalación."))
+              .append("\n\n").append(t("Expected file: ", "Archivo esperado: ")).append(lf.getPath());
+        }
+        ScrollView sv = new ScrollView(this);
+        HorizontalScrollView hsv = new HorizontalScrollView(this);
+        TextView tv = new TextView(this);
+        tv.setText(sb.toString()); tv.setTextSize(12); tv.setTypeface(Typeface.MONOSPACE);
+        tv.setPadding(32, 32, 32, 32); tv.setTextIsSelectable(true);
+        hsv.addView(tv); sv.addView(hsv);
+        new AlertDialog.Builder(this)
+            .setTitle(t("Installation Log: " + lf.getName(), "Registro: " + lf.getName()))
+            .setView(sv)
+            .setPositiveButton(t("Copy to clipboard", "Copiar al portapapeles"), (d, w) -> {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                if (cm != null) {
+                    cm.setPrimaryClip(ClipData.newPlainText("SetupLog", sb.toString()));
+                    status.setText(t("Log copied to clipboard.", "Registro copiado al portapapeles."));
+                }
+            })
+            .setNegativeButton(t("Close", "Cerrar"), null)
+            .show();
+    }
     private boolean inApk() {
         try (InputStream is = getAssets().open("game/ready")) { return is != null; } catch (IOException e) { return false; }
     }
-    private boolean setUp() { return inApk() || (new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists()); }
+    private boolean setUp() { return inApk() || hasShield() || hasSword() || (new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists()); }
     // set up for this app version: the shader pack's translation chain (the ready file) is the one the engine was built for (assets/shader_chain, build_apk.py);
     // an update that changes the chain otherwise starts the game with a pack the engine refuses (every 3D shader "SPIR-V missing")
     private boolean ready() { return setUp() && chainCurrent(); }
@@ -85,13 +204,17 @@ public final class SetupActivity extends Activity {
             try (BufferedReader r = new BufferedReader(new InputStreamReader(getAssets().open("game/ready")))) { have = r.readLine(); } catch (IOException e) { }
         }
         if (have == null) {
-            try (BufferedReader r = new BufferedReader(new FileReader(new File(gameDir(), "ready")))) { have = r.readLine(); } catch (IOException e) { return false; }
+            String checkFile = isSword() && new File(gameDir(), "ready_sword").exists() ? "ready_sword" :
+                               new File(gameDir(), "ready_shield").exists() ? "ready_shield" : "ready";
+            try (BufferedReader r = new BufferedReader(new FileReader(new File(gameDir(), checkFile)))) { have = r.readLine(); } catch (IOException e) { return false; }
         }
         return want != null && have != null && want.trim().equals(have.trim());
     }
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        String launchVer = getIntent().getStringExtra("game_version");
+        if (launchVer != null && !launchVer.isEmpty()) setVersion(launchVer);
         boolean asked = getIntent().getBooleanExtra("setup", false);
         if (b != null) {   // the guide's progress survives the process being recreated while a picker is open
             wizard = b.getBoolean("wizard"); step = b.getInt("step"); baseGame = b.getString("base"); updateGame = b.getString("update");
@@ -99,6 +222,7 @@ public final class SetupActivity extends Activity {
             String[] im = b.getStringArray("imported"); if (im != null) for (String p : im) importedGames.add(new File(p));
         }
         if (ready()) setupShortcut();
+        syncPatchedFiles();
         if (ready() && !asked && !wizard) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
         if (!ready() || wizard) showWizard(); else showDashboard();
         gameIcon();
@@ -119,7 +243,7 @@ public final class SetupActivity extends Activity {
     private LinearLayout page() {
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 48, 48, 48); root.setGravity(Gravity.CENTER_HORIZONTAL);
         logo = new ImageView(this); logo.setVisibility(android.view.View.GONE); root.addView(logo, new LinearLayout.LayoutParams(320, 320));
-        TextView title = new TextView(this); title.setText("Pokémon Shield"); title.setTextSize(28); root.addView(title);
+        titleView = new TextView(this); titleView.setText(gameTitle()); titleView.setTextSize(28); root.addView(titleView);
         return root;
     }
     private void show(LinearLayout root) { ScrollView sv = new ScrollView(this); sv.addView(root); setContentView(sv); }
@@ -129,14 +253,41 @@ public final class SetupActivity extends Activity {
     private void showDashboard() {
         wizard = false; wizBody = null; wizTitle = null; wizBack = wizNext = null;
         LinearLayout root = page();
-        play = button(root, "Play", v -> startGame()); play.setEnabled(ready());
+        if (hasSword() && hasShield()) {
+            LinearLayout vGroup = new LinearLayout(this);
+            vGroup.setOrientation(LinearLayout.HORIZONTAL);
+            vGroup.setGravity(Gravity.CENTER_HORIZONTAL);
+            vGroup.setPadding(0, 8, 0, 16);
+            Button bShield = new Button(this);
+            bShield.setText("Pokémon Shield" + (!isSword() ? "  ●" : ""));
+            bShield.setOnClickListener(v -> { setVersion("shield"); showDashboard(); gameIcon(); });
+            Button bSword = new Button(this);
+            bSword.setText("Pokémon Sword" + (isSword() ? "  ●" : ""));
+            bSword.setOnClickListener(v -> { setVersion("sword"); showDashboard(); gameIcon(); });
+            vGroup.addView(bShield);
+            vGroup.addView(bSword);
+            root.addView(vGroup);
+        }
+        play = button(root, t("Play " + gameTitle(), "Jugar " + gameTitle()), v -> startGame()); play.setEnabled(ready());
         status = new TextView(this); status.setPadding(0, 16, 0, 16); root.addView(status);
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(600); root.addView(bar);
         settings(root);
         button(root, t("Run the installation guide again", "Repetir la guía de instalación"), v -> { step = W_WELCOME; installedNow = installFailed = false; showWizard(); });
+        button(root, t("View installation log", "Ver registro de instalación"), v -> showLogDialog());
         saveExport = button(root, "Export save data", v -> chooseSaveExport());
         saveImport = button(root, "Import edited save data", v -> chooseSaveImport());
-        shortcut = button(root, "Add Pokémon Shield to the home screen", v -> pinShortcut());
+        if (hasSword() && hasShield()) {
+            button(root, t("Add Pokémon Shield to the home screen", "Añadir Pokémon Shield al inicio"), v -> pinShortcut("shield"));
+            button(root, t("Add Pokémon Sword to the home screen", "Añadir Pokémon Sword al inicio"), v -> pinShortcut("sword"));
+        } else {
+            shortcut = button(root, t("Add " + gameTitle() + " to the home screen", "Añadir " + gameTitle() + " al inicio"), v -> pinShortcut(currentVersion()));
+            String other = isSword() ? "Pokémon Shield" : "Pokémon Sword";
+            String otherVer = isSword() ? "shield" : "sword";
+            button(root, t("Install " + other + " as second game", "Instalar " + other + " como segundo juego"), v -> {
+                setVersion(otherVer);
+                step = W_WELCOME; installedNow = installFailed = false; showWizard();
+            });
+        }
         show(root); refresh();
     }
     // the installation guide: one screen per thing the install needs (keys, base game, update, DLC), then options, then the install itself
@@ -204,7 +355,7 @@ public final class SetupActivity extends Activity {
         // 60 / 90 / 120: the game steps by the real time of each frame (hle_nvn.c vstep_tick), so its speed stays normal: when the phone cannot keep a rate it drops to a half or a third of it
         String[][] fpsModes = {
             { "30", t("30 FPS: original console frame rate", "30 FPS: velocidad original de la consola") },
-            { "60", t("60 FPS: smooth, uses more battery (Shield 1.3.2)", "60 FPS: fluido, gasta más batería (Shield 1.3.2)") },
+            { "60", t("60 FPS: smooth, uses more battery (" + gameTitle() + " 1.3.2)", "60 FPS: fluido, gasta más batería (" + gameTitle() + " 1.3.2)") },
             { "90", t("90 FPS: needs a 90 Hz or faster screen; falls back to 45 / 30 when the phone cannot keep up", "90 FPS: requiere pantalla de 90 Hz o más; baja a 45 / 30 si el teléfono no da abasto") },
             { "120", t("120 FPS: needs a 120 Hz screen and a powerful phone; falls back to 60 / 40 when it cannot keep up (game speed stays normal)", "120 FPS: requiere pantalla de 120 Hz y un teléfono potente; baja a 60 / 40 si no da abasto (la velocidad del juego no cambia)") }
         };
@@ -569,7 +720,19 @@ public final class SetupActivity extends Activity {
         String next = t("Next", "Siguiente");
         switch (step) {
             case W_WELCOME:
-                head(t("Install Pokémon Shield", "Instalar Pokémon Shield"));
+                head(t("Install " + gameTitle(), "Instalar " + gameTitle()));
+                LinearLayout vSel = new LinearLayout(this);
+                vSel.setOrientation(LinearLayout.HORIZONTAL);
+                vSel.setGravity(Gravity.CENTER_HORIZONTAL);
+                vSel.setPadding(0, 8, 0, 16);
+                Button bSh = new Button(this);
+                bSh.setText("Pokémon Shield" + (!isSword() ? "  ●" : ""));
+                bSh.setOnClickListener(v -> { setVersion("shield"); renderStep(); });
+                Button bSw = new Button(this);
+                bSw.setText("Pokémon Sword" + (isSword() ? "  ●" : ""));
+                bSw.setOnClickListener(v -> { setVersion("sword"); renderStep(); });
+                vSel.addView(bSh); vSel.addView(bSw);
+                wizBody.addView(vSel);
                 para(t("This guide sets the game up from your own dump, asking for one thing at a time:\n\n1. Your console's keys (prod.keys)\n2. The base game (.nsp or .xci)\n3. Update 1.3.2 (.nsp), unless your base file already includes it\n4. DLC (optional)\n\nNothing is uploaded: your files and keys stay on this phone. The conversion takes a long time on a phone, so keep it plugged in with the screen on.",
                        "Esta guía instala el juego a partir de tu propio dump y te pide un archivo a la vez:\n\n1. Las claves de tu consola (prod.keys)\n2. El juego base (.nsp o .xci)\n3. La actualización 1.3.2 (.nsp), salvo que tu archivo base ya la incluya\n4. DLC (opcional)\n\nNo se sube nada: tus archivos y claves se quedan en este teléfono. La conversión tarda mucho en un teléfono: déjalo conectado al cargador y con la pantalla encendida."));
                 para(t("Free space on this phone: ", "Espacio libre en este teléfono: ") + gb(new StatFs(gameDir().getPath()).getAvailableBytes()));
@@ -590,21 +753,21 @@ public final class SetupActivity extends Activity {
                 choose(keys ? t("Replace keys", "Cambiar claves") : t("Choose keys", "Elegir claves"), PICK_KEYS, true);
                 ok = keys; break;
             case W_BASE:
-                head(t("Base game", "Juego base"));
-                para(t("Choose the Pokémon Shield base game file (.nsp or .xci).", "Elige el archivo del juego base de Pokémon Shield (.nsp o .xci)."));
+                head(t("Base game (" + gameTitle() + ")", "Juego base (" + gameTitle() + ")"));
+                para(t("Choose the " + gameTitle() + " base game file (.nsp or .xci).", "Elige el archivo del juego base de " + gameTitle() + " (.nsp o .xci)."));
                 para(nameOrNone(baseGame, t("• Not chosen yet", "• Aún sin elegir")));
                 choose(baseGame == null ? t("Choose base game", "Elegir juego base") : t("Change", "Cambiar"), PICK_BASE, false);
                 ok = baseGame != null; break;
             case W_UPDATE:
-                head(t("Update 1.3.2", "Actualización 1.3.2"));
-                para(t("This app needs Pokémon Shield version 1.3.2. Choose the update file (.nsp).\n\nSkip this step only if your base file is a dump that already includes 1.3.2: the installer checks the version and tells you if the update is missing.",
-                       "Esta app necesita Pokémon Shield versión 1.3.2. Elige el archivo de la actualización (.nsp).\n\nOmite este paso solo si tu archivo base ya incluye la 1.3.2: el instalador revisa la versión y te avisa si falta la actualización."));
+                head(t("Update 1.3.2 (" + gameTitle() + ")", "Actualización 1.3.2 (" + gameTitle() + ")"));
+                para(t("This app needs " + gameTitle() + " version 1.3.2. Choose the update file (.nsp).\n\nSkip this step only if your base file is a dump that already includes 1.3.2: the installer checks the version and tells you if the update is missing.",
+                       "Esta app necesita " + gameTitle() + " versión 1.3.2. Elige el archivo de la actualización (.nsp).\n\nOmite este paso solo si tu archivo base ya incluye la 1.3.2: el instalador revisa la versión y te avisa si falta la actualización."));
                 para(nameOrNone(updateGame, t("• Not chosen", "• Sin elegir")));
                 choose(updateGame == null ? t("Choose update", "Elegir actualización") : t("Change", "Cambiar"), PICK_UPDATE, false);
                 if (updateGame == null) next = t("Skip", "Omitir"); break;
             case W_DLC:
-                head(t("DLC (optional)", "DLC (opcional)"));
-                para(t("Isle of Armor / Crown Tundra DLC (.nsp). You can select several files at once, or skip this step.", "DLC de Isle of Armor / Crown Tundra (.nsp). Puedes seleccionar varios archivos a la vez u omitir este paso."));
+                head(t("DLC (" + gameTitle() + ", optional)", "DLC (" + gameTitle() + ", opcional)"));
+                para(t("Isle of Armor / Crown Tundra DLC (.nsp) for " + gameTitle() + ". You can select several files at once, or skip this step.", "DLC de Isle of Armor / Crown Tundra (.nsp) para " + gameTitle() + ". Puedes seleccionar varios archivos a la vez u omitir este paso."));
                 { StringBuilder sb = new StringBuilder(); for (String d : dlcGames) sb.append("✓ ").append(new File(d).getName()).append('\n');
                   para(dlcGames.isEmpty() ? t("• None chosen", "• Ninguno elegido") : sb.toString().trim()); }
                 choose(t("Add DLC files", "Añadir DLC"), PICK_DLC, true);
@@ -619,17 +782,19 @@ public final class SetupActivity extends Activity {
             default:   // W_INSTALL
                 if (installedNow) {
                     head(t("Done", "Listo"));
-                    para(t("✓ Pokémon Shield is installed. Press Play.", "✓ Pokémon Shield está instalado. Pulsa Jugar."));
+                    para(t("✓ " + gameTitle() + " is installed. Press Play.", "✓ " + gameTitle() + " está instalado. Pulsa Jugar."));
+                    button(wizBody, t("View installation log", "Ver registro de instalación"), v -> showLogDialog());
                     next = t("Play", "Jugar"); break;
                 }
-                head(t("Ready to install", "Listo para instalar"));
+                head(t("Ready to install " + gameTitle(), "Listo para instalar " + gameTitle()));
                 long need = sizeOf(baseGame) + sizeOf(updateGame); for (String d : dlcGames) need += sizeOf(d);
                 long free = new StatFs(gameDir().getPath()).getAvailableBytes();
-                para("✓ prod.keys" + (titleKeys ? " + title.keys" : "") + "\n" + t("Base game: ", "Juego base: ") + nameOrNone(baseGame, "-") + "\n" + t("Update: ", "Actualización: ") + nameOrNone(updateGame, t("none (the base file must include 1.3.2)", "ninguna (el archivo base debe incluir la 1.3.2)"))
+                para("✓ prod.keys" + (titleKeys ? " + title.keys" : "") + "\n" + t("Target game: ", "Juego a instalar: ") + gameTitle() + "\n" + t("Base game: ", "Juego base: ") + nameOrNone(baseGame, "-") + "\n" + t("Update: ", "Actualización: ") + nameOrNone(updateGame, t("none (the base file must include 1.3.2)", "ninguna (el archivo base debe incluir la 1.3.2)"))
                      + "\nDLC: " + dlcGames.size() + "\n" + t("Free space: ", "Espacio libre: ") + gb(free));
                 if (free < need + (2L << 30)) para(t("⚠ Free space may not be enough: the installer unpacks the game's files (about " + gb(need) + " here). Free some space or it may fail.",
                                                     "⚠ Puede que no alcance el espacio libre: el instalador descomprime los archivos del juego (unos " + gb(need) + " aquí). Libera espacio o podría fallar."));
                 para(t("It can take a long time. Keep this screen open and the phone plugged in.", "Puede tardar mucho. Mantén esta pantalla abierta y el teléfono conectado al cargador."));
+                button(wizBody, t("View setup log", "Ver registro de instalación"), v -> showLogDialog());
                 next = running ? t("Installing...", "Instalando...") : installFailed ? t("Try again", "Reintentar") : t("Install", "Instalar");
                 ok = keys && baseGame != null; break;
         }
@@ -669,9 +834,16 @@ public final class SetupActivity extends Activity {
         } catch (IOException e) { return null; }
         return lines == 0 ? null : prod ? "prod.keys" : title ? "title.keys" : null;
     }
-    private String titleHint(String name) {   // a title ID in the file name that is not Shield's (01008DB008C2C000 base, ...800 update, ...D00x DLC)
+    private String titleHint(String name) {
+        String ver = detectGameVersion(null, name);
+        if ("sword".equals(ver)) return " " + t("(Pokémon Sword)", "(Pokémon Espada)");
+        if ("shield".equals(ver)) return " " + t("(Pokémon Shield)", "(Pokémon Escudo)");
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("0100[0-9A-Fa-f]{12}").matcher(name);
-        return m.find() && !m.group().toUpperCase().startsWith("01008DB008C2") ? " " + t("(warning: its title ID " + m.group() + " is not Pokémon Shield's 01008DB008C2C000)", "(aviso: su title ID " + m.group() + " no es el de Pokémon Shield, 01008DB008C2C000)") : "";
+        if (!m.find()) return "";
+        String id = m.group().toUpperCase();
+        if (id.startsWith("01008DB008C2") || id.startsWith("0100ABF00896")) return "";
+        return " " + t("(warning: title ID " + m.group() + " is neither Pokémon Shield nor Sword)",
+                       "(aviso: el title ID " + m.group() + " no es de Pokémon Shield ni Pokémon Sword)");
     }
     @Override protected void onActivityResult(int req, int res, Intent data) {
         if (res != RESULT_OK) return;
@@ -684,31 +856,58 @@ public final class SetupActivity extends Activity {
         List<PickedGame> imports = new ArrayList<>();
         for (Uri u : uris) {
             String name = nameOf(u);
+            logSetup("[PICK] Request=" + req + ", file=" + name + ", URI=" + u);
             if (req == PICK_DRIVER) { installDriver(u, name); continue; }
             if (req == PICK_MOD) {
                 String safe = new File(name).getName();
                 if (!safe.toLowerCase().endsWith(".pchtxt")) { status.setText(safe + " is not a .pchtxt patch"); continue; }
-                try (InputStream in = getContentResolver().openInputStream(u); OutputStream out = new FileOutputStream(new File(modsDir(), safe))) { copy(in, out); status.setText("Installed patch " + safe + "."); }
-                catch (IOException e) { status.setText("could not read " + safe + ": " + e.getMessage()); }
+                try (InputStream in = getContentResolver().openInputStream(u); OutputStream out = new FileOutputStream(new File(modsDir(), safe))) {
+                    copy(in, out); status.setText("Installed patch " + safe + ".");
+                    logSetup("[PICK_MOD] Installed patch: " + safe);
+                } catch (IOException e) {
+                    status.setText("could not read " + safe + ": " + e.getMessage());
+                    logSetup("[PICK_MOD] Error reading patch: " + e);
+                }
                 continue;
             }
             if (req == PICK_KEYS) {   // copied to a temporary file first: what it holds, not its name, says which keys file it is
                 long size = documentSize(u);
-                if (size > (8L << 20)) { status.setText(t(name + " is too big to be a keys file (prod.keys is a few KB). Choose prod.keys.", name + " pesa demasiado para ser un archivo de claves (prod.keys pesa pocos KB). Elige prod.keys.")); continue; }
+                logSetup("[PICK_KEYS] Selected " + name + " (" + size + " bytes)");
+                if (size > (8L << 20)) {
+                    String err = t(name + " is too big to be a keys file (prod.keys is a few KB). Choose prod.keys.", name + " pesa demasiado para ser un archivo de claves (prod.keys pesa pocos KB). Elige prod.keys.");
+                    status.setText(err); logSetup("[PICK_KEYS] Error: " + err); continue;
+                }
                 File tmp = new File(keysDir(), "incoming.tmp");
                 try (InputStream in = getContentResolver().openInputStream(u); OutputStream out = new FileOutputStream(tmp)) { copy(in, out); }
-                catch (IOException | SecurityException e) { tmp.delete(); status.setText("could not read " + name + ": " + e.getMessage()); continue; }
+                catch (IOException | SecurityException e) {
+                    tmp.delete(); status.setText("could not read " + name + ": " + e.getMessage());
+                    logSetup("[PICK_KEYS] Error copying incoming keys: " + e); continue;
+                }
                 String kind = classifyKeys(tmp);
-                if (kind == null) { tmp.delete(); status.setText(t(name + " does not look like a keys file (prod.keys has lines like master_key_00 = ...). Choose prod.keys.", name + " no parece un archivo de claves (prod.keys tiene líneas como master_key_00 = ...). Elige prod.keys.")); continue; }
+                if (kind == null) {
+                    tmp.delete();
+                    String err = t(name + " does not look like a keys file (prod.keys has lines like master_key_00 = ...). Choose prod.keys.", name + " no parece un archivo de claves (prod.keys tiene líneas como master_key_00 = ...). Elige prod.keys.");
+                    status.setText(err); logSetup("[PICK_KEYS] Error: " + err); continue;
+                }
                 File to = new File(keysDir(), kind); to.delete();
-                if (!tmp.renameTo(to)) { tmp.delete(); status.setText("could not save " + kind); continue; }
+                if (!tmp.renameTo(to)) { tmp.delete(); status.setText("could not save " + kind); logSetup("[PICK_KEYS] Could not rename to " + kind); continue; }
                 status.setText(t("Saved " + kind + " in the app's private storage.", "Se guardó " + kind + " en el almacenamiento privado de la app."));
+                logSetup("[PICK_KEYS] Saved " + kind + " (" + to.length() + " bytes)");
                 continue;
             }
             // base game, update or DLC
             String low = name == null ? "" : name.toLowerCase();
-            if (!low.endsWith(".nsp") && !low.endsWith(".xci")) { status.setText(t(name + " is not a .nsp or .xci file.", name + " no es un archivo .nsp o .xci.")); continue; }
+            if (!low.endsWith(".nsp") && !low.endsWith(".xci")) {
+                String err = t(name + " is not a .nsp or .xci file.", name + " no es un archivo .nsp o .xci.");
+                status.setText(err); logSetup("[PICK_GAME] Error: " + err); continue;
+            }
+            long sz = documentSize(u);
+            logSetup("[PICK_GAME] File: " + name + " (size: " + sz + " bytes / " + gb(Math.max(0, sz)) + ")");
+            String detected = detectGameVersion(u, name);
+            logSetup("[PICK_GAME] Detected version: " + detected);
+            if (detected != null) setVersion(detected);
             String p = pathOf(u);
+            logSetup("[PICK_GAME] Resolved path: " + (p != null ? p : "(null - fallback to app copy)"));
             if (p == null) imports.add(new PickedGame(u, name, req)); else assign(req, p);
             status.setText(t("Selected ", "Seleccionado ") + name + titleHint(name));
         }
@@ -730,7 +929,8 @@ public final class SetupActivity extends Activity {
                     if (sep > 0) {
                         String volume = id.substring(0, sep), relative = id.substring(sep + 1);
                         File root = "primary".equalsIgnoreCase(volume) ? Environment.getExternalStorageDirectory() : new File("/storage", volume);
-                        return readableFile(new File(root, relative).getPath());
+                        String cand = readableFile(new File(root, relative).getPath());
+                        if (cand != null) return cand;
                     }
                 }
             } catch (IllegalArgumentException e) { }
@@ -738,9 +938,29 @@ public final class SetupActivity extends Activity {
         try (Cursor c = getContentResolver().query(u, new String[] { "_data" }, null, null, null)) {
             if (c != null && c.moveToFirst()) {
                 int column = c.getColumnIndex("_data");
-                if (column >= 0) return readableFile(c.getString(column));
+                if (column >= 0) {
+                    String cand = readableFile(c.getString(column));
+                    if (cand != null) return cand;
+                }
             }
         } catch (IllegalArgumentException | SecurityException e) { }
+        String name = nameOf(u);
+        if (name != null) {
+            long size = documentSize(u);
+            File[] candidates = {
+                new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), name),
+                new File("/storage/emulated/0/Download", name),
+                new File("/storage/emulated/0/Downloads", name),
+                new File("/storage/emulated/0/Documents", name),
+                new File(Environment.getExternalStorageDirectory(), name)
+            };
+            for (File c : candidates) {
+                if (c.isFile() && c.canRead() && (size <= 0 || c.length() == size)) {
+                    logSetup("[PATH] Direct match found for " + name + ": " + c.getPath());
+                    return c.getPath();
+                }
+            }
+        }
         return null;
     }
     private String readableFile(String path) { if (path == null) return null; File f = new File(path); return f.isFile() && f.canRead() ? f.getPath() : null; }
@@ -753,37 +973,66 @@ public final class SetupActivity extends Activity {
     }
     private void importGames(List<PickedGame> imports) {
         running = true; refresh();
+        logSetup("[IMPORT] importGames started for " + imports.size() + " file(s)");
         status.setText(t("Copying " + imports.size() + " selected file" + (imports.size() == 1 ? "" : "s") + " into app storage; large files need extra free space...",
                          "Copiando " + imports.size() + " archivo" + (imports.size() == 1 ? "" : "s") + " seleccionado" + (imports.size() == 1 ? "" : "s") + " al almacenamiento de la app; los archivos grandes necesitan espacio libre extra..."));
         new Thread(() -> {
             String error = null;
             try {
                 File dir = new File(gameDir(), "imported");
-                if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("could not create app storage for the selected game file");
+                if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("could not create app storage for the selected game file at " + dir.getPath());
                 for (PickedGame picked : imports) {
+                    logSetup("[IMPORT] Copying " + picked.name + " (role=" + picked.role + ", uri=" + picked.uri + ")");
                     File destination = uniqueImportFile(dir, picked.name);
                     long size = documentSize(picked.uri);
                     long available = new StatFs(dir.getPath()).getAvailableBytes();
-                    if (size >= 0 && available < size + (512L << 20))
-                        throw new IOException("not enough free space to copy " + picked.name + "; select it from phone storage where possible or free at least " + size / (1L << 20) + " MB");
+                    logSetup("[IMPORT] " + picked.name + ": size=" + size + " bytes (" + gb(Math.max(0, size)) + "), storage available=" + available + " bytes (" + gb(available) + ")");
+                    if (size >= 0 && available < size + (512L << 20)) {
+                        String noSpace = "not enough free space to copy " + picked.name + "; available: " + gb(available) + ", required: " + gb(size + (512L << 20));
+                        logSetup("[IMPORT] ERROR: " + noSpace);
+                        throw new IOException(noSpace);
+                    }
                     runOnUiThread(() -> status.setText(t("Copying ", "Copiando ") + picked.name + " (" + (size >= 0 ? size / (1L << 20) + " MB" : "size unknown") + ")..."));
                     try (InputStream in = getContentResolver().openInputStream(picked.uri);
                          OutputStream out = new BufferedOutputStream(new FileOutputStream(destination))) {
                         if (in == null) throw new IOException("the file provider could not open " + picked.name);
                         byte[] buffer = new byte[1 << 20]; int n;
                         while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
-                    } catch (IOException | SecurityException e) { destination.delete(); throw e; }
-                    if (!destination.isFile() || destination.length() == 0) { destination.delete(); throw new IOException("the selected file was empty or could not be copied: " + picked.name); }
+                    } catch (IOException | SecurityException e) {
+                        logSetup("[IMPORT] Error copying stream for " + picked.name + ": " + e);
+                        destination.delete();
+                        throw e;
+                    }
+                    if (!destination.isFile() || destination.length() == 0) {
+                        destination.delete();
+                        throw new IOException("the selected file was empty or could not be copied: " + picked.name);
+                    }
                     picked.dest = destination;
+                    logSetup("[IMPORT] Copied " + picked.name + " successfully to " + destination.getPath() + " (" + destination.length() + " bytes)");
                 }
-            } catch (IOException | SecurityException | IllegalArgumentException e) { error = e.getMessage(); }
+            } catch (Exception e) {
+                error = e.getMessage();
+                logSetup("[IMPORT] Exception during import: " + e);
+            }
             final String failure = error;
             runOnUiThread(() -> {
                 running = false;
                 int copied = 0;
-                for (PickedGame picked : imports) if (picked.dest != null) { assign(picked.role, picked.dest.getPath()); importedGames.add(picked.dest); copied++; }
-                if (failure == null) status.setText(t("Copied into app storage and selected.", "Copiado al almacenamiento de la app y seleccionado."));
-                else status.setText("Could not import game file: " + failure + (copied == 0 ? "" : " Previously copied selections are ready."));
+                for (PickedGame picked : imports) if (picked.dest != null) {
+                    String detected = detectGameVersion(picked.dest);
+                    if (detected != null) setVersion(detected);
+                    assign(picked.role, picked.dest.getPath());
+                    importedGames.add(picked.dest);
+                    copied++;
+                }
+                if (failure == null) {
+                    status.setText(t("Copied into app storage and selected.", "Copiado al almacenamiento de la app y seleccionado."));
+                    logSetup("[IMPORT] All files copied and assigned successfully.");
+                } else {
+                    status.setText(t("Could not import game file: " + failure, "Error al importar archivo: " + failure));
+                    logSetup("[IMPORT] Failed: " + failure);
+                    showLogDialog();
+                }
                 refresh();
             });
         }).start();
@@ -807,7 +1056,7 @@ public final class SetupActivity extends Activity {
 
     private void chooseSaveExport() {
         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("application/zip"); i.putExtra(Intent.EXTRA_TITLE, "PokemonShield-save.zip");
+        i.setType("application/zip"); i.putExtra(Intent.EXTRA_TITLE, isSword() ? "PokemonSword-save.zip" : "PokemonShield-save.zip");
         startActivityForResult(i, PICK_SAVE_EXPORT);
     }
     private void chooseSaveImport() {
@@ -834,7 +1083,8 @@ public final class SetupActivity extends Activity {
     }
     private void exportSave(Uri destination) {
         if (destination == null) return;
-        File save = new File(gameDir(), "save");
+        File verSave = new File(gameDir(), "save_" + currentVersion());
+        final File save = (!verSave.exists() && !"sword".equalsIgnoreCase(currentVersion())) ? new File(gameDir(), "save") : verSave;
         status.setText("Exporting save data...");
         new Thread(() -> {
             String result;
@@ -869,23 +1119,40 @@ public final class SetupActivity extends Activity {
     }
 
     private void startSetup() {
-        if (!new File(keysDir(), "prod.keys").exists() || baseGame == null) { status.setText(t("Choose the keys and the base game first.", "Elige primero las claves y el juego base.")); return; }
+        if (!new File(keysDir(), "prod.keys").exists() || baseGame == null) {
+            String m = t("Choose the keys and the base game first.", "Elige primero las claves y el juego base.");
+            status.setText(m);
+            logSetup("[SETUP] Cannot start: " + m);
+            return;
+        }
         installedNow = installFailed = false;
         bar.setMax(600); bar.setProgress(0); status.setText(t("Preparing...", "Preparando..."));
+        logSetup("==================== START SETUP ====================");
+        logSetup("Target version: " + currentVersion() + " (isSword=" + isSword() + ")");
+        logSetup("Base game: " + baseGame + " (exists=" + new File(baseGame).exists() + ", size=" + new File(baseGame).length() + ")");
+        logSetup("Update game: " + (updateGame != null ? updateGame + " (exists=" + new File(updateGame).exists() + ", size=" + new File(updateGame).length() + ")" : "none"));
+        for (String d : dlcGames) logSetup("DLC: " + d + " (exists=" + new File(d).exists() + ", size=" + new File(d).length() + ")");
         List<String> cmd = new ArrayList<>();
         cmd.add("--keys"); cmd.add(keysDir().getPath()); cmd.add("--base"); cmd.add(baseGame);
         if (updateGame != null) { cmd.add("--update"); cmd.add(updateGame); }
         for (String d : dlcGames) { cmd.add("--dlc"); cmd.add(d); }
+        cmd.add("--game"); cmd.add(isSword() ? "0100ABF008968000" : "01008DB008C2C000");
         runSetup(cmd, err -> {
             bar.setProgress(err == null ? 600 : bar.getProgress());
             installedNow = err == null; installFailed = err != null;
-            status.setText(err == null ? "Ready. The setup log is in Android/data/" + getPackageName() + "/files/setup_work." : "Setup failed: " + err);
             if (err == null) {
+                status.setText(t("Ready. The setup log is in Downloads/" + setupLogFile(currentVersion()).getName(),
+                                 "¡Listo! El registro completo está en Descargas/" + setupLogFile(currentVersion()).getName()));
+                logSetup("[SETUP] Completed successfully!");
                 for (File file : importedGames) file.delete();
                 importedGames.clear();
                 new File(gameDir(), "imported").delete();
                 baseGame = updateGame = null; dlcGames.clear();
                 if (gameIcon() != null) pinShortcut();
+            } else {
+                status.setText(t("Setup failed: " + err + "\n(Detailed log saved to Downloads: " + setupLogFile(currentVersion()).getName() + ")",
+                                 "Error en la instalación: " + err + "\n(Registro detallado guardado en Descargas: " + setupLogFile(currentVersion()).getName() + ")"));
+                logSetup("[SETUP] ERROR: " + err);
             }
         });
     }
@@ -901,7 +1168,7 @@ public final class SetupActivity extends Activity {
     private void startCaptures() {
         List<String> todo = pendingCaptures(); if (todo.isEmpty()) return;
         bar.setMax(300); bar.setProgress(0); status.setText("Adding " + todo.size() + " shader" + (todo.size() == 1 ? "" : "s") + " the game made last time...");
-        runSetup(new ArrayList<>(Arrays.asList("--captures", new File(gameDir(), "nvn_capture").getPath())), err -> {
+        runSetup(new ArrayList<>(Arrays.asList("--captures", new File(gameDir(), "nvn_capture").getPath(), "--game", isSword() ? "0100ABF008968000" : "01008DB008C2C000")), err -> {
             if (err != null) { status.setText("Could not add the new shaders (" + err + "); the game still plays without them."); return; }
             try (FileWriter w = new FileWriter(new File(gameDir(), "captures_done"), true)) { for (String n : todo) w.write(n + "\n"); } catch (IOException e) { }
             startGame();
@@ -915,6 +1182,7 @@ public final class SetupActivity extends Activity {
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         new Thread(() -> {
             String err = null; int[] stepNo = {1}; String[] stepName = {""};
+            List<String> lastOutputLines = new ArrayList<>();
             try {
                 File py = unpackPython(), dm = unpackScripts(), bin = binDir();
                 File work = new File(gameDir(), "setup_work"); work.mkdirs();
@@ -924,28 +1192,60 @@ public final class SetupActivity extends Activity {
                 cmd.addAll(args);
                 cmd.add("--out"); cmd.add(gameDir().getPath()); cmd.add("--work"); cmd.add(work.getPath()); cmd.add("--bin"); cmd.add(bin.getPath());
                 File ext = new File(dm, "android/app/assets/nintendo_ext.ttf"); if (ext.exists() && !args.contains("--captures")) { cmd.add("--ext-font"); cmd.add(ext.getPath()); }
+                logSetup("[RUN] Invoking command: " + cmd);
                 ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
                 pb.environment().put("PYTHONHOME", py.getPath()); pb.environment().put("PYTHONPATH", new File(dm, "android/pyshim").getPath());
-                // bin first: the .NET unpacker dlopens libssl.so.3 / libcrypto.so.3, which binDir() links to the OpenSSL 3 that ships with CPython for Android
+                pb.environment().put("DM_GAME", isSword() ? "0100ABF008968000" : "01008DB008C2C000");
+                pb.environment().put("DM_GAME_VERSION", isSword() ? "sword" : "shield");
                 pb.environment().put("LD_LIBRARY_PATH", bin.getPath() + ":" + lib); pb.environment().put("LIBCAPSTONE_PATH", lib); pb.environment().put("NX_NATIVE_LIB_DIR", lib);
                 pb.environment().put("DOTNET_OPENSSL_VERSION_OVERRIDE", "3"); pb.environment().put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
                 pb.environment().put("TMPDIR", getCacheDir().getPath()); pb.environment().put("J", String.valueOf(Math.max(2, Runtime.getRuntime().availableProcessors())));
                 Process p = pb.start();
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String ln;
-                while ((ln = r.readLine()) != null) { final String l = ln;
-                    if (l.startsWith("STEP ")) { String[] f = l.split(" ", 3); int n = Integer.parseInt(f[1].split("/")[0]); stepNo[0] = n; stepName[0] = f[2];
-                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100); status.setText(f[2] + "..."); }); }
-                    else if (l.startsWith("PROGRESS ")) {
+                while ((ln = r.readLine()) != null) {
+                    final String l = ln;
+                    logSetup("[PROC] " + l);
+                    synchronized (lastOutputLines) {
+                        if (lastOutputLines.size() > 50) lastOutputLines.remove(0);
+                        lastOutputLines.add(l);
+                    }
+                    if (l.startsWith("STEP ")) {
+                        String[] f = l.split(" ", 3); int n = Integer.parseInt(f[1].split("/")[0]); stepNo[0] = n; stepName[0] = f[2];
+                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100); status.setText(f[2] + "..."); });
+                    } else if (l.startsWith("PROGRESS ")) {
                         String[] f = l.substring(9).trim().split("/"); long a = Long.parseLong(f[0]), b = Math.max(1, Long.parseLong(f[1])); int pct = (int) Math.min(100, a * 100 / b), n = stepNo[0]; String s = stepName[0];
-                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100 + pct); status.setText(s + "... " + pct + "%\nThis takes a long time on a phone: keep this screen open, ideally plugged in."); }); }
-                    else if (l.startsWith("FAILED")) err = l.substring(6).trim(); }
-                if (p.waitFor() != 0 && err == null) err = "setup stopped (" + p.exitValue() + ")";
-            } catch (Exception e) { err = e.toString(); }
+                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100 + pct); status.setText(s + "... " + pct + "%\nThis takes a long time on a phone: keep this screen open, ideally plugged in."); });
+                    } else if (l.startsWith("FAILED")) {
+                        err = l.substring(6).trim();
+                    } else if (err != null) {
+                        err += "\n" + l;
+                    }
+                }
+                int exitCode = p.waitFor();
+                logSetup("[PROC] Process exited with code: " + exitCode);
+                if (exitCode != 0 && err == null) {
+                    StringBuilder sb = new StringBuilder();
+                    synchronized (lastOutputLines) {
+                        int start = Math.max(0, lastOutputLines.size() - 8);
+                        for (int k = start; k < lastOutputLines.size(); k++) {
+                            if (sb.length() > 0) sb.append("\n");
+                            sb.append(lastOutputLines.get(k));
+                        }
+                    }
+                    err = sb.length() > 0 ? sb.toString() : "setup stopped (exit code " + exitCode + ")";
+                }
+            } catch (Exception e) {
+                err = e.toString();
+                logSetup("[PROC] Exception: " + e);
+            }
             final String e2 = err;
             runOnUiThread(() -> { getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); running = false; done.accept(e2); refresh(); });
         }).start();
     }
-    private File iconFile() { return new File(gameDir(), "icon.jpg"); }
+    private File iconFile() {
+        File f = new File(gameDir(), isSword() ? "icon_sword.jpg" : "icon_shield.jpg");
+        return f.exists() ? f : new File(gameDir(), "icon.jpg");
+    }
     // the game's icon from the player's dump: this screen and the recent-apps card
     @SuppressWarnings("deprecation")
     private Bitmap gameIcon() {
@@ -955,7 +1255,7 @@ public final class SetupActivity extends Activity {
         }
         if (b == null && iconFile().exists()) b = BitmapFactory.decodeFile(iconFile().getPath());
         if (b == null) return null;
-        setTaskDescription(new ActivityManager.TaskDescription("Pokémon Shield", b));
+        setTaskDescription(new ActivityManager.TaskDescription(gameTitle(), b));
         if (logo != null) { logo.setImageBitmap(b); logo.setVisibility(android.view.View.VISIBLE); }
         return b;
     }
@@ -965,16 +1265,99 @@ public final class SetupActivity extends Activity {
         Intent again = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN).putExtra("setup", true);
         ShortcutInfo si = new ShortcutInfo.Builder(this, "setup").setShortLabel("Settings").setLongLabel("Settings and setup")
             .setIcon(Icon.createWithResource(this, android.R.drawable.ic_menu_manage)).setIntent(again).build();
-        try { List<ShortcutInfo> all = new ArrayList<>(); all.add(si); for (ShortcutInfo d : sm.getDynamicShortcuts()) if (!d.getId().equals("setup")) all.add(d); sm.setDynamicShortcuts(all); } catch (Exception e) { }
+        List<ShortcutInfo> all = new ArrayList<>();
+        all.add(si);
+        if (hasShield()) {
+            Intent shGo = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN).putExtra("game_version", "shield");
+            File shIco = new File(gameDir(), "icon_shield.jpg"); if (!shIco.exists()) shIco = new File(gameDir(), "icon.jpg");
+            Icon ic = shIco.exists() ? Icon.createWithBitmap(BitmapFactory.decodeFile(shIco.getPath())) : Icon.createWithResource(this, android.R.drawable.ic_media_play);
+            all.add(new ShortcutInfo.Builder(this, "play_shield").setShortLabel("Shield").setLongLabel("Play Pokémon Shield").setIcon(ic).setIntent(shGo).build());
+        }
+        if (hasSword()) {
+            Intent swGo = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN).putExtra("game_version", "sword");
+            File swIco = new File(gameDir(), "icon_sword.jpg"); if (!swIco.exists()) swIco = new File(gameDir(), "icon.jpg");
+            Icon ic = swIco.exists() ? Icon.createWithBitmap(BitmapFactory.decodeFile(swIco.getPath())) : Icon.createWithResource(this, android.R.drawable.ic_media_play);
+            all.add(new ShortcutInfo.Builder(this, "play_sword").setShortLabel("Sword").setLongLabel("Play Pokémon Sword").setIcon(ic).setIntent(swGo).build());
+        }
+        try { sm.setDynamicShortcuts(all); } catch (Exception e) { }
     }
     // a home screen shortcut with the game's icon (the launcher asks the player to confirm), also offered on a long press of the app's icon
-    private void pinShortcut() {
-        Bitmap b = gameIcon(); ShortcutManager sm = getSystemService(ShortcutManager.class); if (b == null || sm == null) return;
-        Intent go = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN);
-        ShortcutInfo si = new ShortcutInfo.Builder(this, "game").setShortLabel("Pokémon Shield").setLongLabel("Play Pokémon Shield").setIcon(Icon.createWithBitmap(b)).setIntent(go).build();
+    private void pinShortcut(String ver) {
+        boolean isSw = "sword".equalsIgnoreCase(ver);
+        String name = isSw ? "Pokémon Sword" : "Pokémon Shield";
+        File icFile = new File(gameDir(), isSw ? "icon_sword.jpg" : "icon_shield.jpg");
+        if (!icFile.exists()) icFile = new File(gameDir(), "icon.jpg");
+        Bitmap b = icFile.exists() ? BitmapFactory.decodeFile(icFile.getPath()) : gameIcon();
+        ShortcutManager sm = getSystemService(ShortcutManager.class); if (b == null || sm == null) return;
+        Intent go = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN).putExtra("game_version", isSw ? "sword" : "shield");
+        String sid = isSw ? "game_sword" : "game_shield";
+        ShortcutInfo si = new ShortcutInfo.Builder(this, sid).setShortLabel(name).setLongLabel("Play " + name).setIcon(Icon.createWithBitmap(b)).setIntent(go).build();
         try { sm.addDynamicShortcuts(Arrays.asList(si)); } catch (Exception e) { }
-        for (ShortcutInfo p : sm.getPinnedShortcuts()) if (p.getId().equals("game")) { sm.updateShortcuts(Arrays.asList(si)); status.setText("The Pokémon Shield shortcut is on the home screen."); return; }
-        if (sm.isRequestPinShortcutSupported()) sm.requestPinShortcut(si, null); else status.setText("This launcher cannot add shortcuts: long-press the app's icon for Pokémon Shield.");
+        for (ShortcutInfo p : sm.getPinnedShortcuts()) if (p.getId().equals(sid)) { sm.updateShortcuts(Arrays.asList(si)); status.setText(name + " shortcut is on the home screen."); return; }
+        if (sm.isRequestPinShortcutSupported()) sm.requestPinShortcut(si, null); else status.setText("This launcher cannot add shortcuts: long-press the app's icon for " + name + ".");
+    }
+    private void pinShortcut() { pinShortcut(currentVersion()); }
+    private void syncPatchedFiles() {
+        try {
+            File filesDir = gameDir();
+            File commonDir = new File(filesDir, "patched");
+            String[] tags = { "sword", "shield" };
+            for (String tag : tags) {
+                File verDir = new File(filesDir, "patched_" + tag);
+                if (verDir.exists() && verDir.isDirectory()) {
+                    File mainFixups = new File(verDir, "main.fixups.tsv");
+                    if (!mainFixups.exists() && commonDir.exists() && commonDir.isDirectory()) {
+                        File commonFixups = new File(commonDir, "main.fixups.tsv");
+                        if (commonFixups.exists()) {
+                            File[] list = commonDir.listFiles();
+                            if (list != null) {
+                                for (File src : list) {
+                                    if (src.isFile()) {
+                                        File dst = new File(verDir, src.getName());
+                                        if (!dst.exists() || dst.length() == 0) {
+                                            try (FileInputStream in = new FileInputStream(src);
+                                                 FileOutputStream out = new FileOutputStream(dst)) {
+                                                copy(in, out);
+                                            } catch (Exception ignored) { }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            File activeVerDir = new File(filesDir, "patched_" + currentVersion());
+            if (activeVerDir.exists() && activeVerDir.isDirectory() && commonDir.exists() && commonDir.isDirectory()) {
+                File activeFixups = new File(activeVerDir, "main.fixups.tsv");
+                if (activeFixups.exists()) {
+                    File commonFixups = new File(commonDir, "main.fixups.tsv");
+                    if (!commonFixups.exists()) {
+                        File[] list = activeVerDir.listFiles();
+                        if (list != null) {
+                            for (File src : list) {
+                                if (src.isFile()) {
+                                    File dst = new File(commonDir, src.getName());
+                                    if (!dst.exists() || dst.length() == 0) {
+                                        try (FileInputStream in = new FileInputStream(src);
+                                             FileOutputStream out = new FileOutputStream(dst)) {
+                                            copy(in, out);
+                                        } catch (Exception ignored) { }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) { }
+    }
+    private void startGame() {
+        setVersion(currentVersion());
+        syncPatchedFiles();
+        GameActivity.viaSetup = true;
+        startActivity(new Intent(this, GameActivity.class));
+        finish();
     }
     // the executables the setup runs, under the names the scripts call them by (links into the app's native library folder, where Android allows execution);
     // also OpenSSL 3 under the names the .NET unpacker dlopens (libssl.so.3 / libcrypto.so.3), so it does not pick up the system's BoringSSL
@@ -990,13 +1373,31 @@ public final class SetupActivity extends Activity {
     // an asset zip unpacked once per app version (a stamp file records the version)
     private File unpack(String asset, File to) throws IOException {
         long ver; try { ver = getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode(); } catch (Exception e) { ver = 0; }
-        File stamp = new File(to, ".unpacked"); try (BufferedReader r = new BufferedReader(new FileReader(stamp))) { if (Long.parseLong(r.readLine().trim()) == ver) return to; } catch (Exception e) { }
+        File stamp = new File(to, ".unpacked");
+        boolean matchesVer = false;
+        try (BufferedReader r = new BufferedReader(new FileReader(stamp))) {
+            if (Long.parseLong(r.readLine().trim()) == ver) matchesVer = true;
+        } catch (Exception ignored) { }
+
+        // Sanity check: if it's dm.zip, ensure both game profiles are actually present on disk!
+        if (matchesVer && "dm.zip".equals(asset)) {
+            File swProfile = new File(to, "games/0100ABF008968000/game.tsv");
+            File shProfile = new File(to, "games/01008DB008C2C000/game.tsv");
+            if (!swProfile.exists() || !shProfile.exists()) {
+                logSetup("[UNPACK] dm.zip stamp matched version " + ver + " but game profile(s) missing; forcing re-unpack");
+                matchesVer = false;
+            }
+        }
+
+        if (matchesVer) return to;
+
+        logSetup("[UNPACK] Unpacking " + asset + " to " + to.getPath() + " (ver=" + ver + ")...");
         to.mkdirs();
         try (ZipInputStream z = new ZipInputStream(new BufferedInputStream(getAssets().open(asset)))) { ZipEntry e;
             while ((e = z.getNextEntry()) != null) { File f = new File(to, e.getName()); if (!f.getCanonicalPath().startsWith(to.getCanonicalPath())) continue;
                 if (e.isDirectory()) { f.mkdirs(); continue; } f.getParentFile().mkdirs(); try (OutputStream o = new FileOutputStream(f)) { copy(z, o); } } }
         try (FileWriter w = new FileWriter(stamp)) { w.write(ver + "\n"); }
+        logSetup("[UNPACK] Successfully unpacked " + asset);
         return to;
     }
-    private void startGame() { GameActivity.viaSetup = true; startActivity(new Intent(this, GameActivity.class)); finish(); }
 }

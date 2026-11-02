@@ -166,6 +166,22 @@ int main(int argc, char **argv) {
     assert(got_itv == want_itv && got_step == 8333334u && dm_step_hz == 120);
     free(big);
 
+    // Sword 1.3.2 build ID (a3b75bcd3311385a) 60 FPS patch
+    uint8_t *sword_big = calloc(1, big_sz);
+    memcpy(sword_big + 0x018a2d18, &orig_itv, 4);
+    memcpy(sword_big + 0x0203eeb8, &orig_step, 4);
+    module_t swm; memset(&swm, 0, sizeof swm);
+    strcpy(swm.name, "main");
+    strcpy(swm.build_id, "a3b75bcd3311385a0000000000000000");
+    swm.base = sword_big;
+    swm.text_end = 0x01f00000;
+    setenv("DM_FPS_TARGET", "60", 1);
+    setenv("DM_ASPECT", "fit", 1);
+    assert(dm_apply_builtin_patches(&swm, big_sz, 0x03000000, 0x03100000, 0) == 2);
+    memcpy(&got_itv, sword_big + 0x018a2d18, 4); memcpy(&got_step, sword_big + 0x0203eeb8, 4);
+    assert(got_itv == want_itv && got_step == want_step && dm_step_hz == 60);
+    free(sword_big);
+
     // 7. rt_same serial comparison across distinct tex_t snapshots (hle_nvn copies tex_t per SetRenderTargets)
     tex_t ta1 = { .serial = 42 }, ta2 = { .serial = 42 }, tb = { .serial = 99 }, da1 = { .serial = 7 }, da2 = { .serial = 7 };
     p_set_rt r1 = { .n = 1, .color = { &ta1 }, .depth = &da1 };

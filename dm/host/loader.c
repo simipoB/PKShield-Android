@@ -513,11 +513,12 @@ int dm_apply_builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, 
             LOG("%s: applied built-in 20:9 3D camera aspect patch at +%#llx", m->name, (unsigned long long)hit);
         }
     }
-    // Pokémon Shield v1.3.2 (build_id a16802625e7826bf83b6f9708e475b91) native 60..120 FPS: NVN present interval 2 -> 1 (+0x018a2d18) and frame step 1/30s -> 1/fps s (+0x0203eeb8, ns per frame, ceil(1e9 / fps)).
+    // Pokémon Shield / Sword v1.3.2 (Shield a16802625e7826bf83b6f9708e475b91, Sword a3b75bcd3311385a...) native 60..120 FPS: NVN present interval 2 -> 1 (+0x018a2d18) and frame step 1/30s -> 1/fps s (+0x0203eeb8, ns per frame, ceil(1e9 / fps)).
     // From there the graphics layer paces presents at fps Hz and rewrites the step word every frame (hle_nvn.c vstep_tick): a frame that misses its slot is held k slots and the game steps k × 1/fps, so game speed stays real time
     const char *ft = getenv("DM_FPS_TARGET"); if (!ft || !*ft) ft = getenv("DM_FPS");
     int fps = ft ? atoi(ft) : 0;
-    if (fps >= 60 && fps <= 120 && !strncasecmp(m->build_id, "a16802625e7826bf83b6f9708e475b91", 32)) {
+    if (fps >= 60 && fps <= 120 && (!strncasecmp(m->build_id, "a16802625e7826bf83b6f9708e475b91", 32) ||
+                                    !strncasecmp(m->build_id, "a3b75bcd3311385a", 16))) {
         const uint64_t off_itv = 0x018a2d18ull, off_dt = 0x0203eeb8ull;
         if (off_itv + 4 <= m->text_end && off_itv + 4 <= lim && off_dt + 4 <= lim &&
             !text_overlaps_stub(m, off_itv, 4, p0, p1) && !text_overlaps_stub(m, off_dt, 4, p0, p1)) {

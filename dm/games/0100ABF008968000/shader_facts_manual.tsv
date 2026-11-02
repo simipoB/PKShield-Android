@@ -1,0 +1,41 @@
+# Hand-written translation facts, merged over the generated rows of shader_facts.tsv by dm/gfx/tools/shader_split.py: key <TAB> facts JSON (same format)
+# Pokémon Shield has no PC version, so the translator has no fragment output types and declares every output float. Game Freak's deferred pass writes its second G-buffer
+# target (output 1) as RGBA16Uint; Metal refuses those pipelines (the host's red line prints each row). 32 met from boot through the intro, 6 more in the open world (loading a completed save, Mac stress runs)
+0b05c1fdd25dfc7c	{"fout":{"1":"uint"}}
+0b9e4494bac9945e	{"fout":{"1":"uint"}}
+120f1d670f2b0c4e	{"fout":{"1":"uint"}}
+152032419360fa18	{"fout":{"1":"uint"}}
+2160463fc00a1b96	{"fout":{"1":"uint"}}
+2e73bba3b1c0e20b	{"fout":{"1":"uint"}}
+39209c8b34008fd2	{"fout":{"1":"uint"}}
+3ac35ea0cef56543	{"fout":{"1":"uint"}}
+3db365918ee0e47e	{"fout":{"1":"uint"}}
+43e9217a954f57da	{"fout":{"1":"uint"}}
+480219ac7397bb8b	{"fout":{"1":"uint"}}
+48227ad53c312db5	{"fout":{"1":"uint"}}
+58e04e62a3a84283	{"fout":{"1":"uint"}}
+5cc2f530ac1a4d2e	{"fout":{"1":"uint"}}
+5d68b595a8366588	{"fout":{"1":"uint"}}
+5ea408677834d04e	{"fout":{"1":"uint"}}
+631cfc93379d4ce6	{"fout":{"1":"uint"}}
+70ebac161b0a5c59	{"fout":{"1":"uint"}}
+7589aef08d6630e2	{"fout":{"1":"uint"}}
+906273bf47f5df8e	{"fout":{"1":"uint"}}
+97bb3dd69bcc703b	{"fout":{"1":"uint"}}
+ab3f28de41aa5914	{"fout":{"1":"uint"}}
+b1ff206e52e68242	{"fout":{"1":"uint"}}
+c0f374548013d406	{"fout":{"1":"uint"}}
+d3a572c8f2fc89ca	{"fout":{"1":"uint"}}
+dfe94f8831a8f99d	{"fout":{"1":"uint"}}
+e1f832d40bfe0b3c	{"fout":{"1":"uint"}}
+e67ac899ae4e400a	{"fout":{"1":"uint"}}
+ea210acbe1f371a4	{"fout":{"1":"uint"}}
+f82b2b782d6136a6	{"fout":{"1":"uint"}}
+f98813cd1eae8fce	{"fout":{"1":"uint"}}
+fc4101a933875b47	{"fout":{"1":"uint"}}
+1156e2a9d0297ae9	{"fout":{"1":"uint"}}
+50aa90a6d0d03d5f	{"fout":{"1":"uint"}}
+9fbde52e9118adea	{"fout":{"1":"uint"}}
+a2f33c19263c6b6a	{"fout":{"1":"uint"}}
+c0d9384385d167d7	{"fout":{"1":"uint"}}
+b3ea496f850a8972	{"fout":{"1":"uint"}}
