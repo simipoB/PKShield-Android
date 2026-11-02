@@ -69,7 +69,7 @@ HLE_FORCE("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditi
 }
 // Explicit time zone rules (Monster Hunter Rise, SDK 11): LoadTimeZoneRule reads the rule from the time service; the host keeps the game's rule buffer untouched and converts with localtime_r as above
 HLE_FORCE("_ZN2nn4time16LoadTimeZoneRuleEPNS0_12TimeZoneRuleERKNS0_12LocationNameE", "time zone rule from the time service; the host converts with its own zone, the rule stays unused", Result, h_time_LoadRule,
-          void *rule, const char *name) { (void)rule; LOG("time::LoadTimeZoneRule %.36s (host time zone used instead)", name ? name : "?"); return RES_OK; }
+          void *rule, const char *name) { (void)rule; static int once; if (!once++) LOG("time::LoadTimeZoneRule %.36s (host time zone used instead; said once)", name ? name : "?"); return RES_OK; }
 HLE_FORCE("_ZN2nn4time14ToCalendarTimeEPNS0_12CalendarTimeEPNS0_22CalendarAdditionalInfoERKNS0_9PosixTimeERKNS0_12TimeZoneRuleE", "conversion with an explicit time zone rule; same as the device zone (host localtime_r)",
           Result, h_time_ToCalendarTimeRule, CalendarTime *ct, CalendarAdditionalInfo *ai, const int64_t *pt, const void *rule) { (void)rule; return h_time_ToCalendarTime(ct, ai, pt); }
 HLE_FORCE("_ZN2nn4time26StandardNetworkSystemClock20IsAccuracySufficientEv", "network clock accuracy (time service): offline, never sufficient", unsigned, h_time_NetAccurate, void) { return 0; }

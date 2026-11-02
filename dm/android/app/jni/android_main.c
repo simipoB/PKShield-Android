@@ -440,11 +440,12 @@ static void *swapin_main(void *p) {
     return NULL;
 }
 static void swapin_start(void) { if (kb_of("/proc/self/status", "VmSwap:") < 32 * 1024) return; pthread_t t; if (!pthread_create(&t, NULL, swapin_main, NULL)) pthread_detach(t); }
-__attribute__((weak)) void nvn_vk_cache_save(void);   // the pipeline cache file (nvn_vk.c), written when the app goes to the background
+__attribute__((weak)) void nvn_vk_cache_save(void);
+__attribute__((weak)) void nvn_vk_window_term(void);   // releases the swapchain while the window still exists (nvn_vk.c)   // the pipeline cache file (nvn_vk.c), written when the app goes to the background
 static void on_cmd(struct android_app *app, int32_t cmd) {
     switch (cmd) {
         case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); host_start(); break;
-        case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); break;
+        case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); if (g_started && nvn_vk_window_term) nvn_vk_window_term(); break;
         case APP_CMD_GAINED_FOCUS: immersive(); if (g_started) { dm_focus_set(1); dm_audio_suspend(0); } break;
         case APP_CMD_LOST_FOCUS: if (g_started) { dm_focus_set(2); } break;
         case APP_CMD_PAUSE: if (g_started) { dm_focus_set(3); dm_audio_suspend(1); if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;

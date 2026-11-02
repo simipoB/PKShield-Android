@@ -2618,11 +2618,17 @@ static int swap_job_run(int make, void *win, int srgb) {
 }
 static void swap_destroy(void) { if (W.sc || W.surf) swap_job_run(0, NULL, 0); W.win = NULL; }
 static int swap_ensure(void *win, int srgb) {
+#ifdef __ANDROID__
+    // the window changed size (a foldable opened or closed, a rotation): drivers need not report it as out of date, so a new swapchain of the new size
+    if (W.sc && W.win == win) { int32_t nw = ANativeWindow_getWidth((ANativeWindow *)win), nh = ANativeWindow_getHeight((ANativeWindow *)win);
+        if (nw > 0 && nh > 0 && ((uint32_t)nw != W.ext.width || (uint32_t)nh != W.ext.height)) swap_destroy(); }
+#endif
     if (W.sc && W.win == win && W.srgb == srgb) return 1;
     return swap_job_run(1, win, srgb);
 }
 static void swap_destroy_now(void) {
-    if (W.sc) { vkDeviceWaitIdle(g_dev); for (uint32_t i = 0; i < W.n; i++) if (W.view[i]) { vkDestroyImageView(g_dev, W.view[i], NULL); W.view[i] = VK_NULL_HANDLE; }
+    if (W.sc) { pthread_mutex_lock(&g_qmu); vkDeviceWaitIdle(g_dev); pthread_mutex_unlock(&g_qmu);   // (the queue is externally synchronized: other threads submit to it)
+                for (uint32_t i = 0; i < W.n; i++) if (W.view[i]) { vkDestroyImageView(g_dev, W.view[i], NULL); W.view[i] = VK_NULL_HANDLE; }
                 vkDestroySwapchainKHR(g_dev, W.sc, NULL); W.sc = VK_NULL_HANDLE; }
     if (W.surf) { vkDestroySurfaceKHR(g_inst, W.surf, NULL); W.surf = VK_NULL_HANDLE; }
     W.win = NULL;
@@ -2803,7 +2809,13 @@ static void ovl_shot(vtex *x, const int crop[4], const char *path) {
     VLOG("overlay shot %s", path);
 }
 #endif
-static void present_window(vtex *x, const int crop[4]) {
+// The window lock: present_window (a game thread) and nvn_vk_window_term (Android's main thread, when the window goes away) never touch the swapchain at once
+static pthread_mutex_t g_wmu = PTHREAD_MUTEX_INITIALIZER;
+static void present_window_locked(vtex *x, const int crop[4]);
+static void present_window(vtex *x, const int crop[4]) { pthread_mutex_lock(&g_wmu); present_window_locked(x, crop); pthread_mutex_unlock(&g_wmu); }
+// The window is going away (android_main.c APP_CMD_TERM_WINDOW): its swapchain and surface are released before that returns, as Android expects
+void nvn_vk_window_term(void) { if (!g_dev) return; pthread_mutex_lock(&g_wmu); swap_destroy(); pthread_mutex_unlock(&g_wmu); }
+static void present_window_locked(vtex *x, const int crop[4]) {
     void *win = front_metal_layer();
     if (!win) { if (W.sc) swap_destroy(); return; }
     if (!g_has_swapchain || !x || !x->img || !(x->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || x->samples > 1) return;
