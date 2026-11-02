@@ -134,8 +134,51 @@ public final class SetupActivity extends Activity {
         }
         tg.setOnCheckedChangeListener((g, id) -> envSet("DM_VK_TEX_QUALITY", tq[id - 2000][0]));
         root.addView(tg);
+        TextView al = new TextView(this); al.setText("Picture"); al.setPadding(0, 16, 0, 0); root.addView(al);
+        android.widget.RadioGroup ag = new android.widget.RadioGroup(this);
+        String[][] am = { { "", "16:9, as the game is made" }, { "20:9", "20:9: a wider view that fills tall phones (the menus are stretched with it; experimental)" } };
+        String acur = envGet("DM_ASPECT");
+        for (int k = 0; k < am.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(3000 + k); b.setText(am[k][1]); ag.addView(b);
+            if (am[k][0].equals(acur)) b.setChecked(true);
+        }
+        ag.setOnCheckedChangeListener((g, id) -> envSet("DM_ASPECT", am[id - 3000][0]));
+        root.addView(ag);
+        TextView pl = new TextView(this); pl.setText("Controller buttons"); pl.setPadding(0, 16, 0, 0); root.addView(pl);
+        android.widget.RadioGroup pg = new android.widget.RadioGroup(this);
+        String[][] pm = { { "", "By position, as on a Switch pad (the bottom button is B)" }, { "labels", "By label (the button marked A is A)" } };
+        String pcur = envGet("DM_PAD_LAYOUT");
+        for (int k = 0; k < pm.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(4000 + k); b.setText(pm[k][1]); pg.addView(b);
+            if (pm[k][0].equals(pcur)) b.setChecked(true);
+        }
+        pg.setOnCheckedChangeListener((g, id) -> envSet("DM_PAD_LAYOUT", pm[id - 4000][0]));
+        root.addView(pg);
+        button(root, "Remap controller buttons", v -> remapButtons());
         slider(root, "Touch controls opacity", "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");
         slider(root, "Touch controls fade after", "DM_TOUCH_FADE", 0, 10, 3, v -> v == 0 ? "never fade" : v + " s without a touch");
+    }
+    // Remapping (PadMapping.java, DM_PAD_MAPPING): each Switch button with the key it is on; choosing one waits for a press on the controller, Reset clears the remapping
+    private void remapButtons() {
+        java.util.Map<String, Integer> map = PadMapping.parse(envGet("DM_PAD_MAPPING"));
+        String[] rows = new String[PadMapping.BUTTONS.length];
+        for (int i = 0; i < rows.length; i++) { Integer kc = map.get(PadMapping.BUTTONS[i][0]); rows[i] = PadMapping.BUTTONS[i][1] + ": " + (kc != null ? PadMapping.keyName(kc) : "default"); }
+        new android.app.AlertDialog.Builder(this).setTitle("Remap controller buttons")
+            .setItems(rows, (d, which) -> captureKey(map, which))
+            .setNeutralButton("Reset all", (d, w) -> { envSet("DM_PAD_MAPPING", ""); status.setText("Controller buttons reset."); })
+            .setNegativeButton("Done", null).show();
+    }
+    private void captureKey(java.util.Map<String, Integer> map, int which) {
+        String[] btn = PadMapping.BUTTONS[which];
+        android.app.AlertDialog d = new android.app.AlertDialog.Builder(this).setTitle(btn[1]).setMessage("Press the controller button for " + btn[1] + ".")
+            .setNegativeButton("Cancel", (x, w) -> remapButtons()).create();
+        d.setOnKeyListener((x, kc, e) -> {
+            if (e.getAction() != android.view.KeyEvent.ACTION_DOWN || !PadMapping.isPadKey(e)) return false;
+            map.values().removeIf(v -> v == kc);   // a key drives one Switch button
+            map.put(btn[0], kc); envSet("DM_PAD_MAPPING", PadMapping.serialize(map));
+            d.dismiss(); remapButtons(); return true;
+        });
+        d.show();
     }
     private void slider(LinearLayout root, String label, String key, int min, int max, int def, java.util.function.IntFunction<String> fmt) {
         TextView t = new TextView(this); t.setPadding(0, 16, 0, 0); root.addView(t);

@@ -110,14 +110,39 @@ static void pads_merge(void) {
         g_pad_lx = strongest(g_pad_lx, g_pads[i].lx); g_pad_ly = strongest(g_pad_ly, g_pads[i].ly); g_pad_rx = strongest(g_pad_rx, g_pads[i].rx); g_pad_ry = strongest(g_pad_ry, g_pads[i].ry); }
     dm_pad_set(g_pad_btn, g_pad_lx, g_pad_ly, g_pad_rx, g_pad_ry);
 }
-static uint64_t key_bit(int32_t kc) {
-    switch (kc) {   // face buttons by letter, as the controller labels them (A = the bottom button on Xbox-style pads is AKEYCODE_BUTTON_A)
-        case AKEYCODE_BUTTON_A: return DM_BTN_B; case AKEYCODE_BUTTON_B: return DM_BTN_A; case AKEYCODE_BUTTON_X: return DM_BTN_Y; case AKEYCODE_BUTTON_Y: return DM_BTN_X;
-        case AKEYCODE_BUTTON_L1: return DM_BTN_L; case AKEYCODE_BUTTON_R1: return DM_BTN_R; case AKEYCODE_BUTTON_L2: return DM_BTN_ZL; case AKEYCODE_BUTTON_R2: return DM_BTN_ZR;
-        case AKEYCODE_BUTTON_THUMBL: return DM_BTN_LS; case AKEYCODE_BUTTON_THUMBR: return DM_BTN_RS; case AKEYCODE_BUTTON_START: return DM_BTN_PLUS; case AKEYCODE_BUTTON_SELECT: return DM_BTN_MINUS;
-        case AKEYCODE_DPAD_UP: return DM_BTN_UP; case AKEYCODE_DPAD_DOWN: return DM_BTN_DOWN; case AKEYCODE_DPAD_LEFT: return DM_BTN_LEFT; case AKEYCODE_DPAD_RIGHT: return DM_BTN_RIGHT;
+// Controller buttons: an Android key code → Switch buttons table, made once. DM_PAD_LAYOUT=position (default) maps the face buttons by place, the bottom button of an
+// Xbox-style pad (AKEYCODE_BUTTON_A) being the Switch's B as on a Switch pad; labels maps them by letter (A = the button marked A). DM_PAD_MAPPING=<button>:<key code>,...
+// (the settings screen's remapping, PadMapping.java) then moves single buttons: A B X Y L R ZL ZR LS RS PLUS MINUS UP DOWN LEFT RIGHT
+enum { KC_MAX = 512 };
+static uint64_t g_kc_map[KC_MAX];
+static void pad_map_init(void) {
+    static const struct { const char *name; uint64_t bit; int32_t pos, lab; } B[] = {
+        { "A", DM_BTN_A, AKEYCODE_BUTTON_B, AKEYCODE_BUTTON_A }, { "B", DM_BTN_B, AKEYCODE_BUTTON_A, AKEYCODE_BUTTON_B },
+        { "X", DM_BTN_X, AKEYCODE_BUTTON_Y, AKEYCODE_BUTTON_X }, { "Y", DM_BTN_Y, AKEYCODE_BUTTON_X, AKEYCODE_BUTTON_Y },
+        { "L", DM_BTN_L, AKEYCODE_BUTTON_L1, AKEYCODE_BUTTON_L1 }, { "R", DM_BTN_R, AKEYCODE_BUTTON_R1, AKEYCODE_BUTTON_R1 },
+        { "ZL", DM_BTN_ZL, AKEYCODE_BUTTON_L2, AKEYCODE_BUTTON_L2 }, { "ZR", DM_BTN_ZR, AKEYCODE_BUTTON_R2, AKEYCODE_BUTTON_R2 },
+        { "LS", DM_BTN_LS, AKEYCODE_BUTTON_THUMBL, AKEYCODE_BUTTON_THUMBL }, { "RS", DM_BTN_RS, AKEYCODE_BUTTON_THUMBR, AKEYCODE_BUTTON_THUMBR },
+        { "PLUS", DM_BTN_PLUS, AKEYCODE_BUTTON_START, AKEYCODE_BUTTON_START }, { "MINUS", DM_BTN_MINUS, AKEYCODE_BUTTON_SELECT, AKEYCODE_BUTTON_SELECT },
+        { "UP", DM_BTN_UP, AKEYCODE_DPAD_UP, AKEYCODE_DPAD_UP }, { "DOWN", DM_BTN_DOWN, AKEYCODE_DPAD_DOWN, AKEYCODE_DPAD_DOWN },
+        { "LEFT", DM_BTN_LEFT, AKEYCODE_DPAD_LEFT, AKEYCODE_DPAD_LEFT }, { "RIGHT", DM_BTN_RIGHT, AKEYCODE_DPAD_RIGHT, AKEYCODE_DPAD_RIGHT },
+    };
+    const char *lay = getenv("DM_PAD_LAYOUT"); int labels = lay && !strcmp(lay, "labels");
+    for (unsigned i = 0; i < sizeof B / sizeof *B; i++) g_kc_map[labels ? B[i].lab : B[i].pos] |= B[i].bit;
+    const char *m = getenv("DM_PAD_MAPPING"); int moved = 0;
+    while (m && *m) {
+        char name[8]; int kc; int n = 0;
+        if (sscanf(m, " %7[A-Za-z]:%d%n", name, &kc, &n) == 2 && kc > 0 && kc < KC_MAX)
+            for (unsigned i = 0; i < sizeof B / sizeof *B; i++) if (!strcasecmp(name, B[i].name)) {
+                for (int k = 0; k < KC_MAX; k++) g_kc_map[k] &= ~B[i].bit;   // the button leaves its old key
+                g_kc_map[kc] |= B[i].bit; moved++; }
+        const char *c = strchr(m, ','); if (!c) break; m = c + 1;
     }
-    return 0;
+    fprintf(stderr, "boot: controller buttons by %s%s
+", labels ? "label" : "position", moved ? ", some remapped (DM_PAD_MAPPING)" : "");
+}
+static uint64_t key_bit(int32_t kc) {
+    static int init; if (!init) { init = 1; pad_map_init(); }   // (the input thread only)
+    return kc > 0 && kc < KC_MAX ? g_kc_map[kc] : 0;
 }
 static int32_t axis(float v) { if (fabsf(v) < 0.12f) return 0; float s = (fabsf(v) - 0.12f) / 0.88f; if (s > 1) s = 1; return (int32_t)(copysignf(s, v) * DM_STICK_MAX); }
 // Touch: the on-screen controls (touch_ui.c)
