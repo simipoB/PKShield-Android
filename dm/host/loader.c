@@ -396,6 +396,87 @@ static void map_image(module_t *m, const char *dir) {
     m->base = (uint8_t *)base; install_key_page(m);
 }
 #else
+// Code patches applied while the image is still writable, before the code area is sealed: IPSwitch .pchtxt files from DM_MODS_DIR (community mods, only the ones whose
+// @nsobid matches the module), then the built-in ones. Either skips a patch that would overwrite an instruction the rewriter (patch_nso.py) turned into a branch into
+// its patch area [p0, p1), since that would undo the rewrite
+#include <ctype.h>
+#include <dirent.h>
+#include <strings.h>
+static int hex_nib(char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; }
+static int overlaps_rewrite(const module_t *m, uint64_t off, size_t nb, int64_t p0, int64_t p1) {
+    if (!nb || off >= m->text_end) return 0;
+    for (uint64_t a = off & ~3ull; a <= ((off + nb - 1) & ~3ull) && a + 4 <= m->text_end; a += 4) {
+        uint32_t w; memcpy(&w, m->base + a, 4);
+        if ((w & 0xfc000000u) == 0x14000000u) { int64_t t = (int64_t)a + ((int64_t)(int32_t)(w << 6) >> 4); if (t >= p0 && t < p1) return 1; }
+    }
+    return 0;
+}
+// One .pchtxt file: "@nsobid-<build id>", "@flag offset_shift <n>", "@enabled" / "@disabled", "@stop", then "<hex offset> <hex bytes>" or "<hex offset> \"text\"" lines
+// (offsets count the 0x100-byte NSO header, as IPSwitch's do); // and # start comments
+static int pchtxt_apply(module_t *m, uint64_t lim, int64_t p0, int64_t p1, const char *path) {
+    if (!m->build_id[0]) return 0;
+    FILE *f = fopen(path, "r"); if (!f) return 0;
+    char ln[1024]; int bid_ok = 0, en = 0, applied = 0, line_no = 0; int64_t shift = 0;
+    while (fgets(ln, sizeof ln, f)) {
+        char *t = ln; if (!line_no++ && (uint8_t)t[0] == 0xef && (uint8_t)t[1] == 0xbb && (uint8_t)t[2] == 0xbf) t += 3;
+        char *c1 = strstr(t, "//"), *c2 = strchr(t, '#'); if (c1) *c1 = 0; if (c2) *c2 = 0;
+        while (isspace((unsigned char)*t)) t++;
+        for (size_t e = strlen(t); e && isspace((unsigned char)t[e - 1]); ) t[--e] = 0;
+        if (!*t) continue;
+        if (*t == '@') {
+            if (!strncasecmp(t, "@nsobid-", 8)) { const char *b = t + 8; size_t bl = 0; while (hex_nib(b[bl]) >= 0) bl++;
+                if (bl < 16 || strncasecmp(b, m->build_id, bl < 32 ? bl : 32)) { fclose(f); return 0; }   // another module or version
+                bid_ok = 1; }
+            else if (!strncasecmp(t, "@flag", 5) && isspace((unsigned char)t[5])) { char *q = t + 5; while (isspace((unsigned char)*q)) q++;
+                if (!strncasecmp(q, "offset_shift", 12) && isspace((unsigned char)q[12])) shift = strtoll(q + 12, NULL, 0); }
+            else if (!strcasecmp(t, "@enabled")) en = 1;
+            else if (!strcasecmp(t, "@disabled")) en = 0;
+            else if (!strcasecmp(t, "@stop")) break;
+            continue;
+        }
+        if (!bid_ok || !en) continue;
+        char *end = NULL; uint64_t addr = strtoull(t, &end, 16);
+        if (end == t || !isspace((unsigned char)*end)) continue;
+        char *v = end; while (isspace((unsigned char)*v)) v++;
+        uint8_t buf[512]; size_t nb = 0; int bad = 0;
+        if (*v == '"') { for (v++; *v && *v != '"'; v++) { if (*v == '\\' && v[1]) v++; if (nb >= sizeof buf) { bad = 1; break; } buf[nb++] = (uint8_t)*v; } if (*v != '"') bad = 1; }
+        else while (*v) { if (isspace((unsigned char)*v)) { v++; continue; } int hi = hex_nib(v[0]), lo = v[1] ? hex_nib(v[1]) : -1;
+            if (hi < 0 || lo < 0 || nb >= sizeof buf) { bad = 1; break; } buf[nb++] = (uint8_t)(hi << 4 | lo); v += 2; }
+        if (bad || !nb) { LOG("[RED] %s:%d: not a valid value, skipped", path, line_no); continue; }
+        int64_t off = (int64_t)addr + shift - 0x100;
+        if (off < 0 || (uint64_t)off + nb > lim) { LOG("[RED] %s:%d: +%#llx (%zu bytes) is outside %s, skipped", path, line_no, (unsigned long long)off, nb, m->name); continue; }
+        if (overlaps_rewrite(m, (uint64_t)off, nb, p0, p1)) { LOG("[RED] %s:%d: +%#llx is code the host rewrote, skipped", path, line_no, (unsigned long long)off); continue; }
+        memcpy(m->base + off, buf, nb); applied++;
+    }
+    fclose(f);
+    if (applied) LOG("%s: %d patch(es) from %s", m->name, applied, path);
+    return applied;
+}
+static int pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
+    const char *d = getenv("DM_MODS_DIR"); if (!d || !*d || !m->build_id[0]) return 0;
+    struct dirent **ents = NULL; int n = scandir(d, &ents, NULL, alphasort), total = 0; if (n < 0) return 0;
+    for (int i = 0; i < n; i++) { const char *nm = ents[i]->d_name; size_t l = strlen(nm);
+        if (l > 7 && !strcasecmp(nm + l - 7, ".pchtxt")) { char path[1200]; snprintf(path, sizeof path, "%s/%s", d, nm); total += pchtxt_apply(m, lim, p0, p1, path); }
+        free(ents[i]); }
+    free(ents); return total;
+}
+// Built-in: DM_ASPECT=20:9 (opt-in, settings screen) widens the 3D camera to 20:9, unless a .pchtxt already patched the module: Shield builds the camera's 16:9 ratio with
+// MOVK X9, #0x8e39, LSL #32 / MOVK X9, #0x3fe3, LSL #48 (16/9 = 1.7777778, float 0x3fe38e39, in X9's top half), once in main; that becomes 20/9 (2.2222223, 0x400e38e4). The picture is then presented
+// in a 20:9 box (nvn_ovl.h dm_present_rect), the HUD stretched with it
+static int builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int modded) {
+    const char *asp = getenv("DM_ASPECT");
+    if (strcmp(m->name, "main") || modded || !asp || strcmp(asp, "20:9")) return 0;
+    uint64_t hit = 0; int hits = 0;
+    for (uint64_t a = 0; a + 8 <= m->text_end && a + 8 <= lim; a += 4) {
+        uint32_t w0, w1; memcpy(&w0, m->base + a, 4); memcpy(&w1, m->base + a + 4, 4);
+        if (w0 == 0xf2d1c729u && w1 == 0xf2e7fc69u) { hit = a; if (++hits > 1) break; }
+    }
+    if (hits != 1 || overlaps_rewrite(m, hit, 8, p0, p1)) { LOG("[RED] %s: 20:9 camera patch not applied (%d matches)", m->name, hits); return 0; }
+    const uint32_t w[2] = { 0xf2c71c89u, 0xf2e801c9u };   // MOVK X9, #0x38e4, LSL #32 / MOVK X9, #0x400e, LSL #48
+    memcpy(m->base + hit, w, 8);
+    LOG("%s: 20:9 camera patch at +%#llx", m->name, (unsigned long long)hit);
+    return 1;
+}
 static uint8_t *slurp(const char *path, size_t *n) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) die("open %s", path);
@@ -419,9 +500,12 @@ static void map_image(module_t *m, const char *dir) {
         uint8_t *a = mmap(NULL, pre + m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
         if (a == MAP_FAILED) die("%s mmap %#llx", m->name, (unsigned long long)(pre + m->size));
         m->base = a + pre;
-        memcpy(m->base, raw, fl); memcpy(a, raw + fl, sz - fl); free(raw); install_key_page(m);
+        memcpy(m->base, raw, fl); memcpy(a, raw + fl, sz - fl); free(raw);
+        int modded = pchtxt_dir(m, fl, m->patch_off, m->patch_off + (int64_t)m->patch_len); modded += builtin_patches(m, fl, m->patch_off, m->patch_off + (int64_t)m->patch_len, modded);
+        install_key_page(m);
         uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
         if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
+        if (modded) __builtin___clear_cache((char *)m->base, (char *)(m->base + rx));
         if (mprotect(a, m->patch_len, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
         if (pre > m->patch_len && mprotect(a + m->patch_len, pre - m->patch_len, PROT_NONE)) die("%s mprotect gap", m->name);
         return;
@@ -429,9 +513,12 @@ static void map_image(module_t *m, const char *dir) {
     m->size = (sz + 0x3FFF) & ~0x3FFFull;
     m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
-    memcpy(m->base, raw, sz); free(raw); install_key_page(m);
+    memcpy(m->base, raw, sz); free(raw);
+    int modded = pchtxt_dir(m, m->key_page_off, m->patch_off, (int64_t)sz); modded += builtin_patches(m, m->key_page_off, m->patch_off, (int64_t)sz, modded);
+    install_key_page(m);
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
     if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
+    if (modded) __builtin___clear_cache((char *)m->base, (char *)(m->base + rx));
     uint64_t po = m->patch_off & ~0x3FFFull;
     if (mprotect(m->base + po, m->size - po, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
 }

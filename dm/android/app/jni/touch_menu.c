@@ -18,6 +18,7 @@
 #include "dm.h"
 #include "dm_input.h"
 #include "game_profile.h"
+#include "nvn_ovl.h"   // dm_picture_box
 
 #if defined(DM_GAME_TOUCH_MENU) && DM_GAME_TOUCH_MENU
 static const uint64_t PANE_VT[] = DM_GAME_TOUCH_MENU_PANES;
@@ -164,10 +165,10 @@ static void *driver_main(void *a) {
         if (setup()) { pthread_mutex_lock(&g_scan_mu); drive(x, y); if (g_nfound) { cursors_pick(); g_scan_t = now_s(); } pthread_mutex_unlock(&g_scan_mu); } }
     return NULL;
 }
-// a quick tap at screen point (x, y) of a w x h window showing the 16:9 game picture fitted (as the presentation blits it): to the driver thread
+// a quick tap at screen point (x, y) of a w x h window showing the game picture where the presentation puts it (nvn_ovl.h dm_picture_box): to the driver thread
 void touch_menu_tap(float x, float y, float w, float h) {
-    float s = fminf(w / 1920.0f, h / 1080.0f), ox = (w - 1920 * s) / 2, oy = (h - 1080 * s) / 2;
-    float lx = (x - ox) / s - 960, ly = 540 - (y - oy) / s;
+    int32_t box[4]; dm_picture_box((int32_t)w, (int32_t)h, 1920, 1080, box);
+    float lx = (x - box[0]) / box[2] * 1920 - 960, ly = 540 - (y - box[1]) / box[3] * 1080;
     if (lx < -960 || lx > 960 || ly < -540 || ly > 540) return;
     pthread_mutex_lock(&g_mu);
     if (!g_started) { pthread_t t; if (!pthread_create(&t, NULL, driver_main, NULL)) { pthread_detach(t); g_started = 1; } }
