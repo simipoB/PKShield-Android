@@ -18,7 +18,7 @@ typedef struct {
 int front_overlay(dm_ovl_item *it, int max, int width, int height);
 
 // Where the game picture goes in a ww x wh window: box = x, y, width, height in window pixels. By default the picture keeps its own aspect (sw x sh), fitted and centred;
-// DM_ASPECT=20:9 (opt-in, with the 20:9 camera patch, loader.c) gives it a 20:9 box instead, the 16:9 picture stretched into it (nvn_vk.c present_window, touch_menu.c)
+// DM_ASPECT=20:9 (opt-in, for a 20:9 .pchtxt mod that widens the game's camera) gives it a 20:9 box instead, the 16:9 picture stretched into it (nvn_vk.c present_window, touch_menu.c)
 static inline int dm_aspect_20_9(void) { static int m = -1; if (m < 0) { const char *e = getenv("DM_ASPECT"); m = e && !strcmp(e, "20:9"); } return m; }
 static inline void dm_picture_box(int32_t ww, int32_t wh, int32_t sw, int32_t sh, int32_t box[4]) {
     double ar = dm_aspect_20_9() ? 20.0 / 9.0 : sh > 0 ? (double)sw / sh : 16.0 / 9.0, bh = fmin((double)wh, ww / ar), bw = bh * ar;

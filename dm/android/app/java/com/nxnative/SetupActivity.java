@@ -136,7 +136,7 @@ public final class SetupActivity extends Activity {
         root.addView(tg);
         TextView al = new TextView(this); al.setText("Picture"); al.setPadding(0, 16, 0, 0); root.addView(al);
         android.widget.RadioGroup ag = new android.widget.RadioGroup(this);
-        String[][] am = { { "", "16:9, as the game is made" }, { "20:9", "20:9: a wider view that fills tall phones (the menus are stretched with it; experimental)" } };
+        String[][] am = { { "", "16:9, as the game is made" }, { "20:9", "20:9: for a 20:9 mod in the app's mods folder (without one, the picture is only stretched)" } };
         String acur = envGet("DM_ASPECT");
         for (int k = 0; k < am.length; k++) {
             android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(3000 + k); b.setText(am[k][1]); ag.addView(b);

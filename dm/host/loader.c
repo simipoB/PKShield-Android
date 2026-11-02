@@ -454,35 +454,25 @@ static int pchtxt_apply(module_t *m, uint64_t lim, int64_t p0, int64_t p1, const
 }
 static int pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     const char *d = getenv("DM_MODS_DIR"); if (!d || !*d || !m->build_id[0]) return 0;
-    struct dirent **ents = NULL; int n = scandir(d, &ents, NULL, alphasort), total = 0; if (n < 0) return 0;
+    struct dirent **ents = NULL; int n = scandir(d, &ents, NULL, alphasort), total = 0, files = 0;
+    if (n < 0) { if (errno != ENOENT) LOG("[RED] %s: mods folder %s unreadable (errno %d)", m->name, d, errno); return 0; }
     for (int i = 0; i < n; i++) { const char *nm = ents[i]->d_name; size_t l = strlen(nm);
-        if (l > 7 && !strcasecmp(nm + l - 7, ".pchtxt")) { char path[1200]; snprintf(path, sizeof path, "%s/%s", d, nm); total += pchtxt_apply(m, lim, p0, p1, path); }
+        if (l > 7 && !strcasecmp(nm + l - 7, ".pchtxt")) { char path[1200]; snprintf(path, sizeof path, "%s/%s", d, nm); files++; total += pchtxt_apply(m, lim, p0, p1, path); }
         free(ents[i]); }
-    free(ents); return total;
+    free(ents);
+    if (files) LOG("%s: mods folder %s: %d .pchtxt file(s), %d patch(es) applied to this module", m->name, d, files, total);
+    return total;
 }
-// Built-in: DM_ASPECT=20:9 (opt-in, settings screen) widens the 3D camera to 20:9, unless a .pchtxt already patched the module: Shield builds the camera's 16:9 ratio with
-// MOVK X9, #0x8e39, LSL #32 / MOVK X9, #0x3fe3, LSL #48 (16/9 = 1.7777778, float 0x3fe38e39, in X9's top half), once in main; that becomes 20/9 (2.2222223, 0x400e38e4). The picture is then presented
-// in a 20:9 box (nvn_ovl.h dm_present_rect), the HUD stretched with it
+// Built-in patches. (No built-in 20:9 camera: the 16:9 that PR #48 patched, MOVK X9, #0x8e39 / #0x3fe3 at +0x607de8, is a camera object's default aspect, which
+// the game replaces for the gameplay camera; patched, the picture was unchanged. DM_ASPECT=20:9 is the presentation alone, for a 20:9 .pchtxt mod.)
 int dm_step_hz; uint8_t *dm_step_word;   // the high frame rate below: its rate and the game's step word, which hle_nvn.c vstep_tick rewrites every frame
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1);
 static int builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int modded) {
-    if (strcmp(m->name, "main")) return 0;
-    int fps = fps_patch(m, lim, p0, p1);
-    const char *asp = getenv("DM_ASPECT");
-    if (modded || !asp || strcmp(asp, "20:9")) return fps;
-    uint64_t hit = 0; int hits = 0;
-    for (uint64_t a = 0; a + 8 <= m->text_end && a + 8 <= lim; a += 4) {
-        uint32_t w0, w1; memcpy(&w0, m->base + a, 4); memcpy(&w1, m->base + a + 4, 4);
-        if (w0 == 0xf2d1c729u && w1 == 0xf2e7fc69u) { hit = a; if (++hits > 1) break; }
-    }
-    if (hits != 1 || overlaps_rewrite(m, hit, 8, p0, p1)) { LOG("[RED] %s: 20:9 camera patch not applied (%d matches)", m->name, hits); return 0; }
-    const uint32_t w[2] = { 0xf2c71c89u, 0xf2e801c9u };   // MOVK X9, #0x38e4, LSL #32 / MOVK X9, #0x400e, LSL #48
-    memcpy(m->base + hit, w, 8);
-    LOG("%s: 20:9 camera patch at +%#llx", m->name, (unsigned long long)hit);
-    return fps + 1;
+    (void)modded;
+    return strcmp(m->name, "main") ? 0 : fps_patch(m, lim, p0, p1);
 }
 // Built-in: DM_FPS_TARGET=60..120 (opt-in, settings screen; experimental) for Shield 1.3.2's main: the present interval the game asks NVN for, 2 (30 fps), becomes 1
-// (+0x18a2d18: MOV W1, #2 → #1), and the game's step per frame, 33333334 ns, becomes 1 / fps (+0x203eeb8). From then on presentation paces at that rate and the step
+// (+0x18a2d18, in the game's present-interval setter: MOV W1, W21, the interval asked for, → MOV W1, #1), and the frame time the game takes for interval 2 (+0x203eeb8, in a table of u64 ns by interval: 16666667, 33333334, 50000000 ...) becomes 1 / fps. From then on presentation paces at that rate and the step
 // word follows the frames actually shown (hle_nvn.c vstep_tick), so game time stays real time when frames run late. Both words are checked first: another build is left alone
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     const char *e = getenv("DM_FPS_TARGET"); int fps = e ? atoi(e) : 0;
@@ -492,7 +482,7 @@ static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     if (strncasecmp(m->build_id, "a16802625e7826bf83b6f9708e475b91", 32) || itv + 4 > m->text_end || dt < m->text_end || dt + 4 > lim || overlaps_rewrite(m, itv, 4, p0, p1)) {
         LOG("[RED] %s: %d fps patch not applied (not Shield 1.3.2's main, the step word lies in code, or that code was rewritten)", m->name, fps); return 0; }
     uint32_t wi, wd; memcpy(&wi, m->base + itv, 4); memcpy(&wd, m->base + dt, 4);
-    if (wi != 0x52800041u || wd != 33333334u) { LOG("[RED] %s: %d fps patch not applied (unexpected words %08x %u)", m->name, fps, wi, wd); return 0; }
+    if ((wi != 0x2a1503e1u && wi != 0x52800041u) || wd != 33333334u) { LOG("[RED] %s: %d fps patch not applied (unexpected words %08x %u)", m->name, fps, wi, wd); return 0; }
     wi = 0x52800021u; wd = (uint32_t)((1000000000ull + (uint64_t)fps - 1) / (uint64_t)fps);
     memcpy(m->base + itv, &wi, 4); memcpy(m->base + dt, &wd, 4);
     dm_step_hz = fps; dm_step_word = m->base + dt;
