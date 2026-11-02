@@ -80,6 +80,7 @@ static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name)
 static void completion_start(void);
 static void dummies_init(void);
 static int host_import_mark(int set);   // (queue_submit)
+static int fd_export_mark(int op);   // (mtl_init, mtl_pool_add)
 static void pcache_open(void); static void *prewarm_main(void *arg);   // pipeline list and cache (below)
 // The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (an Adreno driver such as Mesa Turnip, chosen on the setup screen) is opened through libadrenotools
 // (BSD-2-Clause, shipped in the app with its hook libraries); without it, or when that fails, the system's libvulkan
@@ -191,7 +192,11 @@ void mtl_init(void) {
 #ifdef __linux__
     // The fd route's handle type: a dma-buf where the driver exports buffers as one (Android's drivers: Mali refused opaque-fd buffers, #40; a dma-buf is mmap-able by definition,
     // an opaque fd need not be), else an opaque fd
-    if (!g_host_import && has_ext(de, nde, "VK_KHR_external_memory_fd") && !(getenv("DM_VK_NO_FDMAP") && atoi(getenv("DM_VK_NO_FDMAP")))) {
+    // A driver that crashed allocating exportable memory (Xclipse 540, driver 0x6000230: a segfault inside vkAllocateMemory on the first pool, #45) left the marker
+    // fd_export_mark sets around that first allocation: this start moves the driver's mappings instead (DM_VK_FDMAP=1 tries the fd route again)
+    int fd_crashed = fd_export_mark(0) && !(getenv("DM_VK_FDMAP") && atoi(getenv("DM_VK_FDMAP")));
+    if (fd_crashed) VLOG("[RED] memory pools: the driver crashed exporting its memory last time: moving its mappings instead (mremap)");
+    if (!g_host_import && !fd_crashed && has_ext(de, nde, "VK_KHR_external_memory_fd") && !(getenv("DM_VK_NO_FDMAP") && atoi(getenv("DM_VK_NO_FDMAP")))) {
         VkExternalMemoryHandleTypeFlagBits cand[2] = { VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
         int dmabuf = has_ext(de, nde, "VK_EXT_external_memory_dma_buf") && !(getenv("DM_VK_NO_DMABUF") && atoi(getenv("DM_VK_NO_DMABUF")));
         for (int i = dmabuf ? 0 : 1; i < 2 && !g_fdmap; i++) {
@@ -429,7 +434,8 @@ void mtl_pool_add(const void *mem, uint64_t size) {
             static PFN_vkGetMemoryFdKHR getfd; if (!getfd) getfd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_dev, "vkGetMemoryFdKHR");
             VkExportMemoryAllocateInfo ex = { .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .pNext = &ded, .handleTypes = g_fdtype };
             VkMemoryAllocateInfo xai = mai; xai.pNext = &ex;
-            int fd = -1; void *tmp = MAP_FAILED;
+            int fd = -1, first = g_fdmap < 0; void *tmp = MAP_FAILED;
+            if (first) fd_export_mark(1);   // until the first pool's export resolves: a crash inside the driver leaves it for the next start
             if (getfd && !vkAllocateMemory(g_dev, &xai, NULL, &e.mem)) {
                 VkMemoryGetFdInfoKHR gi = { .sType = VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, .memory = e.mem, .handleType = g_fdtype };
                 if (!getfd(g_dev, &gi, &fd) && fd >= 0) tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -439,6 +445,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
                     munmap(tmp, n);
                     if (q == (void *)a) {
                         close(fd); e.fdmapped = 1;
+                        if (first) fd_export_mark(-1);
                         if (g_fdmap < 0) { g_fdmap = 1; VLOG("memory pools: the driver's memory exported (%s) and mapped over the pool's pages", g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "dma-buf" : "opaque fd"); }
                         goto bind;
                     }
@@ -451,6 +458,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
             // pages untouched so far) takes the route below on its own
             if (g_fdmap > 0) RED_ONCE(103, "memory pool %p+%#llx: GPU memory export failed: this pool and any other that fails go the mremap route", mem, (unsigned long long)size);
             else { VLOG("memory pools: the driver's memory cannot be exported and mapped (errno %d): moving its mappings instead (mremap)", errno); g_fdmap = 0; }
+            if (first) fd_export_mark(-1);
         }
 #endif
 #ifdef __linux__
@@ -768,6 +776,15 @@ static int host_import_mark(int set) {
     char m[1100]; snprintf(m, sizeof m, "%s", pc); char *sl = strrchr(m, '/'); if (!sl) return 0; snprintf(sl + 1, sizeof m - (size_t)(sl + 1 - m), "host_import_failed");
     if (!set) return access(m, F_OK) == 0;
     FILE *f = fopen(m, "w"); if (f) { fputs("vkQueueSubmit failed with imported host memory: the next start moves driver memory onto the pools instead\n", f); fclose(f); }
+    return f != NULL;
+}
+// The marker of a driver that crashed exporting its memory (see mtl_init): op 1 writes it, -1 removes it, 0 tells whether it is there
+static int fd_export_mark(int op) {
+    const char *pc = getenv("DM_VK_PCACHE"); if (!pc) return 0;
+    char m[1100]; snprintf(m, sizeof m, "%s", pc); char *sl = strrchr(m, '/'); if (!sl) return 0; snprintf(sl + 1, sizeof m - (size_t)(sl + 1 - m), "fd_export_crashed");
+    if (op < 0) return unlink(m) == 0;
+    if (!op) return access(m, F_OK) == 0;
+    FILE *f = fopen(m, "w"); if (f) { fputs("allocating exportable GPU memory for the first pool; if this file is still here the driver crashed doing so, and the next start moves its mappings instead\n", f); fclose(f); }
     return f != NULL;
 }
 static int mirror_ordered(void);
