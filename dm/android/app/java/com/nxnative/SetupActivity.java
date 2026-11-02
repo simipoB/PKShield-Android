@@ -144,6 +144,16 @@ public final class SetupActivity extends Activity {
         }
         ag.setOnCheckedChangeListener((g, id) -> envSet("DM_ASPECT", am[id - 3000][0]));
         root.addView(ag);
+        TextView fl = new TextView(this); fl.setText("Frame rate"); fl.setPadding(0, 16, 0, 0); root.addView(fl);
+        android.widget.RadioGroup fg = new android.widget.RadioGroup(this);
+        String[][] fm = { { "", "30 fps, as the game is made" }, { "60", "60 fps (experimental: some animations may run oddly, and most phones cannot hold it)" } };
+        String fcur = envGet("DM_FPS_TARGET");
+        for (int k = 0; k < fm.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(5000 + k); b.setText(fm[k][1]); fg.addView(b);
+            if (fm[k][0].equals(fcur)) b.setChecked(true);
+        }
+        fg.setOnCheckedChangeListener((g, id) -> envSet("DM_FPS_TARGET", fm[id - 5000][0]));
+        root.addView(fg);
         TextView pl = new TextView(this); pl.setText("Controller buttons"); pl.setPadding(0, 16, 0, 0); root.addView(pl);
         android.widget.RadioGroup pg = new android.widget.RadioGroup(this);
         String[][] pm = { { "", "By position, as on a Switch pad (the bottom button is B)" }, { "labels", "By label (the button marked A is A)" } };

@@ -1405,13 +1405,16 @@ static int fps_step_cap(void) {
 static int fstep_on(void) { return fps_step_cap() != 0; }   // the host decides the steps in whole vsyncs
 static nvn_fstep g_fs;   // present thread only
 static _Atomic int g_fs_k;   // the hold presentation follows (0 = not decided yet)
+// Shield's high frame rate (loader.c fps_patch, DM_FPS_TARGET): the same controller with slots of 1 / dm_step_hz, the step going into the game's own step word
+__attribute__((weak)) int dm_step_hz; __attribute__((weak)) uint8_t *dm_step_word;   // graphics unit tests have no loader
+static int vstep_on(void) { return &dm_step_hz && dm_step_hz > 0 && &dm_step_word && dm_step_word && !dm_detclock_enabled(); }
 // The display link runs at 30 Hz at a 30 cap, except while the game fixes its own step at 1 (BotW's VFR override)
 int nvn_game_fps(void) { int c = fps_step_cap(); if (c) return c == 30 && atomic_load(&g_fs_k) == 1 && fstep_on() ? 60 : c; uint64_t s = atomic_load(&g_itv2_since); return g_hz > 0 && !g_display_mode && s && now_ns() - s >= 1000000000ull ? 30 : 60; }
 static void present_cfg(const win_t *o) {
     if (g_hz >= 0) return;
     // The interval mode comes from the game profile (present_interval, default game): whether frames follow the present interval the game sets depends on whether the game's logic counts frames, which differs per game. Environment variables override it, and can override the fixed 60 Hz.
     int scr = mtl_display_hz();
-    const char *e = getenv("DM_PRESENT_HZ"); g_hz = e ? atoi(e) : 60;
+    const char *e = getenv("DM_PRESENT_HZ"); g_hz = e ? atoi(e) : vstep_on() ? dm_step_hz : 60;
     if (!g_hz) LOG("[nvn] [WARNING] DM_PRESENT_HZ=0: frame rate uncapped, frame pacing unlike the device, UI logic may drift (for profiling only, not for verdicts / cross-checks)");
     // Cut (intentional deviation from the original game's behavior): with DM_PRESENT_INTERVAL=display the present interval set by the game is not followed and one frame is presented per display-link tick,
     // with a fixed hard floor of 60 fps; the logic stays at 25 ticks, and the client's frame-counted UI logic is unaffected -
@@ -1421,7 +1424,7 @@ static void present_cfg(const win_t *o) {
     LOG("[nvn] present tick %d Hz, interval mode %s (%s; present interval set by the game %d; %s)", g_hz, g_display_mode ? "display (one frame per tick, a cut)" : "game (original semantics)",
         m ? "DM_PRESENT_INTERVAL" : "game profile present_interval", o->interval, scr > 0 ? "window, fixed 60 Hz" : "no window, fixed 60 Hz");
 }
-static int present_itv(const win_t *o) { int c = fps_step_cap(), k = atomic_load(&g_fs_k); return c ? (k && fstep_on() ? k : 60 / c) : g_display_mode ? 1 : o->interval > 0 ? o->interval : 1; }   // vsyncs per frame that presentation follows
+static int present_itv(const win_t *o) { int c = fps_step_cap(), k = atomic_load(&g_fs_k); if (!c && vstep_on()) return k ? k : 1; return c ? (k && fstep_on() ? k : 60 / c) : g_display_mode ? 1 : o->interval > 0 ? o->interval : 1; }   // vsyncs per frame that presentation follows
 static uint64_t present_period(const win_t *o) {
     present_cfg(o);
     int was = atomic_load(&g_game_itv), want = o->interval > 0 ? o->interval : 1;
@@ -1470,11 +1473,29 @@ static void fstep_tick(const win_t *o) {
         t0 = t; v0 = vs; memset(held, 0, sizeof held);
     }
 }
+// A frame that keeps its slot is held 1 slot and the game steps 1 slot; when frames run late the hold steps up (60 → 30 → 20 fps at 60) and the game steps as many slots
+static nvn_fstep g_vs;   // present thread only
+static void vstep_tick(const win_t *o) {
+    static uint64_t prev, held[FSTEP_MAX + 1]; static int nlog;
+    const double v = 1e9 / dm_step_hz;
+    uint64_t st = g_fs_start ? g_fs_start : now_ns(), pw = g_fs_wait; g_fs_start = g_fs_wait = 0;
+    double shown = prev ? (st - prev) / v : 0, gpu = 0; prev = st;
+    for (uint64_t f = g_frame; f-- > 0 && g_frame - f <= 8;) { double g = mtl_gpu_ms(f); if (g >= 0) { gpu = g * 1e6 / v; break; } }
+    double cpu = shown - pw / v, cost = cpu > gpu ? cpu : gpu;
+    int k0 = g_vs.k, n = nvn_fstep_next(&g_vs, shown, cost, 1, FSTEP_MAX, 0);
+    uint32_t ns = (uint32_t)(((uint64_t)n * 1000000000ull + (uint64_t)dm_step_hz - 1) / (uint64_t)dm_step_hz);
+    dm_guest_write_prepare(dm_step_word, 4); __atomic_store_n((uint32_t *)dm_step_word, ns, __ATOMIC_RELAXED);
+    atomic_store(&g_fs_k, g_vs.k); held[g_vs.k]++;
+    if (k0 && g_vs.k != k0 && nlog < 40) LOG("[nvn] frame step: hold %d → %d slots of %.2f ms at present %llu (cost %.2f slots, GPU %.2f)%s", k0, g_vs.k, v / 1e6,
+                                             (unsigned long long)o->presents, cost, gpu, ++nlog == 40 ? "; further changes not logged" : "");
+    if (o->presents % 1800 == 0) { LOG("[nvn] frame step: held 1 / 2 / 3 slots %llu / %llu / %llu frames, %llu late", (unsigned long long)held[1], (unsigned long long)held[2],
+                                       (unsigned long long)held[3], (unsigned long long)g_vs.late); memset(held, 0, sizeof held); }
+}
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     (void)q; win_t *o = (win_t *)w; o->presents++;
     dm_fps_lock_tick();
     if (dm_fps_state) { static int was; int c = fps_step_cap(); if (c != was) { LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, c == 30 && was == 60 ? " (prerendered movie)" : ""); was = c; } }
-    if (fstep_on()) fstep_tick(o);
+    if (fstep_on()) fstep_tick(o); else if (vstep_on()) vstep_tick(o);
     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
     present_cfg(o);
     {
