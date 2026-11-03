@@ -5,6 +5,9 @@
 //   · station (the game looks for others): Scan listens for the announcements (1 s) and returns those of the same game family (Sword and Shield play together,
 //     as on a Switch) that pass the game's scan filter; Connect joins the host, then follows its node list; the host gone = signal lost
 //   · the game's own traffic (battle, trade data) then goes over its sockets to the members' real Wi-Fi addresses (hle_net.c: the phone's sockets)
+// With a room set (DM_RELAY / DM_RELAY_ROOM: the in-game menu's Online room) the same runs over the room server's virtual network instead (hle_relay.c): this phone's
+// address is its virtual one (10.13.0.x), the announcements go to the network's broadcast, and joins and node lists are datagrams on port 11453 (the server link is TCP:
+// they arrive, in order); a member gone is the server's notice.
 // Off while mods are on (DM_MODS_ACTIVE, android_main.c boot_guard): Initialize reports failure, so the game says local play is unavailable; DM_LDN=0 turns it off too.
 // Structures (offsets in bytes) as switchbrew documents them: NetworkInfo 0x480 = NetworkId 0x20 (IntentId 0x10: LocalCommunicationId u64, SceneId u16 at +0xa;
 // SessionId 0x10), CommonNetworkInfo 0x30 at +0x20 (Bssid 6, Ssid 0x22 {u8 length, 33 bytes}, Channel s16 +0x28, LinkLevel +0x2a, NetworkType +0x2b),
@@ -32,6 +35,13 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_state, g_reason, g_node = -1, g_beacon = -1, g_listen = -1, g_host = -1, g_member[MAXN];
 static uint8_t g_ni[NI_SIZE], g_sec[0x44];   // the network (as the game reads it), the host's SecurityConfig
 static void *g_ev; static uint32_t g_ip, g_mask; static pthread_t g_th; static int g_th_on;
+// the room server (hle_relay.c): the virtual network's sockets, the members by virtual address and port
+int relay_start(void); int relay_active(void); uint32_t relay_vip(void); void relay_on_left(void (*fn)(uint32_t));
+int relay_bind(int fd, const struct sockaddr_in *a); long relay_sendto(int fd, const void *b, unsigned long n, const struct sockaddr_in *to);
+long relay_recvfrom(int fd, void *b, unsigned long n, int flags, struct sockaddr_in *from);
+static int g_relay, g_join = -1; static uint32_t g_maddr[MAXN]; static uint16_t g_mport[MAXN]; static struct sockaddr_in g_hostaddr;
+static long vsend(int fd, const void *b, size_t n, uint32_t ip, uint16_t port) {   // a datagram on the virtual network
+    struct sockaddr_in to = { .sin_family = AF_INET, .sin_port = htons(port), .sin_addr.s_addr = htonl(ip) }; return relay_sendto(fd, b, n, &to); }
 
 static uint32_t rd32(const uint8_t *p) { uint32_t v; memcpy(&v, p, 4); return v; }
 static void ev(void) { if (g_ev) hle_signal_system_event(g_ev); }
@@ -66,6 +76,9 @@ static int send_all(int fd, const void *b, size_t n) { const uint8_t *p = b; whi
 static int recv_all(int fd, void *b, size_t n) { uint8_t *p = b; while (n) { ssize_t r = recv(fd, p, n, 0); if (r <= 0) return 0; p += r; n -= (size_t)r; } return 1; }
 static void members_update_locked(void) {   // the node list to every member, the host's own event
     g_ni[LDN + 0x17] = (uint8_t)node_count(g_ni);
+    if (g_relay) { uint8_t m[1 + NI_SIZE]; m[0] = 'N'; memcpy(m + 1, g_ni, NI_SIZE);
+        for (int k = 1; k < MAXN; k++) if (g_maddr[k]) vsend(g_join, m, sizeof m, g_maddr[k], g_mport[k]);
+        ev(); return; }
     for (int k = 1; k < MAXN; k++) if (g_member[k] >= 0) { uint8_t t = 'N'; if (!send_all(g_member[k], &t, 1) || !send_all(g_member[k], g_ni, NI_SIZE)) { close(g_member[k]); g_member[k] = -1; memset(g_ni + NODES + k * NODE, 0, NODE); } }
     g_ni[LDN + 0x17] = (uint8_t)node_count(g_ni); ev();
 }
@@ -109,6 +122,58 @@ static void *host_main(void *p) {
     return NULL;
 }
 
+static void host_join_relay_locked(const uint8_t *j, size_t n, const struct sockaddr_in *from) {   // a station's 'J' from the virtual network
+    uint32_t ip = ntohl(from->sin_addr.s_addr); uint16_t port = ntohs(from->sin_port);
+    for (int k = 1; k < MAXN; k++) if (g_maddr[k] == ip && g_mport[k] == port) { uint8_t a[2] = { 'A', (uint8_t)k }; vsend(g_join, a, 2, ip, port); members_update_locked(); return; }   // (a repeat)
+    if (n < 1 + 0x21 + 2 + 2 + 0x40) return;
+    uint16_t pl; memcpy(&pl, j + 0x24, 2); uint16_t hl; memcpy(&hl, g_sec + 2, 2);
+    int ok = pl == hl && !memcmp(j + 0x26, g_sec + 4, pl < 0x40 ? pl : 0x40) && !g_ni[LDN + 0x12];
+    int k = 1; while (k < g_ni[LDN + 0x16] && k < MAXN && g_ni[NODES + k * NODE + 0xb]) k++;
+    if (!ok || k >= MAXN || k >= g_ni[LDN + 0x16]) { uint8_t r = 'R'; vsend(g_join, &r, 1, ip, port); LOG("[ldn] a station was refused (%s)", ok ? "the network is full" : "passphrase or accept policy"); return; }
+    char name[0x21]; memcpy(name, j + 1, 0x20); name[0x20] = 0; int16_t ver; memcpy(&ver, j + 0x22, 2);
+    node_set(g_ni, k, ip, name, ver); g_maddr[k] = ip; g_mport[k] = port;
+    uint8_t a[2] = { 'A', (uint8_t)k }; vsend(g_join, a, 2, ip, port);
+    struct in_addr ia = { htonl(ip) }; LOG("[ldn] %s joined as node %d (room, %s)", name, k, inet_ntoa(ia));
+    members_update_locked();
+}
+static void *host_relay_main(void *p) {
+    (void)p; uint8_t pkt[8 + 8 + NI_SIZE]; uint64_t prog = my_program(); struct timespec last = {0};
+    for (;;) {
+        pthread_mutex_lock(&g_mu); if (g_state != ST_AP_CREATED || !g_relay) { pthread_mutex_unlock(&g_mu); break; }
+        struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
+        if ((now.tv_sec - last.tv_sec) * 1000 + (now.tv_nsec - last.tv_nsec) / 1000000 >= 500) {
+            memcpy(pkt, MAGIC, 8); memcpy(pkt + 8, &prog, 8); memcpy(pkt + 16, g_ni, NI_SIZE); vsend(g_beacon, pkt, sizeof pkt, (g_ip & g_mask) | ~g_mask, PORT_BEACON); last = now; }
+        int fd = g_join; pthread_mutex_unlock(&g_mu);
+        struct pollfd pf = { fd, POLLIN, 0 }; if (poll(&pf, 1, 100) <= 0) continue;
+        uint8_t m[1 + 0x21 + 2 + 2 + 0x40 + 8]; struct sockaddr_in from; long r = relay_recvfrom(fd, m, sizeof m, MSG_DONTWAIT, &from); if (r <= 0) continue;
+        pthread_mutex_lock(&g_mu);
+        if (g_state == ST_AP_CREATED) {
+            if (m[0] == 'J') host_join_relay_locked(m, (size_t)r, &from);
+            else if (m[0] == 'D') { uint32_t ip = ntohl(from.sin_addr.s_addr);
+                for (int k = 1; k < MAXN; k++) if (g_maddr[k] == ip) { g_maddr[k] = 0; memset(g_ni + NODES + k * NODE, 0, NODE); LOG("[ldn] node %d left", k); members_update_locked(); } }
+        }
+        pthread_mutex_unlock(&g_mu);
+    }
+    return NULL;
+}
+static void *station_relay_main(void *p) {   // the host's node lists over the virtual network
+    (void)p;
+    for (;;) {
+        int fd; pthread_mutex_lock(&g_mu); fd = g_join; int st = g_state; pthread_mutex_unlock(&g_mu); if (fd < 0 || st != ST_CONNECTED) break;
+        struct pollfd pf = { fd, POLLIN, 0 }; if (poll(&pf, 1, 200) <= 0) continue;
+        uint8_t m[1 + NI_SIZE]; struct sockaddr_in from; long r = relay_recvfrom(fd, m, sizeof m, MSG_DONTWAIT, &from);
+        if (r == (long)sizeof m && m[0] == 'N') { pthread_mutex_lock(&g_mu); if (g_state == ST_CONNECTED) { memcpy(g_ni, m + 1, NI_SIZE); ev(); } pthread_mutex_unlock(&g_mu); }
+    }
+    return NULL;
+}
+// a member left the room (hle_relay.c; 0: the whole network is gone)
+static void peer_left(uint32_t ip) {
+    pthread_mutex_lock(&g_mu);
+    if (g_state == ST_AP_CREATED) { for (int k = 1; k < MAXN; k++) if (g_maddr[k] && (!ip || g_maddr[k] == ip)) { g_maddr[k] = 0; memset(g_ni + NODES + k * NODE, 0, NODE); LOG("[ldn] node %d left (room)", k); members_update_locked(); } }
+    else if (g_state == ST_CONNECTED && (!ip || ip == ntohl(g_hostaddr.sin_addr.s_addr))) { g_state = ST_STATION; g_reason = 6; g_node = -1; if (g_join >= 0) { close(g_join); g_join = -1; } LOG("[ldn] the host left the room (signal lost)"); ev(); }
+    pthread_mutex_unlock(&g_mu);
+}
+
 // ---------- the station side ----------
 static void *station_main(void *p) {   // the host's node list as it changes; the host gone = signal lost
     (void)p;
@@ -127,6 +192,8 @@ static void *station_main(void *p) {   // the host's node list as it changes; th
 }
 
 static void teardown_locked(void) {
+    if (g_relay && g_join >= 0) { if (g_state == ST_CONNECTED) { uint8_t d = 'D'; relay_sendto(g_join, &d, 1, &g_hostaddr); } close(g_join); g_join = -1; }
+    for (int k = 0; k < MAXN; k++) g_maddr[k] = 0;
     if (g_beacon >= 0) { close(g_beacon); g_beacon = -1; } if (g_listen >= 0) { close(g_listen); g_listen = -1; }
     for (int k = 0; k < MAXN; k++) if (g_member[k] >= 0) { close(g_member[k]); g_member[k] = -1; }
     if (g_host >= 0) { uint8_t d = 'D'; send_all(g_host, &d, 1); close(g_host); g_host = -1; }
@@ -140,6 +207,9 @@ HLE_FORCE("_ZN2nn3ldn10InitializeEv", "local wireless over the phone's Wi-Fi (of
     const char *off = getenv("DM_LDN");
     if (off && !strcmp(off, "0")) { LOG("[ldn] local play is off (DM_LDN=0)"); r = RES_FAIL; }
     else if (mods_on()) { LOG("[RED] [ldn] local play is off while mods are on: switch them off in the menu, Mods (play with others only on the unmodified game)"); r = RES_FAIL; }
+    else if ((g_relay = getenv("DM_RELAY_ROOM") && *getenv("DM_RELAY_ROOM")) && !relay_start()) { LOG("[RED] [ldn] the online room could not be joined (see [relay] above): local play is off"); r = RES_FAIL; }
+    else if (g_relay) { g_ip = relay_vip(); g_mask = 0xFFFF0000u; relay_on_left(peer_left); for (int k = 0; k < MAXN; k++) g_member[k] = -1; g_state = ST_INIT; g_reason = 0;
+        struct in_addr a = { htonl(g_ip) }; LOG("[ldn] local play over the online room, this phone %s", inet_ntoa(a)); }
     else if (!wifi_addr(&g_ip, &g_mask)) { LOG("[ldn] no Wi-Fi address: local play needs the phone on a Wi-Fi network"); r = RES_FAIL; }
     else { static int seeded; if (!seeded++) srand((unsigned)time(NULL) ^ g_ip ^ (unsigned)getpid());
            for (int k = 0; k < MAXN; k++) g_member[k] = -1; g_state = ST_INIT; g_reason = 0; struct in_addr a = { htonl(g_ip) }; LOG("[ldn] local play over Wi-Fi, this phone %s", inet_ntoa(a)); }
@@ -165,6 +235,14 @@ static Result create(const uint8_t *nc, const uint8_t *sc, const uint8_t *uc) {
     g_ni[LDN + 0x16] = nc[0x12] && nc[0x12] <= MAXN ? nc[0x12] : MAXN;                          // node count max
     int16_t ver; memcpy(&ver, nc + 0x14, 2); node_set(g_ni, 0, g_ip, (const char *)uc, ver); g_ni[LDN + 0x17] = 1;
     memcpy(g_sec, sc, sizeof g_sec);
+    if (g_relay) {   // in a room: the announcement and the joins over the virtual network
+        g_beacon = socket(AF_INET, SOCK_DGRAM, 0); g_join = socket(AF_INET, SOCK_DGRAM, 0);
+        struct sockaddr_in ja = { .sin_family = AF_INET, .sin_port = htons(PORT_JOIN), .sin_addr.s_addr = htonl(g_ip) };
+        if (g_beacon < 0 || g_join < 0 || relay_bind(g_join, &ja)) { LOG("[RED] [ldn] cannot host in the room: %s", strerror(errno)); teardown_locked(); pthread_mutex_unlock(&g_mu); return RES_FAIL; }
+        g_state = ST_AP_CREATED; g_node = 0; start_thread(host_relay_main); ev();
+        LOG("[ldn] hosting in the online room: up to %d players", g_ni[LDN + 0x16]);
+        pthread_mutex_unlock(&g_mu); return RES_OK;
+    }
     int one = 1; g_beacon = socket(AF_INET, SOCK_DGRAM, 0); setsockopt(g_beacon, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
     g_listen = socket(AF_INET, SOCK_STREAM, 0); setsockopt(g_listen, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
     struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(PORT_JOIN), .sin_addr.s_addr = htonl(INADDR_ANY) };
@@ -208,7 +286,8 @@ static Result scan(uint8_t *out, int *count, int max, const uint8_t *filter) {
     int s = socket(AF_INET, SOCK_DGRAM, 0), one = 1; if (s < 0) return RES_FAIL;
     setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one); setsockopt(s, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);
     struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(PORT_BEACON), .sin_addr.s_addr = htonl(INADDR_ANY) };
-    if (bind(s, (struct sockaddr *)&a, sizeof a)) { close(s); LOG("[ldn] scan: cannot listen on port %d (%s)", PORT_BEACON, strerror(errno)); return RES_OK; }
+    if (g_relay) { struct sockaddr_in va = { .sin_family = AF_INET, .sin_port = htons(PORT_BEACON), .sin_addr.s_addr = htonl(g_ip) }; if (relay_bind(s, &va)) { close(s); return RES_OK; } }
+    else if (bind(s, (struct sockaddr *)&a, sizeof a)) { close(s); LOG("[ldn] scan: cannot listen on port %d (%s)", PORT_BEACON, strerror(errno)); return RES_OK; }
     struct timespec t0, t; clock_gettime(CLOCK_MONOTONIC, &t0); int n = 0; uint64_t prog = my_program();
     for (;;) {
         clock_gettime(CLOCK_MONOTONIC, &t); int left = 1000 - (int)((t.tv_sec - t0.tv_sec) * 1000 + (t.tv_nsec - t0.tv_nsec) / 1000000); if (left <= 0 || n >= max) break;
@@ -229,6 +308,21 @@ static Result join(const uint8_t *ni, const uint8_t *sc, const uint8_t *uc, int 
     pthread_mutex_lock(&g_mu);
     if (g_state != ST_STATION) { pthread_mutex_unlock(&g_mu); return RES_FAIL; }
     uint32_t hip = rd32(ni + NODES); struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons(PORT_JOIN), .sin_addr.s_addr = htonl(hip) };
+    if (g_relay) {
+        int fd = socket(AF_INET, SOCK_DGRAM, 0); uint8_t j[1 + 0x21 + 2 + 2 + 0x40] = { 'J' }; memcpy(j + 1, uc, 0x21); int16_t v = (int16_t)ver; memcpy(j + 0x22, &v, 2); memcpy(j + 0x24, sc + 2, 2); memcpy(j + 0x26, sc + 4, 0x40);
+        int node = -1;
+        for (int tries = 0; fd >= 0 && tries < 6 && node < 0; tries++) {   // (the answer comes back on this socket's port)
+            relay_sendto(fd, j, sizeof j, &a);
+            struct pollfd pf = { fd, POLLIN, 0 }; pthread_mutex_unlock(&g_mu); int pr = poll(&pf, 1, 500); pthread_mutex_lock(&g_mu); if (pr <= 0) continue;
+            uint8_t m[1 + NI_SIZE]; struct sockaddr_in from; long r = relay_recvfrom(fd, m, sizeof m, MSG_DONTWAIT, &from);
+            if (r >= 1 && m[0] == 'R') break;
+            if (r >= 2 && m[0] == 'A') node = m[1];
+        }
+        if (node < 0) { LOG("[ldn] could not join %s in the room", inet_ntoa(a.sin_addr)); if (fd >= 0) close(fd); pthread_mutex_unlock(&g_mu); return RES_FAIL; }
+        memcpy(g_ni, ni, NI_SIZE); g_join = fd; g_hostaddr = a; g_node = node; g_state = ST_CONNECTED; g_reason = 0; start_thread(station_relay_main); ev();
+        LOG("[ldn] joined %s in the room as node %d", inet_ntoa(a.sin_addr), g_node);
+        pthread_mutex_unlock(&g_mu); return RES_OK;
+    }
     int fd = socket(AF_INET, SOCK_STREAM, 0); struct timeval tv = { 3, 0 }; setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv); setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
     uint8_t j[1 + 0x21 + 2 + 2 + 0x40] = { 'J' }; memcpy(j + 1, uc, 0x21); int16_t v = (int16_t)ver; memcpy(j + 0x22, &v, 2); memcpy(j + 0x24, sc + 2, 2); memcpy(j + 0x26, sc + 4, 0x40);
     uint8_t acc[2] = { 0, 0 };

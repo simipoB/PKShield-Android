@@ -76,6 +76,8 @@ public final class GameMenu {
         rows.add("Move the touch controls"); acts.add(() -> {
             try { nativeEditTouch(); } catch (UnsatisfiedLinkError e) { }
             Toast.makeText(a, "Drag a control to move it, pinch to resize, double-tap to hide. Hold − for 2 s to save (hold + to reset).", Toast.LENGTH_LONG).show(); });
+        String room = GameSettings.get(a, "DM_RELAY_ROOM");
+        rows.add("Online room: " + (room.isEmpty() ? "off (local play on this Wi-Fi)" : room)); acts.add(() -> onlineRoom(a));
         rows.add("Mods (" + mods(a).size() + ")"); acts.add(() -> modList(a));
         rows.add("Import a mod (.zip)"); acts.add(() -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_MOD));
         rows.add("Export save data"); acts.add(() -> pick(a, Intent.ACTION_CREATE_DOCUMENT, GameSettings.game(a)[2] + "-save.zip", REQ_EXPORT));
@@ -232,4 +234,22 @@ public final class GameMenu {
         return last.toLowerCase(java.util.Locale.ROOT).endsWith(".pchtxt") && !last.contains("..") ? "exefs/" + last : null;
     }
     private static void deleteTree(File f) { File[] cs = f.listFiles(); if (cs != null) for (File c : cs) deleteTree(c); f.delete(); }
+
+    // Online room (hle_relay.c, dm/server): local play with players elsewhere through a room server someone hosts (their own Railway service, or any PC); everyone enters the
+    // same server address and room code. Applies from the next start; mods stay off for local play, as on Wi-Fi
+    private static void onlineRoom(Activity a) {
+        LinearLayout root = new LinearLayout(a); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 24, 48, 0);
+        TextView h = new TextView(a); h.setText("Play the game's local link battles, trades and Max Raids with friends anywhere: everyone enters the same room server and room code. "
+            + "Host your own server (dm/server in the project: Railway or any PC). Mods must be off."); root.addView(h);
+        android.widget.EditText srv = new android.widget.EditText(a); srv.setHint("server (address:port)"); srv.setSingleLine(); srv.setText(GameSettings.get(a, "DM_RELAY")); root.addView(srv);
+        android.widget.EditText code = new android.widget.EditText(a); code.setHint("room code"); code.setSingleLine(); code.setText(GameSettings.get(a, "DM_RELAY_ROOM")); root.addView(code);
+        open = true;
+        new AlertDialog.Builder(a).setTitle("Online room").setView(root)
+            .setPositiveButton("Join", (d, w) -> { String sv = srv.getText().toString().trim(), c = code.getText().toString().trim();
+                if (sv.isEmpty() || c.isEmpty()) { Toast.makeText(a, "Enter both the server and the room code.", Toast.LENGTH_LONG).show(); return; }
+                GameSettings.set(a, "DM_RELAY", sv); GameSettings.set(a, "DM_RELAY_ROOM", c.replaceAll("\\s+", ""));
+                Toast.makeText(a, "Saved: close the game and start it again, then use the game's local link options.", Toast.LENGTH_LONG).show(); })
+            .setNeutralButton("Leave room", (d, w) -> { GameSettings.set(a, "DM_RELAY_ROOM", ""); Toast.makeText(a, "Local play is back on this Wi-Fi from the next start.", Toast.LENGTH_LONG).show(); })
+            .setNegativeButton("Back", null).setOnDismissListener(d -> { open = false; }).show();
+    }
 }
