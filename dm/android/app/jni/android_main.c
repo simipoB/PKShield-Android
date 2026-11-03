@@ -202,7 +202,8 @@ JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env,
     (void)c; const char *k = (*env)->GetStringUTFChars(env, jk, NULL), *v0 = (*env)->GetStringUTFChars(env, jv, NULL); const char *v = *v0 ? v0 : NULL; int now = 1;
     if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE")) touch_ui_setting(k, v);
     else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
-    else if (!strcmp(k, "DM_SCALER")) { extern volatile float dm_scaler_sharpness; dm_scaler_sharpness = !v || !strcmp(v, "sharp") ? 0.7f : !strcmp(v, "smooth") ? -1.0f : (float)atof(v); }   // nvn_vk.c scale_draw
+    else if (!strcmp(k, "DM_SCALER")) { extern volatile int dm_scaler_mode; dm_scaler_mode = v && !strcmp(v, "sgsr") ? 1 : v && !strcmp(v, "smooth") ? 2 : 0; }
+    else if (!strcmp(k, "DM_SCALER_SHARPNESS")) { extern volatile float dm_scaler_sharpness; dm_scaler_sharpness = !v || !strcmp(v, "sharp") ? 0.7f : !strcmp(v, "smooth") ? -1.0f : (float)atof(v); }   // nvn_vk.c scale_draw
     else if (!strcmp(k, "DM_PAD_LAYOUT") || !strcmp(k, "DM_PAD_MAPPING")) {
         pthread_mutex_lock(&g_padset_mu);
         if (!g_padset_live) { const char *l = getenv("DM_PAD_LAYOUT"), *m = getenv("DM_PAD_MAPPING"); snprintf(g_padset_layout, sizeof g_padset_layout, "%s", l ? l : ""); snprintf(g_padset_map, sizeof g_padset_map, "%s", m ? m : ""); g_padset_live = 1; }

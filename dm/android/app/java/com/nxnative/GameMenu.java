@@ -54,7 +54,8 @@ public final class GameMenu {
                                 { "half", "Half: large textures at half size, less memory and GPU work" } };
     }
     private static final String[][] PICTURE = { { "", "16:9, as the game is made" }, { "fill", "Fill the screen (stretched)" }, { "20:9", "20:9, for a widescreen mod" } };
-    private static final String[][] SCALER = { { "", "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)" }, { "smooth", "Smooth: a plain stretch" } };
+    private static final String[][] SCALER = { { "", "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)" },
+        { "sgsr", "Snapdragon Game Super Resolution (Qualcomm's upscaler)" }, { "smooth", "Smooth: a plain stretch" } };
     private static String[][] fps(Activity a) {
         String[] p = GameSettings.profile(a);
         return new String[][] { { "", "Auto: this phone gets " + p[5] + " fps (" + p[1] + ")" }, { "30", "30 fps, as the game is made" }, { "60", "60 fps (experimental: needs a fast phone)" } };

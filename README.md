@@ -92,6 +92,7 @@ framebuffers keep its compression (AFBC). The driver can be changed any time fro
 | Setting | Choices | Applies |
 | --- | --- | --- |
 | Picture | 16:9 as made, fill the screen (stretched), 20:9 for a widescreen mod | at once |
+| Upscaling | Sharp (ours), SGSR (Qualcomm's), Smooth (a plain stretch) | at once |
 | Graphics | **Auto**, High (TV mode, 1080p), Low (handheld mode, 720p), Adaptive (High, Low while the phone is hot) | next start |
 | Textures | **Auto**, Full, Half (large textures at half size: less memory and GPU work) | next start |
 | Frame rate (Shield) | 30 fps, 60 fps (experimental) | next start |
@@ -134,6 +135,7 @@ profile (`win_build_lib.py 01008DB008C2C000` / `make GAME=01008DB008C2C000`), wh
 - **[libadrenotools](https://github.com/bylaws/libadrenotools)** (BSD-2-Clause): custom Adreno drivers. **Mesa Turnip**: the driver it loads.
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: the reference for Horizon's synchronization semantics. **yuzu**: Maxwell
   instruction encodings.
+- **[Snapdragon Game Super Resolution](https://github.com/SnapdragonStudios/snapdragon-gsr)** (Qualcomm, BSD-3-Clause): the SGSR upscaler (`dm/third_party/sgsr`).
 - **SPIRV-Cross** (Apache-2.0), **CPython** (PSF), **capstone** (BSD), **LZ4** (BSD), **libvpx** (BSD-3-Clause), **stb_vorbis** (MIT / public
   domain), **Vulkan Headers** (Apache-2.0 / MIT), **DejaVu Sans** (the button icons' letters), Android **native_app_glue** (Apache-2.0).
 - **LASRecompAndroid** and **BOTWRecompAndroid**: ideas for Android presentation and CPU scheduling.
