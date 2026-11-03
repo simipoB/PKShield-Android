@@ -306,6 +306,8 @@ def mod_shaders(a):
     smap, facts, pairs = (os.path.join(mw, f) for f in ('map.tsv', 'facts.tsv', 'pairs.tsv'))
     os.makedirs(vk)
     print('STEP 1/3 find the mods\' shaders', flush=True)
+    if PROFILE.get('shader_oodle', 'off') == 'on' and os.path.isfile(tool('dmoodle')):   # (Trinity games: a mod's own packs are Oodle-compressed too)
+        env.update(DM_OODLE_HOST=tool('dmoodle'), DM_OODLE_MODULES=os.path.join(a.out, 'patched'), DM_OODLE_FILTER='BNSH')
     run([py, os.path.join(DM, 'gfx/tools/shader_split.py'), ','.join(roots), ','.join('-' for _ in roots), pkg, smap, facts, pairs])
     new = []
     for ln in open(smap, encoding='utf-8'):
