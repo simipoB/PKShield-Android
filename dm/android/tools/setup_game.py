@@ -52,6 +52,23 @@ def watch_translation(found_map, work, built, stop):
         done = min(done, total - 1)   # the map also lists shaders that wait for capture, so the count can fall short of it: 100% is the step's end
         if done != shown: shown = done; print(f'PROGRESS {done}/{total}', flush=True)
 
+def explain_failure(log_path, files):
+    """The unpacker's known failures in words a player can act on (from the end of setup.log); '' when it is none of them"""
+    try:
+        with open(log_path, encoding='utf-8', errors='replace') as f: tail = f.read()[-6000:]
+    except OSError: return ''
+    names = [os.path.basename(f) for f in files]
+    upd = [n for n in names[1:] if 'dlc' not in n.lower()]   # (setup is given the base game first)
+    if '2002-4604' in tail or 'Hash error' in tail or 'VerificationFailed' in tail:
+        which = f'most likely the update ({upd[0]}), since the base game alone unpacks' if upd else f'{names[0] if names else "the dump"}'
+        return (f'one of your files is damaged: a checksum stored inside it does not match its data (2002-4604), {which}. '
+                'A file cut short or corrupted while being copied or downloaded does this: copy it again from where you dumped it, or dump it again from your Switch, then set up again')
+    if 'KeyNotFound' in tail or 'Unable to decrypt' in tail or 'key' in tail.lower() and 'missing' in tail.lower():
+        return 'a key your dump needs is not in your prod.keys / title.keys: dump the keys again from the same Switch (newer system versions add keys)'
+    if 'No space left' in tail or 'ENOSPC' in tail:
+        return 'the phone ran out of storage while unpacking: free some space and set up again'
+    return ''
+
 def main():
     global PROFILE, NAME   # (the dump can name another game of the app: --games)
     ap = argparse.ArgumentParser()
@@ -79,7 +96,8 @@ def main():
                 try: reason = signal.Signals(-r.returncode).name
                 except ValueError: reason = f'signal {-r.returncode}'
                 raise RuntimeError(f'{name} terminated by {reason} ({r.returncode}); see {log.name}')
-            raise RuntimeError(f'{name} failed ({r.returncode}); see {log.name}')
+            hint = explain_failure(log.name, files) if name == 'nx_extract' else ''   # (files: the chosen dump files, set before the unpacker runs)
+            raise RuntimeError(f'{name} failed ({r.returncode}){": " + hint if hint else ""}; see {log.name}')
     keys = os.path.join(a.keys, 'prod.keys')
     if not os.path.isfile(keys): raise RuntimeError(f'no prod.keys in {a.keys}')
     ex = os.path.join(a.work, 'extract')

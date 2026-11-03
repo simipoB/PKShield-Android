@@ -482,22 +482,31 @@ static int builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, in
     (void)modded;
     return strcmp(m->name, "main") ? 0 : fps_patch(m, lim, p0, p1);
 }
-// Built-in: DM_FPS_TARGET=60..120 (opt-in, settings screen; experimental) for Shield 1.3.2's main: the present interval the game asks NVN for, 2 (30 fps), becomes 1
-// (+0x18a2d18, in the game's present-interval setter: MOV W1, W21, the interval asked for, → MOV W1, #1), and the frame time the game takes for interval 2 (+0x203eeb8, in a table of u64 ns by interval: 16666667, 33333334, 50000000 ...) becomes 1 / fps. From then on presentation paces at that rate and the step
-// word follows the frames actually shown (hle_nvn.c vstep_tick), so game time stays real time when frames run late. Both words are checked first: another build is left alone
+// Built-in: DM_FPS_TARGET=60..120 (opt-in, the in-game menu; experimental) for Pokémon Shield and Sword 1.3.2's main: the present interval the game asks NVN for, 2 (30 fps),
+// becomes 1 (in the game's present-interval setter: if the interval asked for differs from the window's, MOV W1, W21 then a call through NVN's set-present-interval
+// pointer; → MOV W1, #1), and the frame time the game takes for interval 2 (in a table of u64 ns by interval: 16666667, 33333334, 50000000 ...) becomes 1 / fps.
+// From then on presentation paces at that rate and the step word follows the frames actually shown (hle_nvn.c vstep_tick), so game time stays real time when frames
+// run late. The two games are the same engine build: Sword's setter is the same 13 instructions as Shield's, 0x90 bytes earlier; the table is at the same place.
+// Both words are checked first: another build, or code that differs, is left alone
+static const struct { const char *build; uint64_t itv, dt; const char *game; } FPS_SITES[] = {
+    { "a16802625e7826bf83b6f9708e475b91", 0x18a2d18, 0x203eeb8, "Shield 1.3.2" },
+    { "a3b75bcd3311385aeed67fbeeb79cbb7", 0x18a2c88, 0x203eeb8, "Sword 1.3.2" },
+};
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     const char *e = getenv("DM_FPS_TARGET"); int fps = e ? atoi(e) : 0;
     if (fps < 60 || fps > 120) return 0;
-    const uint64_t itv = 0x18a2d18, dt = 0x203eeb8;
+    int si = -1; for (unsigned i = 0; i < sizeof FPS_SITES / sizeof *FPS_SITES; i++) if (!strncasecmp(m->build_id, FPS_SITES[i].build, 32)) si = (int)i;
+    if (si < 0) { LOG("[RED] %s: %d fps patch not applied (not Pokémon Sword / Shield 1.3.2's main)", m->name, fps); return 0; }
+    const uint64_t itv = FPS_SITES[si].itv, dt = FPS_SITES[si].dt;
     // (the step word is rewritten every frame, so it must lie past the code area, which is sealed read + execute)
-    if (strncasecmp(m->build_id, "a16802625e7826bf83b6f9708e475b91", 32) || itv + 4 > m->text_end || dt < m->text_end || dt + 4 > lim || overlaps_rewrite(m, itv, 4, p0, p1)) {
-        LOG("[RED] %s: %d fps patch not applied (not Shield 1.3.2's main, the step word lies in code, or that code was rewritten)", m->name, fps); return 0; }
+    if (itv + 4 > m->text_end || dt < m->text_end || dt + 4 > lim || overlaps_rewrite(m, itv, 4, p0, p1)) {
+        LOG("[RED] %s: %d fps patch not applied (%s: the step word lies in code, or that code was rewritten)", m->name, fps, FPS_SITES[si].game); return 0; }
     uint32_t wi, wd; memcpy(&wi, m->base + itv, 4); memcpy(&wd, m->base + dt, 4);
     if ((wi != 0x2a1503e1u && wi != 0x52800041u) || wd != 33333334u) { LOG("[RED] %s: %d fps patch not applied (unexpected words %08x %u)", m->name, fps, wi, wd); return 0; }
     wi = 0x52800021u; wd = (uint32_t)((1000000000ull + (uint64_t)fps - 1) / (uint64_t)fps);
     memcpy(m->base + itv, &wi, 4); memcpy(m->base + dt, &wd, 4);
     dm_step_hz = fps; dm_step_word = m->base + dt;
-    LOG("%s: %d fps patch (present interval 1, step %.2f ms, then paced by the host)", m->name, fps, wd / 1e6);
+    LOG("%s: %d fps patch for %s (present interval 1 at +%#llx, step %.2f ms at +%#llx, then paced by the host)", m->name, fps, FPS_SITES[si].game, (unsigned long long)itv, wd / 1e6, (unsigned long long)dt);
     return 2;
 }
 static uint8_t *slurp(const char *path, size_t *n) {

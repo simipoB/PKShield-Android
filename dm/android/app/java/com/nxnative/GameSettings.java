@@ -61,6 +61,8 @@ final class GameSettings {
     }
 
     static boolean isShield(Context c) { return "01008DB008C2C000".equalsIgnoreCase(game(c)[0]); }
+    // the games the built-in 60 fps patch knows (loader.c FPS_SITES: Pokémon Shield and Sword 1.3.2)
+    static boolean has60(Context c) { String id = game(c)[0]; return "01008DB008C2C000".equalsIgnoreCase(id) || "0100ABF008968000".equalsIgnoreCase(id); }
 
     // What Auto gives this phone: { profile name, what it is, graphics, textures }, from its chip (android_main.c profile_of, kept the same) and then its memory, for every
     // phone (android_main.c device_profile, the same rule): under 8 GB half textures whatever the chip, under 6 GB also Low; 12 GB or more full textures unless the chip is weak

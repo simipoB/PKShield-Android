@@ -65,7 +65,7 @@ public final class GameMenu {
         rows.add("Upscaling: " + label(SCALER, GameSettings.get(a, "DM_SCALER"))); acts.add(() -> choose(a, "Upscaling", SCALER, "DM_SCALER"));
         rows.add("Graphics: " + label(g, GameSettings.get(a, "DM_GRAPHICS"))); acts.add(() -> choose(a, "Graphics", graphics(a), "DM_GRAPHICS"));
         rows.add("Textures: " + label(t, GameSettings.get(a, "DM_VK_TEX_QUALITY"))); acts.add(() -> choose(a, "Textures", textures(a), "DM_VK_TEX_QUALITY"));
-        if (GameSettings.isShield(a)) { rows.add("Frame rate: " + label(FPS, GameSettings.get(a, "DM_FPS_TARGET"))); acts.add(() -> choose(a, "Frame rate", FPS, "DM_FPS_TARGET")); }
+        if (GameSettings.has60(a)) { rows.add("Frame rate: " + label(FPS, GameSettings.get(a, "DM_FPS_TARGET"))); acts.add(() -> choose(a, "Frame rate", FPS, "DM_FPS_TARGET")); }
         rows.add("Controller buttons: " + label(PAD, GameSettings.get(a, "DM_PAD_LAYOUT"))); acts.add(() -> choose(a, "Controller buttons", PAD, "DM_PAD_LAYOUT"));
         rows.add("Remap controller buttons (or hold − for 3 s)"); acts.add(() -> remap(a));
         rows.add("Touch controls: look"); acts.add(() -> touchLook(a));

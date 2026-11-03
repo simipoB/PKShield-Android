@@ -261,6 +261,18 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
 
 // ---------- Host start ----------
 static int g_started;
+// The game's frame rate told to Android (30, or DM_FPS_TARGET with the 60 fps patch), as a fixed source: a 90 / 120 Hz phone then runs the display at a rate the
+// frames divide evenly (60 fps on a 90 Hz screen would otherwise show frames for 1 and 2 refreshes in turn, an uneven judder). Presentation never tears (FIFO /
+// MAILBOX swapchains); this keeps the frames evenly spaced
+static void window_rate(ANativeWindow *w) {
+    if (!w) return;
+    const char *e = getenv("DM_FPS_TARGET"); int fps = e ? atoi(e) : 0; float rate = fps >= 60 && fps <= 120 ? (float)fps : 30.0f;
+    typedef int32_t (*set_rate_fn)(ANativeWindow *, float, int8_t);   // libnativewindow, Android 11+: looked up, so a system without it only skips this
+    static set_rate_fn set_rate; if (!set_rate) set_rate = (set_rate_fn)dlsym(RTLD_DEFAULT, "ANativeWindow_setFrameRate");
+    if (!set_rate) { void *h = dlopen("libnativewindow.so", RTLD_NOW); if (h) set_rate = (set_rate_fn)dlsym(h, "ANativeWindow_setFrameRate"); }
+    int r = set_rate ? set_rate(w, rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE) : -1;
+    fprintf(stderr, "boot: window frame rate %.0f fps (fixed source)%s\n", rate, r ? " refused by the system" : "");
+}
 // RomFS mods: every <mods>/<mod>/romfs folder (and <mods>/romfs) as a RomFS overlay root, in name order (hle_fs.c rom_overlay_path: the first root that has a file wins);
 // a mod's exefs/*.pchtxt code patches are found by the loader (loader.c pchtxt_dir). A mod folder named with a leading "-" or "." is switched off
 static void mods_romfs(const char *mods) {
@@ -580,7 +592,7 @@ __attribute__((weak)) void nvn_vk_cache_save(void);
 __attribute__((weak)) void nvn_vk_window_term(void);   // releases the swapchain while the window still exists (nvn_vk.c)   // the pipeline cache file (nvn_vk.c), written when the app goes to the background
 static void on_cmd(struct android_app *app, int32_t cmd) {
     switch (cmd) {
-        case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); host_start(); break;
+        case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); window_rate(app->window); host_start(); break;
         case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); if (g_started && nvn_vk_window_term) nvn_vk_window_term(); break;
         case APP_CMD_GAINED_FOCUS: immersive(); if (g_started) { dm_focus_set(1); dm_audio_suspend(0); } break;
         case APP_CMD_LOST_FOCUS: if (g_started) { dm_focus_set(2); } break;
