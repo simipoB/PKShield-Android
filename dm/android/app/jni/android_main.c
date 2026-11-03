@@ -304,6 +304,7 @@ static void boot_guard(const char *mods) {
             notice("driver", *gpu ? gpu : "unknown");
         }
     }
+    { char n[16]; snprintf(n, sizeof n, "%d", mods_on(mods)); setenv("DM_MODS_ACTIVE", n, 1); }   // (hle_ldn.c: local play is off while mods are on)
     g_boot_fd = open(g_boot_path, O_WRONLY | O_CREAT | O_TRUNC, 0660);
     if (g_boot_fd >= 0) { char t[160]; int k = snprintf(t, sizeof t, "start driver %s mods %d\n", getenv("DM_VK_DRIVER") && *getenv("DM_VK_DRIVER") ? "custom" : "stock", mods_on(mods)); (void)!write(g_boot_fd, t, k); }
 }

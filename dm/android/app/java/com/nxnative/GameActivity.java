@@ -17,6 +17,9 @@ public final class GameActivity extends NativeActivity implements InputManager.I
 
     @Override protected void onCreate(Bundle b) {
         autoSettings();   // before super.onCreate: NativeActivity starts the engine there
+        // local play (hle_ldn.c) finds other phones by Wi-Fi broadcasts, which many phones drop without a multicast lock
+        try { android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+              if (wm != null) { android.net.wifi.WifiManager.MulticastLock ml = wm.createMulticastLock("local play"); ml.setReferenceCounted(false); ml.acquire(); } } catch (Exception e) { }
         super.onCreate(b);
         // Android brings the task back after the process ended (recents, the launcher icon) straight into this activity, past the setup screen that translates the
         // shaders the game captured last time: hand over to it before there is a window (the engine starts with the window, android_main.c)
