@@ -1,4 +1,4 @@
-// Whether this APK is an official PKShield release: signed with the release key (v0.37 on; README "Official downloads").
+// Whether this APK is an official Galar Native release (formerly PKShield): signed with the release key (v0.37 on; README "Official downloads").
 // A build signed with any other key (a fork, a repackaged APK) still runs, but the setup screen says it is unofficial and env.txt records it, so the game's log
 // (android_main.c env_file: "boot: env DM_BUILD_SIGNER=...") tells a support request from an unofficial build at its first lines.
 package com.nxnative;

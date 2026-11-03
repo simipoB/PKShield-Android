@@ -43,7 +43,7 @@ shaders translated to SPIR-V by Ryujinx's shader translator, on the phone, durin
 
 ### Official downloads
 
-Official APKs come **only** from this repository's [Releases](https://github.com/simipoB/PKShield-Android/releases). They never include game
+Official APKs come **only** from this repository's [Releases](https://github.com/simipoB/Galar-Native-Android/releases). They never include game
 files: an APK that comes with the game already in it is not from this project. Every official release from v0.37 on is signed with this certificate:
 
 ```

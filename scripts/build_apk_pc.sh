@@ -95,5 +95,5 @@ else   # an earlier build's copies in $LIBS would otherwise still go into the AP
 
 step "8/8 the APK"
 python3 "$A/tools/build_apk.py" --libs "$LIBS" --pylib "$PY/prefix/lib/python3.14" --capstone-py "$WORK/capstone-py/capstone" --bt "$BT" --jar "$JAR" \
-    --ks "$WORK/debug.keystore" --out "$WORK/PokemonShield.apk"
-echo; echo "done: $WORK/PokemonShield.apk (install it, open it, choose your game files and keys)"
+    --ks "$WORK/debug.keystore" --out "$WORK/GalarNative.apk"
+echo; echo "done: $WORK/GalarNative.apk (install it, open it, choose your game files and keys)"

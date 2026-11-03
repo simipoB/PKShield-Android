@@ -60,7 +60,7 @@ public final class SetupActivity extends Activity {
     // static: the setup runs in its own thread and outlives this screen; a new screen (Android may still make one, despite configChanges in the manifest, which keeps it
     // across rotation: #42) must not start a second setup next to it
     private static volatile boolean running;
-    private static final String UNOFFICIAL = "Unofficial build: not supported. Official PKShield releases come only from github.com/simipoB/PKShield-Android/releases.";
+    private static final String UNOFFICIAL = "Unofficial build: not supported. Official Galar Native releases come only from github.com/simipoB/Galar-Native-Android/releases.";
 
     private File gameDir() { return GameSettings.dir(this); }   // the chosen game's folder (GameSettings)
     private String[] game() { return GameSettings.game(this); }

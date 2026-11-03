@@ -1,4 +1,4 @@
-# Building PKShield Android
+# Building Galar Native
 
 The app (`PokemonShield.apk`) holds no game data: it sets the game up on the phone from the player's own `.nsp` / `.xci` files and
 `prod.keys`. Building it needs a PC with **Linux**, or **Windows with WSL** (Ubuntu from the Microsoft Store). No game files or keys are
@@ -8,7 +8,7 @@ involved in the build.
 
 ```sh
 sudo apt install git curl python3-venv build-essential cmake ninja-build
-git clone <this repository> && cd PKShield-Android
+git clone <this repository> && cd Galar-Native-Android
 bash scripts/build_apk_pc.sh            # → ~/psa-build/PokemonShield.apk
 TURNIP=1 bash scripts/build_apk_pc.sh   # the same, plus custom Vulkan drivers (Mesa Turnip / PanVK) on the settings screen
 ```
