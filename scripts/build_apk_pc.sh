@@ -72,6 +72,7 @@ if [ ! -f "$PY/prefix/lib/libpython3.14.so" ]; then
 fi
 cp "$PY/prefix/lib/libpython3.14.so" "$PY/prefix/lib/libssl_python.so" "$PY/prefix/lib/libcrypto_python.so" "$LIBS/"
 "$CC" -O2 -fPIE -pie $P16 -I"$PY/prefix/include/python3.14" "$A/python/pylaunch.c" -L"$PY/prefix/lib" -lpython3.14 -o "$LIBS/libpython_exe.so"
+"$CC" -O2 -fPIE -pie $P16 "$A/gate/dmsh_gate.c" -o "$LIBS/libdmsh_gate.so"   # the setup's memory gate for the shader translators
 
 step "6/8 capstone $CAPV and lz4 $LZ4V for Android (the code rewriter's disassembler, the NSO decompressor)"
 [ -d capstone-$CAPV ] || { curl -fsSLo cap.tar.gz https://github.com/capstone-engine/capstone/archive/refs/tags/$CAPV.tar.gz; tar -xzf cap.tar.gz; rm cap.tar.gz; }

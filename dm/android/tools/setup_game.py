@@ -176,8 +176,12 @@ def main():
     for d in glob.glob(os.path.join(a.work, 'dmsh_*')): shutil.rmtree(d, ignore_errors=True)   # an interrupted run's scratch dir would count toward the progress
     stop = threading.Event(); found = os.path.join(a.work, 'shader_map.found.tsv')
     threading.Thread(target=watch_translation, args=(found, a.work, os.path.join(cache, 'b-' + chain), stop), daemon=True).start()
+    # the translators go through dmsh_gate when the app has it: each beyond the first starts only while the phone has the memory for it (dmsh_gate.c)
+    gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
+    xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=a.work) if gate else dict(XLATE=tool('dmsh_xlate'))
+    log.write(f'translators: {env.get("J", "8")} at most, ' + ('started as memory allows (dmsh_gate)\n' if gate else 'all at once (no dmsh_gate)\n'))
     try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache],
-        env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, XLATE=tool('dmsh_xlate'), DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
+        env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, **xenv, DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
                  DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'),
                  DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
                  DMSH_PAIRS=os.path.join(a.work, 'shader_pairs.found.tsv'),

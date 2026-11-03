@@ -468,6 +468,7 @@ public final class SetupActivity extends Activity {
                 pb.environment().put("LD_LIBRARY_PATH", bin.getPath() + ":" + lib); pb.environment().put("LIBCAPSTONE_PATH", lib); pb.environment().put("NX_NATIVE_LIB_DIR", lib);
                 pb.environment().put("DOTNET_OPENSSL_VERSION_OVERRIDE", "3"); pb.environment().put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
                 pb.environment().put("TMPDIR", getCacheDir().getPath()); pb.environment().put("J", String.valueOf(setupWorkers()));
+                pb.environment().put("DM_GATE_MB", "600"); pb.environment().put("DM_GATE_FLOOR_MB", String.valueOf(gateFloorMb()));
                 Process p = pb.start();
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String ln;
                 while ((ln = r.readLine()) != null) { final String l = ln;
@@ -487,10 +488,21 @@ public final class SetupActivity extends Activity {
     }
     // Setup's parallel workers (the shader scan and translation): one per core, but at most one per 1.5 GB of the phone's memory and 4 on phones whose profile is a
     // lighter one (handheld mode), whose memory the low-memory killer guards closely (a scan worker was killed at 8, #43)
+    // Setup workers: one a core (at most 8); how many run at once is decided while they run, by the memory the phone has free then (dmsh_gate.c, shader_split.py
+    // mem_wait): the first always runs, each other one only with DM_GATE_FLOOR_MB + DM_GATE_MB free. A phone with 4 GB gets through with one or two, a 16 GB one runs all.
+    // Without the gate (an older build of the tools): the old rule, by total memory
     private int setupWorkers() {
+        int j = Math.min(8, Runtime.getRuntime().availableProcessors());
+        if (!new File(getApplicationInfo().nativeLibraryDir, "libdmsh_gate.so").exists()) {
+            android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); ((ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
+            j = Math.min(j, (int) (mi.totalMem / (1536L << 20))); String[] p = GameSettings.profile(this); if (p != null && p[2].equals("low")) j = Math.min(j, 4);
+        }
+        return Math.max(1, j);
+    }
+    // memory kept free for the phone itself: Android's own low-memory line (MemoryInfo.threshold) with room above it, at least 300 MB
+    private long gateFloorMb() {
         android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); ((ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
-        int j = Runtime.getRuntime().availableProcessors(); j = Math.min(j, (int) (mi.totalMem / (1536L << 20))); String[] p = GameSettings.profile(this); if (p != null && p[2].equals("low")) j = Math.min(j, 4);
-        return Math.max(2, j);
+        return Math.max(300, (mi.threshold >> 20) + 200);
     }
     private File iconFile() { return new File(gameDir(), "icon.jpg"); }
     // the game's icon from the player's dump: this screen and the recent-apps card
@@ -524,9 +536,9 @@ public final class SetupActivity extends Activity {
     // also OpenSSL 3 under the names the .NET unpacker dlopens (libssl.so.3 / libcrypto.so.3), so it does not pick up the system's BoringSSL
     private File binDir() throws IOException {
         File d = new File(getFilesDir(), "bin"); d.mkdirs(); String lib = getApplicationInfo().nativeLibraryDir;
-        String[][] links = { { "nx_extract", "libnx_extract.so" }, { "dmsh_xlate", "libdmsh_xlate.so" }, { "spirv-cross", "libspirv_cross.so" },
+        String[][] links = { { "nx_extract", "libnx_extract.so" }, { "dmsh_xlate", "libdmsh_xlate.so" }, { "spirv-cross", "libspirv_cross.so" }, { "dmsh_gate", "libdmsh_gate.so" },
                              { "libssl.so.3", "libssl_python.so" }, { "libcrypto.so.3", "libcrypto_python.so" } };
-        for (String[] l : links) { File f = new File(d, l[0]); f.delete(); try { android.system.Os.symlink(lib + "/" + l[1], f.getPath()); } catch (Exception e) { throw new IOException("link " + l[0] + ": " + e); } }
+        for (String[] l : links) { File f = new File(d, l[0]); f.delete(); if (!new File(lib, l[1]).exists() && l[0].equals("dmsh_gate")) continue; try { android.system.Os.symlink(lib + "/" + l[1], f.getPath()); } catch (Exception e) { throw new IOException("link " + l[0] + ": " + e); } }
         return d;
     }
     private File unpackPython() throws IOException { return unpack("python.zip", new File(getFilesDir(), "python")); }

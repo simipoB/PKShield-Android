@@ -30,7 +30,7 @@
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
-import collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys
+import collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
@@ -671,6 +671,15 @@ def nso_image(path):
         img[mo:mo + sz] = lz4.block.decompress(raw, uncompressed_size=sz) if flags >> i & 1 else raw
     return bytes(img)
 
+def mem_wait(w):   # worker w > 0 waits while the phone is short of memory (DM_GATE_FLOOR_MB + DM_GATE_MB free, as dmsh_gate.c), so 4 GB phones scan with what fits
+    if not w or 'DM_GATE_MB' not in os.environ: return
+    need = int(os.environ.get('DM_GATE_FLOOR_MB', '300')) + int(os.environ['DM_GATE_MB'])
+    while True:
+        try:
+            with open('/proc/meminfo') as f: free = next(int(l.split()[1]) // 1024 for l in f if l.startswith('MemAvailable:'))
+        except (OSError, StopIteration, ValueError): return
+        if free >= need: return
+        time.sleep(0.25)
 def pmap(J, fn, items, initargs):   # fn over items in J worker processes, results in order; Android's Python has no named semaphores (no process pools), so there the workers are forked directly
     try:
         import multiprocessing.synchronize
@@ -678,13 +687,13 @@ def pmap(J, fn, items, initargs):   # fn over items in J worker processes, resul
         import pickle, tempfile
         # Each result is written as soon as it is made, so a worker holds one file's shaders at a time and one the system kills keeps what it wrote. Android's low-memory
         # killer took one of 8 workers holding all their results (status 9, #43): the rest of a killed worker's share runs again alone, after the others are done
-        def fork(part):
+        def fork(part, w=0):
             fd, tmp = tempfile.mkstemp(suffix='.pk'); pid = os.fork()
             if not pid:
                 try:
                     _pool_init(*initargs)
                     with os.fdopen(fd, 'wb') as f:
-                        for x in part: pickle.dump(fn(x), f); f.flush()
+                        for x in part: mem_wait(w); pickle.dump(fn(x), f); f.flush()
                     os._exit(0)
                 except BaseException:
                     import traceback; traceback.print_exc(); os._exit(1)
@@ -697,7 +706,7 @@ def pmap(J, fn, items, initargs):   # fn over items in J worker processes, resul
                     except Exception: break
             os.unlink(tmp); return got
         parts = [items[w::J] for w in range(J)]
-        kids = [fork(p) for p in parts]
+        kids = [fork(p, w) for w, p in enumerate(parts)]
         done = [(os.waitpid(pid, 0)[1], collect(tmp)) for pid, tmp in kids]
         out = [None] * len(items)
         for w, (st, got) in enumerate(done):
