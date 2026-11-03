@@ -559,7 +559,11 @@ static void host_start(void) {
     snprintf(g_game, sizeof g_game, "%s", inapk ? "/nxapk" : g_files);
     #define SETG(k, sub) do { snprintf(p, sizeof p, "%s/%s", g_game, sub); setenv(k, p, 0); } while (0)
     #define SETP(k, sub) do { snprintf(p, sizeof p, "%s/%s", g_files, sub); setenv(k, p, 0); } while (0)
-    SETP("DM_TEX_CACHE", "texcache");   // textures converted for a GPU without BC, kept for the next start (tex_cache.h)
+    SETP("DM_TEX_CACHE", "texcache");
+    // shaders translated while the game last ran (nvn_vk.c live_check): the pack has them now (setup_game.py merged them first), so the folder starts empty
+    SETP("DM_LIVE_SPV", "live");
+    { DIR *ld = opendir(getenv("DM_LIVE_SPV")); struct dirent *e; char f[1200];
+      if (ld) { while ((e = readdir(ld))) if (e->d_name[0] != '.') { snprintf(f, sizeof f, "%s/%s", getenv("DM_LIVE_SPV"), e->d_name); unlink(f); } closedir(ld); } }   // textures converted for a GPU without BC, kept for the next start (tex_cache.h)
     setenv("DM_AUDIO", "1", 0);
     // graphics (the app's settings screen): high = the console's TV mode (1080p, full effects), low = handheld mode (720p, the game's own lighter settings),
     // auto = TV mode, switched to handheld while the phone is hot (graphics_auto below). DM_OPMODE in env.txt still wins

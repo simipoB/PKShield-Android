@@ -1412,17 +1412,21 @@ static int stage_index(const char *s) { return !strcmp(s, "vertex") ? 0 : !strcm
 static int hexkey(const char *s, uint8_t k[8]) { for (int i = 0; i < 8; i++) { unsigned v; if (sscanf(s + 2 * i, "%2x", &v) != 1) return -1; k[i] = (uint8_t)v; } return 0; }
 static void shmap_read(void);
 static void shmap_load(void) { static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, shmap_read); }   // the game thread (mtl_shader_seen) and the replay both ask
-static void shmap_read(void) {
-    const char *e = getenv("DM_NVN_SHMAP"); FILE *f = e ? fopen(e, "r") : NULL;
-    if (!f) VDIE("cannot read the shader map (DM_NVN_SHMAP=%s)", e ? e : "(unset)");
+static int shmap_parse(FILE *f, nvn_hmap *m) {   // shader_map.tsv rows (package, index, stage, key, source) → key → stage + 1
     char line[1024]; int n = 0;
     while (fgets(line, sizeof line, f)) {
         if (line[0] == '#' || !strncmp(line, "package", 7)) continue;
         char *c[5] = {0}; int nc = 0; for (char *p = line; nc < 5 && p; nc++) { c[nc] = p; p = strchr(p, '\t'); if (p) *p++ = 0; }
         if (nc < 4) continue; char *nl = strpbrk(c[3], "\r\n"); if (nl) *nl = 0;
         uint8_t k[8]; int st = stage_index(c[2]); if (st < 0 || strlen(c[3]) < 16 || hexkey(c[3], k)) continue;
-        nvn_hm_put(&g_shmap, k, (void *)(intptr_t)(st + 1)); n++;
+        nvn_hm_put(m, k, (void *)(intptr_t)(st + 1)); n++;
     }
+    return n;
+}
+static void shmap_read(void) {
+    const char *e = getenv("DM_NVN_SHMAP"); FILE *f = e ? fopen(e, "r") : NULL;
+    if (!f) VDIE("cannot read the shader map (DM_NVN_SHMAP=%s)", e ? e : "(unset)");
+    int n = shmap_parse(f, &g_shmap);
     fclose(f);
     const char *d = getenv("DM_SPV_DIR"); snprintf(g_spv_dir, sizeof g_spv_dir, "%s/b-%s", d ? d : ".", DMSH_CHAIN);
     VLOG("shader map: %d shaders, SPIR-V from %s", n, g_spv_dir);
@@ -1517,6 +1521,24 @@ void mtl_shader_seen(const uint8_t key[8], const void *control, const void *code
     }
     pthread_mutex_unlock(&mu);
 }
+// Shaders translated while the game runs: the game saves a shader the pack lacks (mtl_shader_seen above, a mod's new effect most often), the app translates it in
+// the background (GameActivity, setup_game.py --captures --live) into DM_LIVE_SPV (<key>.spv / .vkr, rows in map.tsv) and rewrites its gen file; every 2 s the replay
+// looks at gen, reads the new rows, and the programs that lacked a shader are built again, so the effect draws a few seconds after it first appears, not next start
+static nvn_hmap g_livemap = {.klen = 8};   // key → stage + 1, under g_shmu
+static volatile int g_live_gen;
+static char g_live_dir[1024];
+static void live_check(void) {   // under g_shmu
+    static double next; static char seen[64];
+    if (!*g_live_dir) { const char *d = getenv("DM_LIVE_SPV"); if (!d || !*d) return; snprintf(g_live_dir, sizeof g_live_dir, "%s", d); }
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); double t = ts.tv_sec + ts.tv_nsec / 1e9; if (t < next) return; next = t + 2;
+    char p[1200], g[64] = ""; snprintf(p, sizeof p, "%s/gen", g_live_dir); FILE *f = fopen(p, "r"); if (!f) return;
+    if (!fgets(g, sizeof g, f)) g[0] = 0; fclose(f);
+    if (!g[0] || !strcmp(g, seen)) return;
+    snprintf(seen, sizeof seen, "%s", g);
+    snprintf(p, sizeof p, "%s/map.tsv", g_live_dir); if (!(f = fopen(p, "r"))) return;
+    int n = shmap_parse(f, &g_livemap); fclose(f); g_live_gen++;
+    VLOG("live shaders: %d translated while the game runs (%s)", n, g_live_dir);
+}
 static vshader *shader_load(const uint8_t key[8], int st) {
     char hex[17]; for (int i = 0; i < 8; i++) sprintf(hex + 2 * i, "%02x", key[i]);
     char p[1200]; size_t ns = 0, nr = 0, ngl = 0; uint32_t *code = NULL, *glcode = NULL; char *meta = NULL;
@@ -1525,6 +1547,11 @@ static vshader *shader_load(const uint8_t key[8], int st) {
         snprintf(p, sizeof p, "%s/%s.spv", g_spv_dir, hex); code = file_read(p, &ns);
         snprintf(p, sizeof p, "%s/%s.vkr", g_spv_dir, hex); meta = file_read(p, &nr);
         if (st == 0) { snprintf(p, sizeof p, "%s/%s.gl.spv", g_spv_dir, hex); glcode = file_read(p, &ngl); }
+        if (!code && *g_live_dir) {   // (translated while the game runs: live_check)
+            snprintf(p, sizeof p, "%s/%s.spv", g_live_dir, hex); code = file_read(p, &ns); free(meta); meta = NULL;
+            snprintf(p, sizeof p, "%s/%s.vkr", g_live_dir, hex); meta = file_read(p, &nr);
+            if (st == 0) { free(glcode); glcode = NULL; snprintf(p, sizeof p, "%s/%s.gl.spv", g_live_dir, hex); glcode = file_read(p, &ngl); }
+        }
     }
     if (!code || !meta) { VLOG("[RED] shader %s: %s missing", hex, !code ? "SPIR-V" : "reflection (.vkr)"); free(code); free(meta); free(glcode); return NULL; }
     meta = realloc(meta, nr + 1); meta[nr] = 0;
@@ -1607,19 +1634,23 @@ static vshader *shader_get(const uint8_t key[8], int st) {
     pthread_mutex_unlock(&g_shmu);
     return s;
 }
-typedef struct vprog { vshader *sh[6]; VkDescriptorSetLayout dsl[2]; VkPipelineLayout pl[2]; uint8_t np[2]; } vprog;   // [0] graphics stages, [1] compute; np: descriptor sets instead of pushes
+typedef struct vprog { vshader *sh[6]; VkDescriptorSetLayout dsl[2]; VkPipelineLayout pl[2]; uint8_t np[2], missing; int gen; } vprog;   // missing: a stage had no shader (built again when live shaders come)   // [0] graphics stages, [1] compute; np: descriptor sets instead of pushes
 static nvn_hmap g_progs = {.klen = 8};   // program serial → vprog
 static vprog *prog_get(const prog_t *p) {
-    vprog *o = p->serial ? nvn_hm_get(&g_progs, &p->serial) : NULL; if (o) return o;
+    pthread_mutex_lock(&g_shmu); live_check(); int gen = g_live_gen; pthread_mutex_unlock(&g_shmu);
+    vprog *prev = p->serial ? nvn_hm_get(&g_progs, &p->serial) : NULL; if (prev && (!prev->missing || prev->gen == gen)) return prev;
     shmap_load();
-    o = calloc(1, sizeof *o);
+    vprog *o = calloc(1, sizeof *o); o->gen = gen;
     for (unsigned i = 0; i < p->nstage; i++) {
         uint8_t k[8]; if (!prog_key(p, i, k)) continue;
         intptr_t st1 = (intptr_t)nvn_hm_get(&g_shmap, k);
-        if (!st1) { char hex[17]; for (int q = 0; q < 8; q++) sprintf(hex + 2 * q, "%02x", k[q]); VLOG("[RED] shader %s is not in the shader map", hex); continue; }
-        vshader *s = shader_get(k, (int)st1 - 1); if (s) o->sh[st1 - 1] = s;
+        if (!st1) { pthread_mutex_lock(&g_shmu); st1 = (intptr_t)nvn_hm_get(&g_livemap, k); pthread_mutex_unlock(&g_shmu); }
+        if (!st1) { o->missing = 1; if (!prev) { char hex[17]; for (int q = 0; q < 8; q++) sprintf(hex + 2 * q, "%02x", k[q]); VLOG("[RED] shader %s is not in the shader map", hex); } continue; }
+        vshader *s = shader_get(k, (int)st1 - 1); if (s) o->sh[st1 - 1] = s; else o->missing = 1;
     }
-    if (p->serial) nvn_hm_put(&g_progs, &p->serial, o);
+    if (prev && o->missing && !memcmp(prev->sh, o->sh, sizeof o->sh)) { prev->gen = gen; free(o); return prev; }   // (nothing new for it yet)
+    if (p->serial) nvn_hm_put(&g_progs, &p->serial, o);   // (the old one stays allocated: pipelines made from it may still be in flight)
+    if (prev) VLOG("a program that lacked a shader was built again with the live shaders");
     return o;
 }
 static VkDescriptorType desc_type(int kind) {

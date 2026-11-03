@@ -75,11 +75,16 @@ def main():
     ap.add_argument('--keys'); ap.add_argument('--base'); ap.add_argument('--captures'); ap.add_argument('--update'); ap.add_argument('--dlc', action='append', default=[])
     ap.add_argument('--out', required=True); ap.add_argument('--work', required=True); ap.add_argument('--bin', required=True)
     ap.add_argument('--ext-font'); ap.add_argument('--std-font'); ap.add_argument('--games'); ap.add_argument('--root')
+    ap.add_argument('--live', help='with --captures, while the game runs: the translated shaders also go into this folder for the engine to load at once (nvn_vk.c live_check)')
     ap.add_argument('--mod-shaders', help="the RomFS folders of the mods that are on, ':'-separated: their new shaders translated into the pack")
     a = ap.parse_args()
     if a.mod_shaders is not None: return mod_shaders(a)
     if a.games and not a.root: ap.error('--games needs --root')
-    if a.captures: return captures(a)
+    if a.captures:
+        if a.live:   # (beside the game: it keeps the CPU)
+            try: os.nice(10)
+            except OSError: pass
+        return captures(a)
     if not (a.keys and a.base): ap.error('--keys and --base are needed (or --captures)')
     os.makedirs(a.work, exist_ok=True); os.makedirs(a.out, exist_ok=True)
     log = open(os.path.join(a.work, 'setup.log'), 'a', buffering=1)
@@ -325,6 +330,17 @@ def mod_shaders(a):
     shutil.rmtree(mw, ignore_errors=True)
     print('DONE', flush=True)
 
+def live_publish(live, vk, rows):
+    # the game is running: its shaders go where the engine looks while it runs (nvn_vk.c live_check), files first, then their map rows, then the generation the engine
+    # watches; the next start finds them in the pack (merged above) and clears this folder
+    os.makedirs(live, exist_ok=True)
+    for r in rows:
+        for ext in ('.spv', '.vkr', '.gl.spv'):
+            f = os.path.join(vk, r[3] + ext)
+            if os.path.exists(f): shutil.copyfile(f, os.path.join(live, r[3] + ext + '.part')); os.replace(os.path.join(live, r[3] + ext + '.part'), os.path.join(live, r[3] + ext))
+    with open(os.path.join(live, 'map.tsv'), 'a', encoding='utf-8') as f: f.writelines('\t'.join(map(str, r)) + '\n' for r in rows)
+    gen = os.path.join(live, 'gen'); open(gen + '.part', 'w').write(f'{time.time_ns()}\n'); os.replace(gen + '.part', gen)
+
 def captures(a):
     # The profile's map places each in-memory shader at a fixed index of <stage>_other.bin; the package is written with the captured ones there and an empty record
     # in each other slot (never read: only the captured keys are translated). They are translated on their own and merged into the shader pack, so nothing
@@ -403,6 +419,7 @@ def captures(a):
     run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
     small = os.path.join(cw, 'new.pak'); run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, small])
     pak_merge(pak, small)
+    if a.live: live_publish(a.live, vk, [r for r in rows if r[3] in got] + added)
     if added:   # the engine reads the map at start: the next one finds these keys and their stage
         with open(gmap, 'a', encoding='utf-8') as f: f.writelines('\t'.join(map(str, r)) + '\n' for r in added)
         log.write(f'{len(added)} captured shaders not in the shader map translated and added to it\n')

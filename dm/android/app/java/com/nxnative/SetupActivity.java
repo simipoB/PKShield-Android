@@ -14,6 +14,7 @@ package com.nxnative;
 
 import android.app.Activity;
 import android.app.ActivityManager;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ShortcutInfo;
 import android.content.pm.ShortcutManager;
@@ -490,13 +491,7 @@ public final class SetupActivity extends Activity {
                 if (!args.contains("--captures")) {   // the dump says which game it is: setup puts it in that game's place (GAME line below), one of each game
                     StringBuilder ids = new StringBuilder(); for (String[] g : GameSettings.games(this)) ids.append(ids.length() > 0 ? "," : "").append(g[0]);
                     cmd.add("--games"); cmd.add(ids.toString()); cmd.add("--root"); cmd.add(GameSettings.root(this).getPath()); }
-                ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
-                pb.environment().put("PYTHONHOME", py.getPath()); pb.environment().put("DM_GAME", game()[0]); pb.environment().put("PYTHONPATH", new File(dm, "android/pyshim").getPath());
-                // bin first: the .NET unpacker dlopens libssl.so.3 / libcrypto.so.3, which binDir() links to the OpenSSL 3 that ships with CPython for Android
-                pb.environment().put("LD_LIBRARY_PATH", bin.getPath() + ":" + lib); pb.environment().put("LIBCAPSTONE_PATH", lib); pb.environment().put("NX_NATIVE_LIB_DIR", lib);
-                pb.environment().put("DOTNET_OPENSSL_VERSION_OVERRIDE", "3"); pb.environment().put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
-                pb.environment().put("TMPDIR", getCacheDir().getPath()); pb.environment().put("J", String.valueOf(setupWorkers()));
-                pb.environment().put("DM_GATE_MB", "600"); pb.environment().put("DM_GATE_FLOOR_MB", String.valueOf(gateFloorMb()));
+                ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true); toolEnv(this, pb, py, dm, bin, setupWorkers());
                 Process p = pb.start();
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String ln;
                 while ((ln = r.readLine()) != null) { final String l = ln;
@@ -528,9 +523,29 @@ public final class SetupActivity extends Activity {
         return Math.max(1, j);
     }
     // memory kept free for the phone itself: Android's own low-memory line (MemoryInfo.threshold) with room above it, at least 300 MB
-    private long gateFloorMb() {
-        android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); ((ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
+    static long gateFloorMb(Context c) {
+        android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); ((ActivityManager) c.getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
         return Math.max(300, (mi.threshold >> 20) + 200);
+    }
+    // the environment setup_game.py runs in: Python, the scripts, the tools (bin first: the .NET unpacker dlopens libssl.so.3 / libcrypto.so.3, which binDir() links to
+    // the OpenSSL 3 that ships with CPython for Android), the workers and the memory gate (dmsh_gate.c)
+    static void toolEnv(Context c, ProcessBuilder pb, File py, File dm, File bin, int workers) {
+        String lib = c.getApplicationInfo().nativeLibraryDir; java.util.Map<String, String> e = pb.environment();
+        e.put("PYTHONHOME", py.getPath()); e.put("DM_GAME", GameSettings.game(c)[0]); e.put("PYTHONPATH", new File(dm, "android/pyshim").getPath());
+        e.put("LD_LIBRARY_PATH", bin.getPath() + ":" + lib); e.put("LIBCAPSTONE_PATH", lib); e.put("NX_NATIVE_LIB_DIR", lib);
+        e.put("DOTNET_OPENSSL_VERSION_OVERRIDE", "3"); e.put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
+        e.put("TMPDIR", c.getCacheDir().getPath()); e.put("J", String.valueOf(workers));
+        e.put("DM_GATE_MB", "600"); e.put("DM_GATE_FLOOR_MB", String.valueOf(gateFloorMb(c)));
+    }
+    // setup_game.py off this screen (GameActivity's live shaders), with the tools as the last setup here left them; null when there are none yet
+    static Process startTool(Context c, List<String> args, int workers) throws IOException {
+        File files = c.getFilesDir(), py = new File(files, "python"), dm = new File(files, "dm"), bin = new File(files, "bin"), game = GameSettings.dir(c), work = new File(game, "setup_work");
+        File script = new File(dm, "android/tools/setup_game.py"); if (!script.isFile() || !new File(bin, "dmsh_xlate").exists()) return null;
+        work.mkdirs();
+        List<String> cmd = new ArrayList<>(Arrays.asList(c.getApplicationInfo().nativeLibraryDir + "/libpython_exe.so", script.getPath())); cmd.addAll(args);
+        cmd.addAll(Arrays.asList("--out", game.getPath(), "--work", work.getPath(), "--bin", bin.getPath()));
+        ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true); toolEnv(c, pb, py, dm, bin, workers);
+        return pb.start();
     }
     private File iconFile() { return new File(gameDir(), "icon.jpg"); }
     // the game's icon from the player's dump: this screen and the recent-apps card
