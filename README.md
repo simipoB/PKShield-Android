@@ -39,7 +39,8 @@
 ## Playing
 
 - **Touch:** on-screen controls, with **☰** (settings) next to −. Two-finger tap = B.
-- **Controllers:** hide the touch controls automatically. Hold **−** for 3 s to remap buttons.
+- **Controllers:** hide the touch controls automatically. Hold **−** and **+** together for 1 s for ☰, or **−** for 3 s to remap buttons. Rumble works on controllers and phones.
+- **Handhelds** (AYN Odin / Thor, Retroid Pocket, AYANEO, Anbernic, Logitech G Cloud...): detected; the built-in controls are used from the start.
 - **Logs:** `Download/PokemonSword-log.txt` or `Download/PokemonShield-log.txt`.
 
 ## Settings (☰)
@@ -47,14 +48,16 @@
 | Setting | Choices |
 | --- | --- |
 | Picture | 16:9, fill screen, 20:9 (for widescreen mods) |
-| Upscaling | Sharp, SGSR, Smooth |
+| Upscaling | Auto, Sharp, SGSR, Smooth |
 | Graphics | Auto, High (1080p), Low (720p), Adaptive |
-| Textures | Auto, Full, Half |
+| Textures | Auto, Full, Half; texture format (compact on Mali / Xclipse / PowerVR) |
 | Frame rate | Auto, 30, 60 (experimental), Sword & Shield |
 | Graphics driver | Phone's own, Turnip, PanVK, or any driver package (with their options) |
-| Controls | Button layout, remapping, touch look and layout |
+| Controls | Button layout, remapping, touch look and layout, rumble |
+| Performance overlay | fps, temperature, GPU, free memory, battery |
 | Online room | Server and room code for local play over the internet |
-| Mods, saves | Import / switch mods; export / import saves |
+| Mods, saves | Import, switch, order and annotate mods; export / import saves |
+| Language | English, Español, Português, Français, 日本語 (Auto: the phone's) |
 
 **Auto** rates the phone's CPU, GPU and RAM (top, mid or low) and picks graphics, textures and filtering from that. The menu shows what it picked.
 
@@ -64,7 +67,7 @@ Link battles, trades and Max Raids with nearby phones on the same Wi-Fi, or with
 
 ## Mods
 
-Import a mod `.zip` (`romfs/` file replacements, `exefs/*.pchtxt` code patches for 1.3.2) and switch mods on or off in ☰ → Mods. If the game crashes with mods on, they're switched off on the next start. When the mods change, the app translates any new shaders they bring before the game starts (a short wait, once).
+Import a mod `.zip` (`romfs/` file replacements, `exefs/*.pchtxt` code patches for 1.3.2) and switch mods on or off in ☰ → Mods. **Order and notes** sets the load order (higher wins), warns when two mods replace the same files, and keeps each mod's readme as its notes. If the game crashes with mods on, they're switched off on the next start. When the mods change, the app translates any new shaders they bring before the game starts (a short wait, once).
 
 ## Known gaps
 

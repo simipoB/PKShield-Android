@@ -22,6 +22,7 @@
 #include <android/native_activity.h>
 #include <jni.h>
 #endif
+#include <errno.h>
 #include <math.h>
 #include <pthread.h>
 #include <string.h>
@@ -130,6 +131,9 @@ void touch_menu_tap(float x, float y, float w, float h);   // touch_menu.c
 void front_open_menu(int what);   // android_main.c: the in-game settings (GameMenu.java), 0 = all, 1 = the controller buttons
 // ---------- haptics ----------
 static JavaVM *g_vm; static jobject g_act; static pthread_cond_t g_hcv = PTHREAD_COND_INITIALIZER; static int g_hpend;
+// rumble (hle_hid.c dm_rumble): the game's motor strength, handed to GameActivity.rumble on this thread when it changes, and again every 100 ms while it lasts
+// (each hand-over is a short pulse, so a rumble the game stops without a zero value ends by itself)
+static float g_ramp; static int g_rpend;
 static void *haptic_main(void *p) {
     (void)p; JNIEnv *e; if ((*g_vm)->AttachCurrentThread(g_vm, &e, NULL)) return NULL;
     jclass ctx = (*e)->FindClass(e, "android/content/Context"); jmethodID gss = (*e)->GetMethodID(e, ctx, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
@@ -142,9 +146,17 @@ static void *haptic_main(void *p) {
     if (click) click = (*e)->NewGlobalRef(e, click);
     if (!vib || !vibrate || !click) { __android_log_print(ANDROID_LOG_WARN, "nxnative", "haptics unavailable"); (*g_vm)->DetachCurrentThread(g_vm); return NULL; }
     vib = (*e)->NewGlobalRef(e, vib);
+    jmethodID rumble = (*e)->GetMethodID(e, (*e)->GetObjectClass(e, g_act), "rumble", "(F)V"); if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); rumble = NULL; }
     for (;;) {
-        pthread_mutex_lock(&g_mu); while (!g_hpend) pthread_cond_wait(&g_hcv, &g_mu); g_hpend = 0; pthread_mutex_unlock(&g_mu);
-        (*e)->CallVoidMethod(e, vib, vibrate, click); if ((*e)->ExceptionCheck(e)) (*e)->ExceptionClear(e);
+        pthread_mutex_lock(&g_mu);
+        while (!g_hpend && !g_rpend) {
+            if (g_ramp <= 0) { pthread_cond_wait(&g_hcv, &g_mu); continue; }
+            struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts); ts.tv_nsec += 100000000; if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+            if (pthread_cond_timedwait(&g_hcv, &g_mu, &ts) == ETIMEDOUT) g_rpend = 1;
+        }
+        int tap = g_hpend, rum = g_rpend; float amp = g_ramp; g_hpend = g_rpend = 0; pthread_mutex_unlock(&g_mu);
+        if (tap) { (*e)->CallVoidMethod(e, vib, vibrate, click); if ((*e)->ExceptionCheck(e)) (*e)->ExceptionClear(e); }
+        if (rum && rumble) { (*e)->CallVoidMethod(e, g_act, rumble, (jfloat)amp); if ((*e)->ExceptionCheck(e)) (*e)->ExceptionClear(e); }
     }
     return NULL;
 }
@@ -154,6 +166,12 @@ void touch_ui_init(ANativeActivity *a) {
     pthread_t t; if (!pthread_create(&t, NULL, haptic_main, NULL)) pthread_detach(t);
 }
 static void click_locked(void) { g_hpend = 1; pthread_cond_signal(&g_hcv); }   // callers hold g_mu
+void dm_rumble(float left, float right) {   // hle_hid.c: the game's two motors; one strength for the one motor Android drives
+    float a = left > right ? left : right;
+    pthread_mutex_lock(&g_mu);
+    if ((a > 0) != (g_ramp > 0) || fabsf(a - g_ramp) > 0.04f) { g_ramp = a; g_rpend = 1; pthread_cond_signal(&g_hcv); }
+    pthread_mutex_unlock(&g_mu);
+}
 #endif
 #ifdef __ANDROID__
 

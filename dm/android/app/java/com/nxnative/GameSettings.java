@@ -61,6 +61,15 @@ final class GameSettings {
         try (FileWriter w = new FileWriter(env)) { for (String l : lines) w.write(l + "\n"); } catch (IOException e) { }
     }
 
+    // Handhelds with built-in game controls (AYN Odin / Thor, Retroid Pocket, AYANEO, Anbernic, Logitech G Cloud, Razer Edge...): their name, else null. Their controls
+    // are a connected controller from the start (the touch controls stay hidden) and the phone vibrator is the body's motor (GameActivity)
+    static String handheld() {
+        String all = (Build.MANUFACTURER + " " + Build.BRAND + " " + Build.MODEL + " " + Build.DEVICE).toLowerCase(java.util.Locale.ROOT);
+        String[][] known = { { "retroid", "Retroid Pocket" }, { "ayaneo", "AYANEO" }, { "anbernic", "Anbernic" }, { "thor", "AYN Thor" }, { "odin", "AYN Odin" },
+                             { "ayn", "AYN" }, { "g cloud", "Logitech G Cloud" }, { "gr0006", "Logitech G Cloud" }, { "razer edge", "Razer Edge" }, { "gpd", "GPD" }, { "rg5", "Anbernic" }, { "rg4", "Anbernic" } };
+        for (String[] k : known) if (all.contains(k[0])) return k[1];
+        return null;
+    }
     static boolean isShield(Context c) { return "01008DB008C2C000".equalsIgnoreCase(game(c)[0]); }
     // the games the built-in 60 fps patch knows (loader.c FPS_SITES: Pokémon Shield and Sword 1.3.2)
     static boolean has60(Context c) { String id = game(c)[0]; return "01008DB008C2C000".equalsIgnoreCase(id) || "0100ABF008968000".equalsIgnoreCase(id); }

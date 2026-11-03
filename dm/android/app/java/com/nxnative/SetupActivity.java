@@ -76,8 +76,8 @@ public final class SetupActivity extends Activity {
         for (String[] n : ns) {
             if (n[0].equals("mods")) Toast.makeText(this, n[1], Toast.LENGTH_LONG).show();
             else if (n[0].equals("driver")) { block = true; final String gpu = n[1];
-                new android.app.AlertDialog.Builder(this).setTitle("The game closed while starting its graphics")
-                    .setMessage("Last time, " + gameName() + " closed while starting its graphics on this phone's own driver (" + gpu + "). " + driverAdvice(gpu))
+                new android.app.AlertDialog.Builder(this).setTitle(T.t(this, "The game closed while starting its graphics"))
+                    .setMessage(T.t(this, "Last time, %s closed while starting its graphics on this phone's own driver (%s). ", gameName(), gpu) + driverAdvice(gpu))
                     .setPositiveButton("Choose a driver", (d, w) -> pick(PICK_DRIVER, false))
                     .setNeutralButton("Start anyway", (d, w) -> startGame())
                     .setNegativeButton("Close", null).show(); }
@@ -128,29 +128,29 @@ public final class SetupActivity extends Activity {
             android.widget.RadioGroup gs = new android.widget.RadioGroup(this); gs.setOrientation(LinearLayout.HORIZONTAL);
             List<String[]> all = GameSettings.games(this); String cur = game()[0];
             for (int k = 0; k < all.size(); k++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setId(7000 + k);
-                rb.setText(all.get(k)[1] + (isReady(all.get(k)[0]) ? "" : " (not set up)")); gs.addView(rb); if (all.get(k)[0].equals(cur)) rb.setChecked(true); }
-            gs.setOnCheckedChangeListener((g, id) -> { if (running) { status.setText("Wait for the current setup to finish."); return; }
+                rb.setText(all.get(k)[1] + (isReady(all.get(k)[0]) ? "" : " " + T.t(this, "(not set up)"))); gs.addView(rb); if (all.get(k)[0].equals(cur)) rb.setChecked(true); }
+            gs.setOnCheckedChangeListener((g, id) -> { if (running) { status.setText(T.t(this, "Wait for the current setup to finish.")); return; }
                 GameSettings.choose(this, all.get(id - 7000)[0]); Intent it = getIntent(); it.putExtra("setup", true); it.removeExtra("game"); recreate(); });
             root.addView(gs);
         }
         TextView title = new TextView(this); title.setText(gameName()); title.setTextSize(28); root.addView(title);
         if (!official) { TextView u = new TextView(this); u.setText(UNOFFICIAL); u.setTextColor(0xffff5252); u.setPadding(0, 16, 0, 0); root.addView(u); }
-        TextView note = new TextView(this); note.setText("Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone."); note.setPadding(0, 16, 0, 32); root.addView(note);
-        gameText = row(root, "Game files", "Choose", v -> pick(PICK_GAME, true));
-        keysText = row(root, "Keys", "Choose", v -> pick(PICK_KEYS, true));
+        TextView note = new TextView(this); note.setText(T.t(this, "Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone.")); note.setPadding(0, 16, 0, 32); root.addView(note);
+        gameText = row(root, T.t(this, "Game files"), "Choose", v -> pick(PICK_GAME, true));
+        keysText = row(root, T.t(this, "Keys"), "Choose", v -> pick(PICK_KEYS, true));
         // the Vulkan driver: the phone's own, or an Adreno driver package (a zip with meta.json and the library, e.g. Mesa Turnip) opened through libadrenotools
-        driverText = row(root, "Graphics driver", "Choose", v -> pick(PICK_DRIVER, false));
-        button(root, "Use the phone's own driver", v -> { DriverPackages.useSystem(this); refresh(); });
+        driverText = row(root, T.t(this, "Graphics driver"), "Choose", v -> pick(PICK_DRIVER, false));
+        button(root, T.t(this, "Use the phone's own driver"), v -> { DriverPackages.useSystem(this); refresh(); });
         maliOptions(root);
-        TextView sn = new TextView(this); sn.setText("Settings (picture, graphics, textures, controller buttons, touch controls, mods) are in the game: tap the menu button at the top left, or hold − on a controller for 3 seconds for the controller buttons.");
+        TextView sn = new TextView(this); sn.setText(T.t(this, "Settings (picture, graphics, textures, controller buttons, touch controls, mods) are in the game: tap the menu button at the top left, or hold − on a controller for 3 seconds for the controller buttons."));
         sn.setPadding(0, 24, 0, 24); root.addView(sn);
-        setup = button(root, "Set up the game", v -> startSetup());
+        setup = button(root, T.t(this, "Set up the game"), v -> startSetup());
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(600); root.addView(bar);
         status = new TextView(this); status.setPadding(0, 16, 0, 16); root.addView(status);
-        play = button(root, "Play", v -> startGame()); play.setEnabled(ready());
-        saveExport = button(root, "Export save data", v -> chooseSaveExport());
-        saveImport = button(root, "Import edited save data", v -> chooseSaveImport());
-        shortcut = button(root, "Add " + gameName() + " to the home screen", v -> pinShortcut());
+        play = button(root, T.t(this, "Play"), v -> startGame()); play.setEnabled(ready());
+        saveExport = button(root, T.t(this, "Export save data"), v -> chooseSaveExport());
+        saveImport = button(root, T.t(this, "Import edited save data"), v -> chooseSaveImport());
+        shortcut = button(root, T.t(this, "Add %s to the home screen", gameName()), v -> pinShortcut());
         ScrollView sv = new ScrollView(this); sv.addView(root); setContentView(sv);
         refresh(); gameIcon();
         if (ready() && !asked) startCaptures();
@@ -172,11 +172,11 @@ public final class SetupActivity extends Activity {
     private LinearLayout maliBox;
     private void maliOptions(LinearLayout root) {
         maliBox = new LinearLayout(this); maliBox.setOrientation(LinearLayout.VERTICAL); root.addView(maliBox);
-        TextView h = new TextView(this); h.setText("Mali driver (PanVK) options"); h.setPadding(0, 16, 0, 0); maliBox.addView(h);
+        TextView h = new TextView(this); h.setText(T.t(this, "Mali driver (PanVK) options")); h.setPadding(0, 16, 0, 0); maliBox.addView(h);
         check(maliBox, "Driver log (for bug reports)", MaliDriver.LOG, "1");
         check(maliBox, "Fix for the driver not starting (some Exynos and Mali-G52 phones)", MaliDriver.STRIDE, "56");
         check(maliBox, "Late stencil (fixes black triangles or missing light; can be darker and slower)", MaliDriver.STENCIL, "1");
-        TextView hl = new TextView(this); hl.setText("GPU memory reported to the game"); hl.setPadding(0, 8, 0, 0); maliBox.addView(hl);
+        TextView hl = new TextView(this); hl.setText(T.t(this, "GPU memory reported to the game")); hl.setPadding(0, 8, 0, 0); maliBox.addView(hl);
         android.widget.RadioGroup rg = new android.widget.RadioGroup(this); String cur = envGet(MaliDriver.HEAP);
         for (int k = 0; k < MaliDriver.HEAP_MB.length; k++) {
             android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(3000 + k);
@@ -203,27 +203,27 @@ public final class SetupActivity extends Activity {
         saveExport.setEnabled(!running && setUp());
         saveImport.setEnabled(!running && setUp());
         if (running && status.getText().length() == 0)   // a new screen while the setup (or a copy) another one started still runs
-            status.setText("Setup is still running in the background. Wait a few minutes, then close and reopen the app to see whether it has finished.");
+            status.setText(T.t(this, "Setup is still running in the background. Wait a few minutes, then close and reopen the app to see whether it has finished."));
         if (!running && setUp() && !chainCurrent() && status.getText().length() == 0)
-            status.setText("This app version translates the game's shaders differently: choose your files and press Set up the game again (the save data is kept).");
+            status.setText(T.t(this, "This app version translates the game's shaders differently: choose your files and press Set up the game again (the save data is kept)."));
         shortcut.setVisibility(iconFile().exists() ? android.view.View.VISIBLE : android.view.View.GONE);
     }
     private void pick(int what, boolean multi) {
-        if (running) { status.setText("Please wait for the current setup or file copy to finish."); return; }
+        if (running) { status.setText(T.t(this, "Please wait for the current setup or file copy to finish.")); return; }
         if (what == PICK_GAME && Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {   // read the dump in place: all-files access
-            status.setText("Allow access to all files so the app can read your dump where it is (it is several GB; nothing is copied).");
+            status.setText(T.t(this, "Allow access to all files so the app can read your dump where it is (it is several GB; nothing is copied)."));
             startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:" + getPackageName()))); return; }
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("*/*"); i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multi);
         startActivityForResult(i, what);
     }
     @Override protected void onActivityResult(int req, int res, Intent data) {
         if (res != RESULT_OK) return;
-        if (data == null) { status.setText("The file picker returned no selected file. Try the phone's Files app and select a file from Downloads or Documents."); return; }
+        if (data == null) { status.setText(T.t(this, "The file picker returned no selected file. Try the phone's Files app and select a file from Downloads or Documents.")); return; }
         if (req == PICK_SAVE_EXPORT) { exportSave(data.getData()); return; }
         if (req == PICK_SAVE_IMPORT) { importSave(data.getData()); return; }
         List<Uri> uris = new ArrayList<>();
         if (data.getClipData() != null) for (int k = 0; k < data.getClipData().getItemCount(); k++) uris.add(data.getClipData().getItemAt(k).getUri()); else if (data.getData() != null) uris.add(data.getData());
-        if (uris.isEmpty()) { status.setText("The file picker did not return a file. Try the phone's Files app and select a file from Downloads or Documents."); return; }
+        if (uris.isEmpty()) { status.setText(T.t(this, "The file picker did not return a file. Try the phone's Files app and select a file from Downloads or Documents.")); return; }
         List<PickedGame> imports = new ArrayList<>();
         for (Uri u : uris) {
             String name = nameOf(u);
@@ -285,8 +285,8 @@ public final class SetupActivity extends Activity {
     }
     private void importGames(List<PickedGame> imports) {
         running = true; refresh();
-        gameText.setText("Copying " + imports.size() + " selected file" + (imports.size() == 1 ? "" : "s") + " into app storage...");
-        status.setText("Copying " + imports.size() + " selected game file" + (imports.size() == 1 ? "" : "s") + " into app storage; large files need extra free space...");
+        gameText.setText(T.t(this, "Copying %d selected file(s) into app storage...", imports.size()));
+        status.setText(T.t(this, "Copying %d selected game file(s) into app storage; large files need extra free space...", imports.size()));
         new Thread(() -> {
             List<File> copied = new ArrayList<>();
             String error = null;
@@ -314,8 +314,8 @@ public final class SetupActivity extends Activity {
             runOnUiThread(() -> {
                 running = false;
                 for (File file : copied) { games.add(file.getPath()); importedGames.add(file); }
-                if (failure == null) status.setText("Game file" + (copied.size() == 1 ? "" : "s") + " copied into app storage and selected.");
-                else status.setText("Could not import game file: " + failure + (copied.isEmpty() ? "" : " Previously copied selections are ready."));
+                if (failure == null) status.setText(T.t(this, "Game file(s) copied into app storage and selected."));
+                else status.setText(T.t(this, "Could not import game file: %s", failure) + (copied.isEmpty() ? "" : " " + T.t(this, "Previously copied selections are ready.")));
                 refresh();
             });
         }).start();
@@ -348,8 +348,8 @@ public final class SetupActivity extends Activity {
         startActivityForResult(i, PICK_SAVE_IMPORT);
     }
     private void importSave(Uri source) {
-        if (source == null) { status.setText("Choose the save ZIP you edited or exported."); return; }
-        running = true; refresh(); status.setText("Importing save archive...");
+        if (source == null) { status.setText(T.t(this, "Choose the save ZIP you edited or exported.")); return; }
+        running = true; refresh(); status.setText(T.t(this, "Importing save archive..."));
         new Thread(() -> {
             String result;
             try (InputStream input = getContentResolver().openInputStream(source)) {
@@ -367,7 +367,7 @@ public final class SetupActivity extends Activity {
     private void exportSave(Uri destination) {
         if (destination == null) return;
         File save = new File(gameDir(), "save");
-        status.setText("Exporting save data...");
+        status.setText(T.t(this, "Exporting save data..."));
         new Thread(() -> {
             String result;
             try {
@@ -409,14 +409,14 @@ public final class SetupActivity extends Activity {
         List<String> a = new ArrayList<>(); a.add(base); a.add(upd); a.addAll(dlc); return a.toArray(new String[0]);
     }
     private void startSetup() {
-        bar.setMax(600); bar.setProgress(0); status.setText("Preparing...");
+        bar.setMax(600); bar.setProgress(0); status.setText(T.t(this, "Preparing..."));
         String[] g = sortGames(); List<String> cmd = new ArrayList<>();
         cmd.add("--keys"); cmd.add(keysDir().getPath()); cmd.add("--base"); cmd.add(g[0]);
         if (g[1] != null) { cmd.add("--update"); cmd.add(g[1]); }
         for (int k = 2; k < g.length; k++) { cmd.add("--dlc"); cmd.add(g[k]); }
         runSetup(cmd, err -> {
             bar.setProgress(err == null ? 600 : bar.getProgress());
-            status.setText(err == null ? "Ready. The setup log is in Android/data/" + getPackageName() + "/files/setup_work." : "Setup failed: " + err);
+            status.setText(err == null ? T.t(this, "Ready. The setup log is in Android/data/%s/files/setup_work.", getPackageName()) : T.t(this, "Setup failed: %s", err));
             if (err == null) {
                 for (File file : importedGames) file.delete();
                 importedGames.clear();
@@ -434,6 +434,8 @@ public final class SetupActivity extends Activity {
         for (String n : all) if (!done.contains(n)) out.add(n);
         return out;
     }
+    // a setup step's name (setup_game.py STEP lines) in the player's language: a number in it ("translate 2 shaders") is the %s of one translation
+    private String step(String s) { java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\d+").matcher(s); return m.find() ? T.t(this, s.replaceFirst("\\d+", "%s"), m.group()) : T.t(this, s); }
     // work before the game starts: shaders captured last time, or mods switched on or changed since their shaders were last read (GameActivity asks too)
     static boolean pendingWork(File gameDir) { return !pendingCaptures(gameDir).isEmpty() || modShaderState(gameDir) != null; }
     // the RomFS folders of the mods that are on (as android_main.c mods_romfs picks them) and a fingerprint of their files; null when nothing changed since the
@@ -455,18 +457,18 @@ public final class SetupActivity extends Activity {
     }
     private void startModShaders() {
         String[] st = modShaderState(gameDir()); if (st == null) { startGame(); return; }
-        bar.setMax(300); bar.setProgress(0); status.setText("Reading the shaders of your mods...");
+        bar.setMax(300); bar.setProgress(0); status.setText(T.t(this, "Reading the shaders of your mods..."));
         runSetup(new ArrayList<>(Arrays.asList("--mod-shaders", st[0])), err -> {
             try (FileWriter w = new FileWriter(new File(gameDir(), "mod_shaders_done"))) { w.write(st[1] + "\n"); } catch (IOException e) { }   // (also after a failure: not tried again each start)
-            if (err != null) Toast.makeText(this, "Could not add your mods' shaders (" + err + "); the game still plays, some mod effects may not show.", Toast.LENGTH_LONG).show();
+            if (err != null) Toast.makeText(this, T.t(this, "Could not add your mods' shaders (%s); the game still plays, some mod effects may not show.", err), Toast.LENGTH_LONG).show();
             startGame();
         });
     }
     private void startCaptures() {
         List<String> todo = pendingCaptures(); if (todo.isEmpty()) { startModShaders(); return; }
-        bar.setMax(300); bar.setProgress(0); status.setText("Adding " + todo.size() + " shader" + (todo.size() == 1 ? "" : "s") + " the game made last time...");
+        bar.setMax(300); bar.setProgress(0); status.setText(T.t(this, "Adding %d shader(s) the game made last time...", todo.size()));
         runSetup(new ArrayList<>(Arrays.asList("--captures", new File(gameDir(), "nvn_capture").getPath())), err -> {
-            if (err != null) { status.setText("Could not add the new shaders (" + err + "); the game still plays without them."); return; }
+            if (err != null) { status.setText(T.t(this, "Could not add the new shaders (%s); the game still plays without them.", err)); return; }
             try (FileWriter w = new FileWriter(new File(gameDir(), "captures_done"), true)) { for (String n : todo) w.write(n + "\n"); } catch (IOException e) { }
             startModShaders();
         });
@@ -496,12 +498,12 @@ public final class SetupActivity extends Activity {
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String ln;
                 while ((ln = r.readLine()) != null) { final String l = ln;
                     if (l.startsWith("STEP ")) { String[] f = l.split(" ", 3); int n = Integer.parseInt(f[1].split("/")[0]); stepNo[0] = n; stepName[0] = f[2];
-                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100); status.setText(f[2] + "..."); }); }
+                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100); status.setText(step(f[2]) + "..."); }); }
                     else if (l.startsWith("PROGRESS ")) {
                         String[] f = l.substring(9).trim().split("/"); long a = Long.parseLong(f[0]), b = Math.max(1, Long.parseLong(f[1])); int pct = (int) Math.min(100, a * 100 / b), n = stepNo[0]; String s = stepName[0];
-                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100 + pct); status.setText(s + "... " + pct + "%\nThis takes a long time on a phone: keep this screen open, ideally plugged in."); }); }
+                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100 + pct); status.setText(step(s) + "... " + pct + "%\n" + T.t(this, "This takes a long time on a phone: keep this screen open, ideally plugged in.")); }); }
                     else if (l.startsWith("GAME ")) { String id = l.substring(5).trim(); GameSettings.choose(this, id);
-                        runOnUiThread(() -> status.setText("Your files are " + GameSettings.game(this)[1] + ": setting it up...")); }
+                        runOnUiThread(() -> status.setText(T.t(this, "Your files are %s: setting it up...", GameSettings.game(this)[1]))); }
                     else if (l.startsWith("FAILED")) err = l.substring(6).trim(); }
                 if (p.waitFor() != 0 && err == null) err = "setup stopped (" + p.exitValue() + ")";
             } catch (Exception e) { err = e.toString(); }
@@ -572,8 +574,8 @@ public final class SetupActivity extends Activity {
         Intent go = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN).putExtra("game", game()[0]);
         ShortcutInfo si = new ShortcutInfo.Builder(this, sid).setShortLabel(gameName()).setLongLabel("Play " + gameName()).setIcon(Icon.createWithBitmap(b)).setIntent(go).build();
         try { sm.addDynamicShortcuts(Arrays.asList(si)); } catch (Exception e) { }
-        for (ShortcutInfo p : sm.getPinnedShortcuts()) if (p.getId().equals(sid)) { sm.updateShortcuts(Arrays.asList(si)); status.setText("The " + gameName() + " shortcut is on the home screen."); return; }
-        if (sm.isRequestPinShortcutSupported()) sm.requestPinShortcut(si, null); else status.setText("This launcher cannot add shortcuts: long-press the app's icon for " + gameName() + ".");
+        for (ShortcutInfo p : sm.getPinnedShortcuts()) if (p.getId().equals(sid)) { sm.updateShortcuts(Arrays.asList(si)); status.setText(T.t(this, "The %s shortcut is on the home screen.", gameName())); return; }
+        if (sm.isRequestPinShortcutSupported()) sm.requestPinShortcut(si, null); else status.setText(T.t(this, "This launcher cannot add shortcuts: long-press the app's icon for %s.", gameName()));
     }
     // the executables the setup runs, under the names the scripts call them by (links into the app's native library folder, where Android allows execution);
     // also OpenSSL 3 under the names the .NET unpacker dlopens (libssl.so.3 / libcrypto.so.3), so it does not pick up the system's BoringSSL

@@ -7,7 +7,7 @@
 # Usage: build_apk.py --libs <dir with the .so files> --pylib <CPython for Android's lib/python3.14> --capstone-py <the capstone Python package> --out <app.apk>
 #        [--ks <keystore> (default dm/android/probe/out/debug.keystore; made when missing)] [--bt <build-tools dir>] [--jar <android.jar>]
 #        [--game <title ID> (default 01008DB008C2C000, Pokémon Shield; 0100ABF008968000 Pokémon Sword: libnxnative.so built for that game)] [--name <the profile's name>] [--package <com.nxnative.pokemon<game>>]
-import argparse, hashlib, io, os, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
+import argparse, glob, hashlib, io, os, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
 from xml.sax.saxutils import escape as xml_escape   # (the label: "Pokémon Sword & Shield")
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ANDROID = os.path.dirname(HERE); DM = os.path.dirname(ANDROID)
@@ -150,6 +150,7 @@ def main():
         z.writestr('assets/dm.zip', b.getvalue(), compress_type=zipfile.ZIP_STORED)
         z.writestr('assets/shader_chain', shader_chain(g) + '\n')   # the launcher sends players back to setup when their shader pack was made for another chain
         z.writestr('assets/games', ''.join(f'{f.id}\t{f.get("name")}\t{_game.file_stem(f)}\n' for f in fam))   # the games this app runs, its own first (GameSettings.games)
+        for t in sorted(glob.glob(os.path.join(ANDROID, 'app/assets/lang/*.tsv'))): z.write(t, 'assets/lang/' + os.path.basename(t))   # the app's text in other languages (T.java)
     if not os.path.isfile(a.ks):
         os.makedirs(os.path.dirname(a.ks), exist_ok=True)
         run('keytool', '-genkeypair', '-keystore', a.ks, '-storepass', 'android', '-keypass', 'android', '-alias', 'debug', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000', '-dname', 'CN=nxnative debug')

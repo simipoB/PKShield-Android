@@ -216,7 +216,16 @@ JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env,
 }
 JNIEXPORT void JNICALL Java_com_nxnative_GameMenu_nativeEditTouch(JNIEnv *env, jclass c) { (void)env; (void)c; touch_ui_edit(); }   // "Move the touch controls"
 // Holding − on a controller for 3 s opens the controller buttons (front_open_menu(1)): a press starts a timer thread that checks the same press is still held
+uint64_t dm_nvn_frame_count(void) __attribute__((weak));   // (nvn: frames presented)
 static _Atomic int g_minus_seq, g_minus_held;
+// − and + held together for 1 s: the whole menu (front_open_menu(0)), for controllers and handhelds with built-in controls, where the touch ☰ is hidden
+static _Atomic int g_combo_seq, g_combo_held;
+static void *combo_hold_main(void *p) {
+    int seq = (int)(intptr_t)p; usleep(1000000);
+    if (atomic_load(&g_combo_held) && atomic_load(&g_combo_seq) == seq) { atomic_fetch_add(&g_minus_seq, 1); front_open_menu(0); }   // (the − hold's own timer stops)
+    return NULL;
+}
+JNIEXPORT jlong JNICALL Java_com_nxnative_GameActivity_nativeFrames(JNIEnv *env, jclass c) { (void)env; (void)c; return dm_nvn_frame_count ? (jlong)dm_nvn_frame_count() : -1; }   // the performance overlay's fps
 static void *minus_hold_main(void *p) {
     int seq = (int)(intptr_t)p; usleep(3000000);
     if (atomic_load(&g_minus_held) && atomic_load(&g_minus_seq) == seq) front_open_menu(1);
@@ -240,6 +249,12 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
             if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_DOWN && AKeyEvent_getRepeatCount(e) == 0) { int seq = atomic_fetch_add(&g_minus_seq, 1) + 1; atomic_store(&g_minus_held, 1);
                 pthread_t th; if (!pthread_create(&th, NULL, minus_hold_main, (void *)(intptr_t)seq)) pthread_detach(th); }
             else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) atomic_store(&g_minus_held, 0);
+        }
+        if (b & (DM_BTN_MINUS | DM_BTN_PLUS)) {   // − and + together (combo_hold_main)
+            int both = (g_pads[k].btn & (DM_BTN_MINUS | DM_BTN_PLUS)) == (DM_BTN_MINUS | DM_BTN_PLUS);
+            if (both && !atomic_load(&g_combo_held)) { int seq = atomic_fetch_add(&g_combo_seq, 1) + 1; atomic_store(&g_combo_held, 1);
+                pthread_t th; if (!pthread_create(&th, NULL, combo_hold_main, (void *)(intptr_t)seq)) pthread_detach(th); }
+            else if (!both) atomic_store(&g_combo_held, 0);
         }
         touch_ui_hide(); pads_merge(); return 1;
     }
@@ -271,7 +286,6 @@ static int g_started;
 static char g_boot_path[1100]; static int g_boot_fd = -1;
 void dm_crash_note(void) { if (g_boot_fd >= 0) { static const char m[] = "crashed\n"; (void)!write(g_boot_fd, m, sizeof m - 1); } }
 const char *nvn_vk_gpu_name(void) __attribute__((weak));
-uint64_t dm_nvn_frame_count(void) __attribute__((weak));
 static void notice(const char *kind, const char *text) {
     char p[1200]; snprintf(p, sizeof p, "%s/notice.txt", g_files); FILE *f = fopen(p, "a"); if (f) { fprintf(f, "%s\t%s\n", kind, text); fclose(f); }
     fprintf(stderr, "boot: notice %s: %s\n", kind, text);
@@ -335,20 +349,29 @@ static void window_rate(ANativeWindow *w) {
     int r = r2 ? r2(w, rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE, 1 /* ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS */) : r1 ? r1(w, rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE) : -1;
     fprintf(stderr, "boot: window frame rate %.0f fps (fixed source)%s\n", rate, r ? " refused by the system" : "");
 }
-// RomFS mods: every <mods>/<mod>/romfs folder (and <mods>/romfs) as a RomFS overlay root, in name order (hle_fs.c rom_overlay_path: the first root that has a file wins);
-// a mod's exefs/*.pchtxt code patches are found by the loader (loader.c pchtxt_dir). A mod folder named with a leading "-" or "." is switched off
+// RomFS mods: every <mods>/<mod>/romfs folder (and <mods>/romfs) as a RomFS overlay root (hle_fs.c rom_overlay_path: the first root that has a file wins), in the load
+// order of <mods>/order.txt (the in-game menu's: one name a line, first wins), then by name; a mod's exefs/*.pchtxt code patches are found by the loader (loader.c
+// pchtxt_dir). A mod folder named with a leading "-" or "." is switched off
+static char g_roots[8192]; static size_t g_roots_len; static int g_roots_n;
+static void mod_root(const char *mods, const char *nm) {
+    char d[1200]; struct stat st;
+    if (nm[0] == '.' || nm[0] == '-' || !strcmp(nm, "romfs") || strchr(nm, '/')) return;
+    snprintf(d, sizeof d, "%s/%s/romfs", mods, nm); size_t dl = strlen(d);
+    if (stat(d, &st) || !S_ISDIR(st.st_mode) || strchr(d, ':') || g_roots_len + dl + 2 >= sizeof g_roots) return;
+    for (const char *q = g_roots; (q = strstr(q, d)); q += dl) if ((q == g_roots || q[-1] == ':') && (q[dl] == ':' || !q[dl])) return;   // (listed already)
+    g_roots_len += snprintf(g_roots + g_roots_len, sizeof g_roots - g_roots_len, "%s%s", g_roots_len ? ":" : "", d); g_roots_n++;
+    fprintf(stderr, "boot: mod %s: RomFS files (load order %d)\n", nm, g_roots_n);
+}
 static void mods_romfs(const char *mods) {
     if (getenv("DM_ROMFS_OVERLAY")) return;   // env.txt chose
-    struct dirent **ents = NULL; int n = scandir(mods, &ents, NULL, alphasort); if (n < 0) return;
-    static char roots[8192]; size_t len = 0; int count = 0; struct stat st; char d[1200];
-    snprintf(d, sizeof d, "%s/romfs", mods); if (!stat(d, &st) && S_ISDIR(st.st_mode)) { len += snprintf(roots + len, sizeof roots - len, "%s", d); count++; }
-    for (int i = 0; i < n; i++) { const char *nm = ents[i]->d_name;
-        if (nm[0] != '.' && nm[0] != '-' && strcmp(nm, "romfs")) { snprintf(d, sizeof d, "%s/%s/romfs", mods, nm);
-            if (!stat(d, &st) && S_ISDIR(st.st_mode) && !strchr(d, ':') && len + strlen(d) + 2 < sizeof roots) { len += snprintf(roots + len, sizeof roots - len, "%s%s", len ? ":" : "", d); count++;
-                fprintf(stderr, "boot: mod %s: RomFS files\n", nm); } }
-        free(ents[i]); }
+    struct stat st; char d[1200];
+    snprintf(d, sizeof d, "%s/romfs", mods); if (!stat(d, &st) && S_ISDIR(st.st_mode)) { g_roots_len += snprintf(g_roots, sizeof g_roots, "%s", d); g_roots_n++; }
+    snprintf(d, sizeof d, "%s/order.txt", mods); FILE *f = fopen(d, "r");
+    if (f) { char ln[512]; while (fgets(ln, sizeof ln, f)) { ln[strcspn(ln, "\r\n")] = 0; if (*ln) mod_root(mods, ln); } fclose(f); }
+    struct dirent **ents = NULL; int n = scandir(mods, &ents, NULL, alphasort);
+    for (int k = 0; k < n; k++) { mod_root(mods, ents[k]->d_name); free(ents[k]); }
     free(ents);
-    if (count) { setenv("DM_ROMFS_OVERLAY", roots, 1); fprintf(stderr, "boot: %d RomFS mod folder(s)\n", count); }
+    if (g_roots_n) { setenv("DM_ROMFS_OVERLAY", g_roots, 1); fprintf(stderr, "boot: %d RomFS mod folder(s)\n", g_roots_n); }
 }
 static void env_file(const char *path) {   // KEY=VALUE lines, # comments; set only when not already set
     FILE *f = fopen(path, "r"); char ln[512]; if (!f) return;

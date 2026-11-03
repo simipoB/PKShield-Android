@@ -1,10 +1,14 @@
 // nn::hid (controller): on the real device shared memory is read through the hid service; the host takes the current state written by the front end (Mac keyboard / controller, iOS virtual gamepad / controller).
 // Generic, game-independent version: one standard controller. DM_OPMODE=0 (handheld) → handheld controller (Npad id 0x20); otherwise → 1P full-key controller (id 0).
-// Vibration, six-axis, mouse, keyboard: not provided by the host (device count 0 / not connected); the controller applet reports "1 player, current controller selected".
+// Vibration: two motors (left, right) whose values go to the front end (dm_rumble: the controller's motor, else the phone's). Six-axis, mouse, keyboard: not provided
+// by the host (device count 0 / not connected); the controller applet reports "1 player, current controller selected".
 #include "hle.h"
 #include "dm_input.h"
 #include "front.h"
+#include <math.h>
 #include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <strings.h>
 #include <pthread.h>
@@ -159,15 +163,33 @@ HLE_FORCE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS
 HLE_FORCE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor; not provided by the host", void, h_hid_SixStart, const uint32_t *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", "six-axis sensor states; not provided by the host (0 entries)",
           int, h_hid_SixStates, void *out, int n, const uint32_t *h) { (void)out; (void)n; (void)h; return 0; }
-// Vibration: no devices
-HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "vibration permission; not supported by the host", unsigned, h_hid_VibPermit, void) { return 0; }
-HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "vibration devices: 0",
-          int, h_hid_VibHandles, void *h, int n, const uint32_t *id, uint32_t style) { (void)h; (void)n; (void)id; (void)style; return 0; }
-HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "vibration; not supported by the host", void, h_hid_InitVib, const void *h) { (void)h; }
-HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "vibration; not supported by the host", void, h_hid_SendVib, const void *h, const void *v) { (void)h; (void)v; }
+// Vibration: each controller has two linear resonant actuators, left and right (handle = motor << 16 | Npad id << 8 | 3); a value is { amplitude low, frequency low,
+// amplitude high, frequency high } (HD Rumble's two bands). The front end gets the stronger band of each motor (dm_rumble, touch_ui.c), which plays it on the
+// controller's motor when it has one, else on the phone's (GameActivity.rumble). DM_RUMBLE=off: no devices, as before
+__attribute__((weak)) void dm_rumble(float left, float right) { (void)left; (void)right; }
+static float g_vib[2][4];   // the last value of each motor (GetActualVibrationValue)
+static int vib_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_RUMBLE"); on = !(e && !strcmp(e, "off")); } return on; }
+static void vib_set(uint32_t h, const float *v) {
+    int m = (h >> 16) & 1; memcpy(g_vib[m], v, sizeof g_vib[m]);
+    float l = fmaxf(g_vib[0][0], g_vib[0][2]), r = fmaxf(g_vib[1][0], g_vib[1][2]);
+    dm_rumble(l < 0 ? 0 : l > 1 ? 1 : l, r < 0 ? 0 : r > 1 ? 1 : r);
+}
+HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "vibration permission", unsigned, h_hid_VibPermit, void) { return (unsigned)vib_on(); }
+HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "vibration devices: left and right motors",
+          int, h_hid_VibHandles, uint32_t *h, int n, const uint32_t *id, uint32_t style) {
+    (void)style; if (!vib_on() || !h || !id) return 0;
+    int k = n < 2 ? n : 2; for (int i = 0; i < k; i++) h[i] = ((uint32_t)i << 16) | ((*id & 0xff) << 8) | 3u; return k;
+}
+HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "vibration device", void, h_hid_InitVib, const void *h) { (void)h; }
+HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "vibration value → the front end (dm_rumble)", void, h_hid_SendVib, const uint32_t *h, const float *v) {
+    if (h && v && vib_on()) vib_set(*h, v);
+}
 // Values queued by the vibration graph (VibrationNode::Update) reach it from the sdk's internal FlushEnqueuedVibrationValues through the PLT, into the hid service proxy (sm abort). Metroid Dread
 // sets handles on its VibrationTargets even when the host reports 0 devices, so values get queued; return success and the flush clears its count as usual
-HLE_FORCE("_ZN2nn3hid6detail19SendVibrationValuesEPKNS0_21VibrationDeviceHandleEPKNS0_14VibrationValueEi", "vibration (batch, used by the vibration-pattern flush); not supported by the host", Result, h_hid_SendVibs, const void *h, const void *v, int n) { (void)h; (void)v; (void)n; return 0; }
+HLE_FORCE("_ZN2nn3hid6detail19SendVibrationValuesEPKNS0_21VibrationDeviceHandleEPKNS0_14VibrationValueEi", "vibration values (batch, the vibration-pattern flush) → the front end", Result, h_hid_SendVibs, const uint32_t *h, const float *v, int n) {
+    if (h && v && vib_on()) for (int i = 0; i < n; i++) vib_set(h[i], v + 4 * i);
+    return 0;
+}
 // Palma (the Poké Ball Plus): none connected. Pokémon Shield 1.3.2 (SDK 7.3.2) calls SetPalmaBoostMode(false) right after its NVN setup (main+0xf25f78), and the sdk's version opens the hid
 // service proxy (sm abort under CreateHidServerProxy). Boost mode and connection scanning are accepted and ignored; a connection handle is never handed out, so every per-device call reports an invalid handle
 #define PALMA_BAD_HANDLE ((3302u << 9) | 202u)   // hid (module 202) "invalid Palma handle"
@@ -288,5 +310,9 @@ HLE_FORCE("_ZN2nn3hid32SetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHan
 HLE_FORCE("_ZN2nn3hid34ResetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleE", "six-axis sensor fusion parameters; ignored by the host", void, h_hid_FusionReset, const uint32_t *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid41IsFirmwareUpdateAvailableForSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor firmware update: none", unsigned, h_hid_SixFw, const uint32_t *h) { (void)h; return 0; }
 // Vibration device info / actual value: no device, zeroed
-HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "vibration device info: none", void, h_hid_VibInfo, uint32_t *info, const void *h) { (void)h; info[0] = 0; info[1] = 0; }
-HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "actual vibration value: 0", void, h_hid_VibActual, float *v, const void *h) { (void)h; memset(v, 0, 16); }
+HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "vibration device info: a linear resonant actuator, left or right", void, h_hid_VibInfo, uint32_t *info, const uint32_t *h) {
+    info[0] = vib_on() ? 1 : 0; info[1] = vib_on() && h ? (((*h >> 16) & 1) ? 2 : 1) : 0;   // (type 1 LinearResonantActuator; position 1 left, 2 right)
+}
+HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "actual vibration value: the last one sent", void, h_hid_VibActual, float *v, const uint32_t *h) {
+    if (h) memcpy(v, g_vib[(*h >> 16) & 1], 16); else memset(v, 0, 16);
+}
