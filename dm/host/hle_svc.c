@@ -1,6 +1,8 @@
 // Horizon kernel system calls (triggered by the SDK runtime once the SDK is loaded). Only what the P1 boot chain needs is implemented: memory layout + heap + query + debug output + timing.
 // Register convention: inputs w1.. / outputs w0=Result, x1=value (GetInfo / SetHeapSize), consistent with the public Horizon ABI.
 #include "dm.h"
+// The running game's program ID: DM_PROGRAM_ID=hex (the Android app sets it for the game chosen: one engine runs Pokémon Sword and Shield), else the profile's program_id
+uint64_t dm_program_id(void) { static uint64_t pid; if (!pid) { const char *e = getenv("DM_PROGRAM_ID"); pid = e ? strtoull(e, NULL, 16) : DM_GAME_PROGRAM_ID; } return pid; }
 #include <sys/mman.h>
 #include <errno.h>
 #include <unistd.h>
@@ -302,7 +304,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         case I_SysResTotal: v = 0x2000000; break; case I_SysResUsed: v = 0x400000; break;
         case I_DebuggerAttached: v = 0; break;
         case I_RandomEntropy: { uint64_t dm_entropy64(void); v = dm_entropy64(); break; }   // a deterministic stream when DM_DETCLOCK is on (hle_os.c)
-        case I_ProgramId: { static uint64_t pid; if (!pid) { const char *e = getenv("DM_PROGRAM_ID"); pid = e ? strtoull(e, NULL, 16) : DM_GAME_PROGRAM_ID; } v = pid; break; }   // default from the game profile's program_id; DM_PROGRAM_ID=hex overrides
+        case I_ProgramId: { uint64_t dm_program_id(void); v = dm_program_id(); break; }   // default from the game profile's program_id; DM_PROGRAM_ID=hex overrides
         case I_IsApplication: v = 1; break;
         case I_UserExcAddr: { static _Alignas(0x1000) uint8_t ctx[0x1000]; v = (uint64_t)ctx; break; }   // user exception context area: newer SDKs' SetDyingMessageRegion writes to +0x1c0 (0 would write through a null pointer)
         default: v = 0; break;

@@ -19,7 +19,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         super.onCreate(b);
         // Android brings the task back after the process ended (recents, the launcher icon) straight into this activity, past the setup screen that translates the
         // shaders the game captured last time: hand over to it before there is a window (the engine starts with the window, android_main.c)
-        if (!viaSetup && !SetupActivity.pendingCaptures(getExternalFilesDir(null)).isEmpty()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
+        if (!viaSetup && !SetupActivity.pendingCaptures(GameSettings.dir(this)).isEmpty()) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
         im = getSystemService(InputManager.class);
         if (im != null) im.registerInputDeviceListener(this, null);
         check();

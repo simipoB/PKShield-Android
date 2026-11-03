@@ -82,8 +82,9 @@ static void dummies_init(void);
 static int host_import_mark(int set);   // (queue_submit)
 static int fd_export_mark(int op);   // (mtl_init, mtl_pool_add)
 static void pcache_open(void); static void *prewarm_main(void *arg);   // pipeline list and cache (below)
-// The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (an Adreno driver such as Mesa Turnip, chosen on the setup screen) is opened through libadrenotools
-// (BSD-2-Clause, shipped in the app with its hook libraries); without it, or when that fails, the system's libvulkan
+// The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (a driver package chosen on the setup screen: Mesa Turnip for Adreno, Mesa PanVK for Mali) is opened through
+// libadrenotools (BSD-2-Clause, shipped in the app with its hook libraries); when that is missing or fails, the library itself (PanVK talks to the Mali kernel driver,
+// kbase, on its own and needs none of the Adreno hooks); when that fails too, the system's libvulkan
 static void *vk_open(void) {
 #ifdef __ANDROID__
     const char *drv = getenv("DM_VK_DRIVER");
@@ -100,7 +101,9 @@ static void *vk_open(void) {
             void *h = op(RTLD_NOW, 1 /* ADRENOTOOLS_DRIVER_CUSTOM */, NULL, libdir, ddir, lib, NULL, NULL);
             if (h) { VLOG("Vulkan driver %s (opened through libadrenotools)", drv); return h; }
         }
-        VLOG("[RED] Vulkan driver %s could not be opened (libadrenotools %s): the system driver is used", drv, op ? "failed" : "missing");
+        void *h = dlopen(drv, RTLD_NOW | RTLD_LOCAL);
+        if (h) { VLOG("Vulkan driver %s (opened directly; libadrenotools %s)", drv, op ? "failed" : "missing"); return h; }
+        VLOG("[RED] Vulkan driver %s could not be opened (libadrenotools %s, directly: %s): the system driver is used", drv, op ? "failed" : "missing", dlerror());
     }
     return dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
 #else
@@ -121,7 +124,9 @@ void mtl_init(void) {
     if (g_dev) return;
     if (!vkGetInstanceProcAddr) {
         void *lib = vk_open(); if (!lib) VDIE("no Vulkan driver could be opened");
-        vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr"); if (!vkGetInstanceProcAddr) VDIE("the Vulkan driver has no vkGetInstanceProcAddr");
+        vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
+        if (!vkGetInstanceProcAddr) vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vk_icdGetInstanceProcAddr");   // a Mesa driver opened directly: its loader entry point
+        if (!vkGetInstanceProcAddr) VDIE("the Vulkan driver has no vkGetInstanceProcAddr");
         VK_GLOBAL(VK_LOAD_G)
     }
     uint32_t instance_api = VK_API_VERSION_1_0;
@@ -1010,6 +1015,20 @@ static vtex *tex_new(const tex_t *t, int pkg) {
         if (fmt_is_depth(x->fmt) || x->fmt == VK_FORMAT_S8_UINT) { ci.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT; x->fixed_fmt = 1; }
         else if (arm && plain && twin == x->fmt) { ci.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT; x->fixed_fmt = 1; }
         else if ((ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) || (arm && plain)) { ci.pNext = &fli; x->fixed_fmt = 2; x->twin = twin; }
+    }
+    // a sample count the GPU has no mode for (Mali has no 2x MSAA: a 2-sample render target could not be created, and the pass drawing into it was lost, a black or
+    // white screen) becomes the nearest one it has, the next higher first (2 → 4), else lower; every target of the same request maps the same way, so a pass's
+    // attachments still agree, and a shader's sample index stays inside the image
+    if (ci.samples > VK_SAMPLE_COUNT_1_BIT) {
+        VkImageFormatProperties ifp; VkSampleCountFlags ok = VK_SAMPLE_COUNT_1_BIT;
+        if (!vkGetPhysicalDeviceImageFormatProperties(g_pd, ci.format, ci.imageType, ci.tiling, ci.usage, ci.flags, &ifp)) ok = ifp.sampleCounts;
+        if (!(ok & ci.samples)) {
+            VkSampleCountFlagBits want = ci.samples, got = VK_SAMPLE_COUNT_1_BIT;
+            for (uint32_t s = (uint32_t)want << 1; s <= VK_SAMPLE_COUNT_16_BIT; s <<= 1) if (ok & s) { got = (VkSampleCountFlagBits)s; break; }
+            if (got == VK_SAMPLE_COUNT_1_BIT) for (uint32_t s = (uint32_t)want >> 1; s > 1; s >>= 1) if (ok & s) { got = (VkSampleCountFlagBits)s; break; }
+            RED_ONCE(77, "the GPU has no %u-sample mode for format %d: %u samples instead (Mali: no 2x MSAA)", (unsigned)want, ci.format, (unsigned)got);
+            ci.samples = got;
+        }
     }
     x->w = ci.extent.width; x->h = ci.extent.height; x->d = ci.extent.depth; x->levels = ci.mipLevels; x->layers = ci.arrayLayers; x->samples = ci.samples; x->usage = ci.usage; x->aspect = fmt_aspect(x->fmt);
     VkResult r = vkCreateImage(g_dev, &ci, NULL, &x->img);
@@ -2811,6 +2830,90 @@ static void ovl_shot(vtex *x, const int crop[4], const char *path) {
 #endif
 // The window lock: present_window (a game thread) and nvn_vk_window_term (Android's main thread, when the window goes away) never touch the swapchain at once
 static pthread_mutex_t g_wmu = PTHREAD_MUTEX_INITIALIZER;
+// ---------- The game picture's upscaler (overlay/scale.frag): bilinear plus contrast-adaptive sharpening at the frame's own pixel size ----------
+// Used when the picture is scaled up (Low graphics: a 720p frame on a 1080p-1440p screen; Legends: Arceus at its lower internal resolutions), so the lighter settings
+// keep their detail instead of the soft look of a plain stretch. DM_SCALER=sharp (default) | smooth (the plain linear stretch, as before) | a sharpness 0.0-2.0.
+// The blit stays the path whenever the upscaler cannot run (no push descriptors, a frame that cannot be sampled, a pipeline that failed): nothing is lost on a driver that lacks one
+#include "overlay/scale_spv.h"
+static struct { VkFormat fmt; VkPipeline pipe; VkPipelineLayout pl; VkDescriptorSetLayout dsl; VkSampler samp; int failed; } SC;
+typedef struct { float src[4], tex[4]; } scale_pc;
+__attribute__((weak)) volatile float dm_scaler_sharpness = -2;   // (an aligned float load / store is single-copy atomic on arm64)   // -2: not read yet; -1: off (smooth); the in-game menu sets it (android_main.c)
+static float scale_sharpness(void) {
+    float s = dm_scaler_sharpness;
+    if (s > -2) return s;
+    const char *e = getenv("DM_SCALER");
+    s = !e || !*e || !strcmp(e, "sharp") ? 0.7f : !strcmp(e, "smooth") || !strcmp(e, "off") ? -1.0f : fminf(2.0f, fmaxf(0.0f, (float)atof(e)));
+    dm_scaler_sharpness = s;
+    return s;
+}
+static int scale_setup(VkFormat fmt) {
+    if (SC.failed || !p_push) return 0;
+    if (SC.pipe && SC.fmt == fmt) return 1;
+    if (SC.pipe) { vkDestroyPipeline(g_dev, SC.pipe, NULL); SC.pipe = VK_NULL_HANDLE; }
+    if (!SC.pl) {
+        VkSamplerCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR, .minFilter = VK_FILTER_LINEAR, .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+            .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0.25f };
+        VkDescriptorSetLayoutBinding b = { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
+        VkDescriptorSetLayoutCreateInfo dli = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR, .bindingCount = 1, .pBindings = &b };
+        VkPushConstantRange pr = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(scale_pc) };
+        if (vkCreateSampler(g_dev, &sci, NULL, &SC.samp) || vkCreateDescriptorSetLayout(g_dev, &dli, NULL, &SC.dsl)) { SC.failed = 1; RED_ONCE(74, "upscaler: cannot create its sampler / layout: plain stretch"); return 0; }
+        VkPipelineLayoutCreateInfo pli = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &SC.dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr };
+        if (vkCreatePipelineLayout(g_dev, &pli, NULL, &SC.pl)) { SC.failed = 1; RED_ONCE(75, "upscaler: no pipeline layout: plain stretch"); return 0; }
+    }
+    VkShaderModule vm, fm;
+    VkShaderModuleCreateInfo mv = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof scale_vert_spv, .pCode = scale_vert_spv }, mf = mv; mf.codeSize = sizeof scale_frag_spv; mf.pCode = scale_frag_spv;
+    vkCreateShaderModule(g_dev, &mv, NULL, &vm); vkCreateShaderModule(g_dev, &mf, NULL, &fm);
+    VkPipelineShaderStageCreateInfo st[2] = { { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vm, .pName = "main" },
+                                              { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fm, .pName = "main" } };
+    VkPipelineVertexInputStateCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
+    VkPipelineViewportStateCreateInfo vp = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1 };
+    VkPipelineRasterizationStateCreateInfo rs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1 };
+    VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+    VkPipelineColorBlendAttachmentState cba = { .colorWriteMask = 0xf };
+    VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &cba };
+    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dy = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn };
+    VkPipelineRenderingCreateInfo rci = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt };
+    VkGraphicsPipelineCreateInfo gi = { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &rci, .stageCount = 2, .pStages = st, .pVertexInputState = &vi, .pInputAssemblyState = &ia,
+        .pViewportState = &vp, .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cb, .pDynamicState = &dy, .layout = SC.pl };
+    VkResult r = vkCreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &gi, NULL, &SC.pipe);
+    vkDestroyShaderModule(g_dev, vm, NULL); vkDestroyShaderModule(g_dev, fm, NULL);
+    if (r) { SC.failed = 1; RED_ONCE(76, "upscaler: pipeline failed %d: plain stretch", r); return 0; }
+    SC.fmt = fmt; VLOG("upscaler ready (format %d, sharpness %.2f)", fmt, scale_sharpness());
+    return 1;
+}
+// The game frame x (crop cx cy cw ch, flipped when its origin is lower left) drawn into swapchain image ii's box, the rest black; the image is left in TRANSFER_DST layout,
+// as after the blit. Returns 0 (nothing recorded: the caller blits) when the upscaler does not apply
+static int scale_draw(VkCommandBuffer cb, vtex *x, int32_t cx, int32_t cy, int32_t cw, int32_t ch, int flip, uint32_t ii, const int32_t box[4]) {
+    float sh = scale_sharpness();
+    if (sh < 0 || box[2] <= cw || box[3] <= ch || !(x->usage & VK_IMAGE_USAGE_SAMPLED_BIT) || x->is3d || x->w == 0 || x->h == 0 || !W.view[ii] || !scale_setup(W.fmt)) return 0;
+    VkImageView sv = view_get(x, VK_IMAGE_VIEW_TYPE_2D, x->fmt, 0, 1, 0, 1, SW_ID, VK_IMAGE_ASPECT_COLOR_BIT); if (!sv) return 0;
+    VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = W.img[ii], .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+    VkRenderingAttachmentInfo ca = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = W.view[ii], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };   // (LOAD: the black the caller cleared stays around the box)
+    VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, W.ext }, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca };
+    vkCmdBeginRendering(cb, &ri);
+    VkViewport v = { (float)box[0], (float)box[1], (float)box[2], (float)box[3], 0, 1 }; VkRect2D sc = { { box[0], box[1] }, { (uint32_t)box[2], (uint32_t)box[3] } };
+    vkCmdSetViewport(cb, 0, 1, &v); vkCmdSetScissor(cb, 0, 1, &sc);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, SC.pipe);
+    VkDescriptorImageInfo di = { SC.samp, sv, VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &di };
+    p_push(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, SC.pl, 0, 1, &w);
+    float u0 = (float)cx / x->w, u1 = (float)(cx + cw) / x->w, v0 = (float)cy / x->h, v1 = (float)(cy + ch) / x->h;
+    scale_pc pc = { { u0, flip ? v1 : v0, u1, flip ? v0 : v1 }, { 1.0f / x->w, 1.0f / x->h, sh, 0 } };
+    vkCmdPushConstants(cb, SC.pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+    vkCmdEndRendering(cb);
+    ib.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; ib.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    ib.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ib.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+    static int said; if (!said++) VLOG("upscaler: %dx%d → %dx%d (sharpness %.2f)", cw, ch, box[2], box[3], sh);
+    return 1;
+}
 static void present_window_locked(vtex *x, const int crop[4]);
 static void present_window(vtex *x, const int crop[4]) { pthread_mutex_lock(&g_wmu); present_window_locked(x, crop); pthread_mutex_unlock(&g_wmu); }
 // The window is going away (android_main.c APP_CMD_TERM_WINDOW): its swapchain and surface are released before that returns, as Android expects
@@ -2840,8 +2943,10 @@ static void present_window_locked(vtex *x, const int crop[4]) {
     int32_t cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int32_t)x->w, ch = crop && crop[3] ? crop[3] : (int32_t)x->h;
     int32_t box[4]; dm_picture_box((int32_t)W.ext.width, (int32_t)W.ext.height, cw, ch, box); int32_t dx = box[0], dy = box[1], dw = box[2], dh = box[3];
     int flip = atomic_load(&g_origin_ll);
-    VkImageBlit bl = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{cx, flip ? cy + ch : cy, 0}, {cx + cw, flip ? cy : cy + ch, 1}}, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{dx, dy, 0}, {dx + dw, dy + dh, 1}} };
-    vkCmdBlitImage(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, W.img[ii], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
+    if (!scale_draw(cb, x, cx, cy, cw, ch, flip, ii, box)) {   // the upscaler, else the plain linear stretch
+        VkImageBlit bl = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{cx, flip ? cy + ch : cy, 0}, {cx + cw, flip ? cy : cy + ch, 1}}, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{dx, dy, 0}, {dx + dw, dy + dh, 1}} };
+        vkCmdBlitImage(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, W.img[ii], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, VK_FILTER_LINEAR);
+    }
     if (!ovl_draw(cb, W.img[ii], W.view[ii], W.ext, W.fmt, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR)) {
         ib.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; ib.dstAccessMask = 0; ib.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; ib.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &ib);

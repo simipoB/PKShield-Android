@@ -53,11 +53,13 @@ def watch_translation(found_map, work, built, stop):
         if done != shown: shown = done; print(f'PROGRESS {done}/{total}', flush=True)
 
 def main():
+    global PROFILE, NAME   # (the dump can name another game of the app: --games)
     ap = argparse.ArgumentParser()
     ap.add_argument('--keys'); ap.add_argument('--base'); ap.add_argument('--captures'); ap.add_argument('--update'); ap.add_argument('--dlc', action='append', default=[])
     ap.add_argument('--out', required=True); ap.add_argument('--work', required=True); ap.add_argument('--bin', required=True)
-    ap.add_argument('--ext-font'); ap.add_argument('--std-font')
+    ap.add_argument('--ext-font'); ap.add_argument('--std-font'); ap.add_argument('--games'); ap.add_argument('--root')
     a = ap.parse_args()
+    if a.games and not a.root: ap.error('--games needs --root')
     if a.captures: return captures(a)
     if not (a.keys and a.base): ap.error('--keys and --base are needed (or --captures)')
     os.makedirs(a.work, exist_ok=True); os.makedirs(a.out, exist_ok=True)
@@ -105,11 +107,26 @@ def main():
         nacp = open(os.path.join(ex, 'control.nacp'), 'rb').read()
         tid = struct.unpack_from('<Q', nacp, 0x3038)[0]
         name = nacp[:0x200].split(b'\0')[0].decode('utf-8', 'replace')
-        if tid and tid != PROFILE.title_id:   # each app sets up its own game: the other one of Sword and Shield is its own app
-            other = _game.by_title(tid)
-            name = (other.get('name') if other else name) or 'another game'
-            raise RuntimeError(f'your files are {name} ({tid:016X}), not {NAME} ({PROFILE.title_id:016X})' + (f': {name} has its own app' if other else ''))
-    except (OSError, struct.error): pass
+    except (OSError, struct.error): tid, name = 0, ''
+    # --games (the app's games, its own first) and --root (the app's folder): the dump says which game it is, and it is set up in that game's place: the first game in
+    # --root, another in --root/<title ID>, replacing what was there (one of each game). Without --games, the profile's game only
+    games = [g for g in (a.games or '').split(',') if g]
+    if tid and games:
+        hit = next((i for i, g in enumerate(games) if int(g, 16) == tid), None)
+        if hit is None:
+            have = ' and '.join(_game.load(g).get('name') for g in games)
+            raise RuntimeError(f'your files are {name or "another game"} ({tid:016X}): this app runs {have}')
+        PROFILE = _game.load(games[hit]); NAME = PROFILE.get('name'); env['DM_GAME'] = os.environ['DM_GAME'] = games[hit]
+        out = a.root if hit == 0 else os.path.join(a.root, games[hit].upper())
+        if os.path.realpath(out) != os.path.realpath(a.out):
+            os.makedirs(out, exist_ok=True); dst = os.path.join(out, 'aoc'); shutil.rmtree(dst, ignore_errors=True)
+            if os.path.isdir(aoc): shutil.move(aoc, dst)
+            a.out, aoc = out, dst
+        log.write(f'the dump is {NAME} ({tid:016X}): set up in {a.out}\n'); print(f'GAME {games[hit].upper()}', flush=True)
+    elif tid and tid != PROFILE.title_id:
+        other = _game.by_title(tid)
+        name = (other.get('name') if other else name) or 'another game'
+        raise RuntimeError(f'your files are {name} ({tid:016X}), not {NAME} ({PROFILE.title_id:016X})')
     # the game's version, checked now rather than as a failure ten minutes later in the shader steps: the code (main's build ID) must be one the profile knows
     with open(os.path.join(exefs, 'main'), 'rb') as f: build_id = f.read(0x50)[0x40:0x50].hex()
     builds = PROFILE.builds(); want = ', '.join(sorted(b['display'] for b in builds.values()))

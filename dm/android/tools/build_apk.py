@@ -8,6 +8,7 @@
 #        [--ks <keystore> (default dm/android/probe/out/debug.keystore; made when missing)] [--bt <build-tools dir>] [--jar <android.jar>]
 #        [--game <title ID> (default 01008DB008C2C000, Pokémon Shield; 0100ABF008968000 Pokémon Sword: libnxnative.so built for that game)] [--name <the profile's name>] [--package <com.nxnative.pokemon<game>>]
 import argparse, hashlib, io, os, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
+from xml.sax.saxutils import escape as xml_escape   # (the label: "Pokémon Sword & Shield")
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ANDROID = os.path.dirname(HERE); DM = os.path.dirname(ANDROID)
 LIBS = ['libnxnative.so', 'libnx_extract.so', 'libdmsh_xlate.so', 'libspirv_cross.so', 'libpython3.14.so', 'libpython_exe.so', 'libcapstone.so', 'liblz4.so', 'libssl_python.so', 'libcrypto_python.so']
@@ -60,8 +61,9 @@ def main():
     ap.add_argument('--game', default='01008DB008C2C000'); ap.add_argument('--package'); ap.add_argument('--version', type=int, default=12)
     ap.add_argument('--debuggable', action='store_true', help='test builds: adb run-as can reach the private storage of the app')
     a = ap.parse_args()
-    g = _game.load(a.game); a.name = a.name or g.get('name')
-    a.package = a.package or 'com.nxnative.' + _game.file_stem(g).lower()   # com.nxnative.pokemonshield, com.nxnative.pokemonsword: the two install side by side
+    g = _game.load(a.game); fam = _game.family(g)   # the games the engine built for g runs (Pokémon Shield: Shield and Sword, one app)
+    a.name = a.name or ' & '.join(f.get('name') for f in reversed(fam)).replace('Pokémon Sword & Pokémon Shield', 'Pokémon Sword & Shield')
+    a.package = a.package or 'com.nxnative.' + _game.file_stem(g).lower()   # com.nxnative.pokemonshield: the Shield app's package, so its players update in place
     exe = '.exe' if os.name == 'nt' else ''; bat = '.bat' if os.name == 'nt' else ''
     bt = a.bt or os.path.expanduser('~/nxnative-work/tools/android-15'); jar = a.jar or os.path.expanduser('~/nxnative-work/tools/android-35/android.jar')
     missing = [l for l in LIBS if not os.path.isfile(os.path.join(a.libs, l))]
@@ -72,7 +74,7 @@ def main():
         so = f.read()
         if shader_chain(g).encode() not in so:
             sys.exit('[RED] libnxnative.so was not built for shader chain ' + shader_chain(g) + ' (dmsh_chain.h): rebuild it (delete it and run win_build_lib.py)')
-        if (_game.file_stem(g) + '-log.txt').encode() not in so:   # the engine is built per game (game_profile.h: its program ID, versions, log file names)
+        if any(f.id.encode() not in so for f in fam):   # the engine is built per profile (game_profile.h: DM_GAME_FAMILY, the games it runs)
             sys.exit(f'[RED] libnxnative.so was not built for {g.get("name")} ({g.id}): run win_build_lib.py {g.id}')
     w = tempfile.mkdtemp(prefix='apk_')
     # resources: the icon; the manifest: the setup screen launches, the native activity plays
@@ -86,7 +88,7 @@ def main():
     <uses-feature android:name="android.hardware.vulkan.version" android:version="0x401000" android:required="true" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
-    <application android:label="{a.name}" android:icon="@mipmap/ic_launcher" android:hasCode="true" android:extractNativeLibs="true"
+    <application android:label="{xml_escape(a.name)}" android:icon="@mipmap/ic_launcher" android:hasCode="true" android:extractNativeLibs="true"
                  android:allowNativeHeapPointerTagging="false" android:isGame="true" android:appCategory="game" android:largeHeap="true" android:hasFragileUserData="true"{' android:debuggable="true"' if a.debuggable else ''}>
         <activity android:name="com.nxnative.SetupActivity" android:exported="true" android:theme="@android:style/Theme.DeviceDefault"
                   android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|smallestScreenSize|density">
@@ -128,7 +130,7 @@ def main():
                 if os.path.isfile(p): dz.write(p, 'android/app/assets/' + f)
         z.writestr('assets/dm.zip', b.getvalue(), compress_type=zipfile.ZIP_STORED)
         z.writestr('assets/shader_chain', shader_chain(g) + '\n')   # the launcher sends players back to setup when their shader pack was made for another chain
-        z.writestr('assets/game', f'{g.id}\t{g.get("name")}\t{_game.file_stem(g)}\n')   # the game this app is for (SetupActivity: its name on screen; DM_GAME for setup)
+        z.writestr('assets/games', ''.join(f'{f.id}\t{f.get("name")}\t{_game.file_stem(f)}\n' for f in fam))   # the games this app runs, its own first (GameSettings.games)
     if not os.path.isfile(a.ks):
         os.makedirs(os.path.dirname(a.ks), exist_ok=True)
         run('keytool', '-genkeypair', '-keystore', a.ks, '-storepass', 'android', '-keypass', 'android', '-alias', 'debug', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000', '-dname', 'CN=nxnative debug')

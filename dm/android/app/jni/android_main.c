@@ -45,6 +45,20 @@ void dm_audio_suspend(int on);
 static struct android_app *g_app;
 static _Atomic(ANativeWindow *) g_window;
 static char g_files[1024], g_game[1024];
+// The game this start is for: one app and one engine run the games of the profile's family (game.py DM_GAME_FAMILY: Pokémon Shield and Sword, the same engine build).
+// The setup screen writes the title ID to <files>/current_game before starting the game; the profile's own game keeps the app's folder (as before: Shield players
+// keep their setup and saves), another one has <files>/<title ID>/. Its program ID goes to DM_PROGRAM_ID, its name to the log files
+static const struct { const char *id, *stem; } g_family[] = DM_GAME_FAMILY;
+static const char *g_stem = DM_GAME_FILE_STEM;
+static void choose_game(char *files, size_t n) {
+    char p[1100], id[32] = ""; snprintf(p, sizeof p, "%s/current_game", files); FILE *f = fopen(p, "r");
+    if (f) { if (fscanf(f, "%31s", id) != 1) id[0] = 0; fclose(f); }
+    for (unsigned i = 0; i < sizeof g_family / sizeof *g_family; i++) if (id[0] && !strcasecmp(id, g_family[i].id)) {
+        g_stem = g_family[i].stem; setenv("DM_PROGRAM_ID", g_family[i].id, 1);
+        if (i) { size_t l = strlen(files); snprintf(files + l, n - l, "/%s", g_family[i].id); mkdir(files, 0755); }
+        fprintf(stderr, "boot: game %s (%s)\n", g_family[i].id, g_family[i].stem); return; }
+    setenv("DM_PROGRAM_ID", g_family[0].id, 1);
+}
 void *front_metal_layer(void) { return atomic_load(&g_window); }   // the window the Vulkan replay presents to (the name is the Apple front ends' interface)
 void *front_android_window(void) { return atomic_load(&g_window); }
 // The game's keyboard (its name entry): the app's Android dialog (app/java/com/nxnative/TextInput.java) with the phone's keyboard, on the UI thread; this game thread
@@ -188,6 +202,7 @@ JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env,
     (void)c; const char *k = (*env)->GetStringUTFChars(env, jk, NULL), *v0 = (*env)->GetStringUTFChars(env, jv, NULL); const char *v = *v0 ? v0 : NULL; int now = 1;
     if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE")) touch_ui_setting(k, v);
     else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
+    else if (!strcmp(k, "DM_SCALER")) { extern volatile float dm_scaler_sharpness; dm_scaler_sharpness = !v || !strcmp(v, "sharp") ? 0.7f : !strcmp(v, "smooth") ? -1.0f : (float)atof(v); }   // nvn_vk.c scale_draw
     else if (!strcmp(k, "DM_PAD_LAYOUT") || !strcmp(k, "DM_PAD_MAPPING")) {
         pthread_mutex_lock(&g_padset_mu);
         if (!g_padset_live) { const char *l = getenv("DM_PAD_LAYOUT"), *m = getenv("DM_PAD_MAPPING"); snprintf(g_padset_layout, sizeof g_padset_layout, "%s", l ? l : ""); snprintf(g_padset_map, sizeof g_padset_map, "%s", m ? m : ""); g_padset_live = 1; }
@@ -272,6 +287,7 @@ static void env_file(const char *path) {   // KEY=VALUE lines, # comments; set o
 // Mali GPUs (MediaTek, Tensor, Exynos before the 2000 series) have no BC texture support: the game's textures are decoded on upload to 4 to 8 times their size, and the
 // game's memory is mirrored for the GPU (nvn_vk.c memory pools), so their profiles keep textures at half size sooner than Adreno's
 //   sd8   Snapdragon 8 series (SM8xxx)                                    nothing changed: the defaults these phones were tuned on (TV mode, 8x filtering, full textures)
+//   sd8old older Snapdragon 8 series (SM8150-SM8475: 855, 865, 870, 888, 8 Gen 1, 8+ Gen 1)  TV mode, handheld mode while hot; 4x filtering; full textures
 //   sd7   Snapdragon 7 series from 2021 (SM73xx and later)                TV mode, handheld mode while hot; 4x filtering; full textures
 //   sd6   Snapdragon 6 and 4 series, 7 series before 2021 (SM4xxx-SM72xx) handheld mode (720p); 2x filtering; half textures
 //   high  Dimensity 9000 series, Exynos 2000 series (Xclipse)             TV mode, handheld mode while hot; 4x filtering; full textures
@@ -279,7 +295,7 @@ static void env_file(const char *path) {   // KEY=VALUE lines, # comments; set o
 //   low   other MediaTek (Dimensity 7000 / 6000, Helio), Exynos 1000 series and older Exynos   handheld mode; 2x filtering; half textures
 // Other chips get no profile (as before)
 static const struct prof { const char *name, *what, *graphics, *aniso, *tex; } g_profiles[] = {
-    { "sd8", "Snapdragon 8 series", NULL, NULL, NULL }, { "sd7", "Snapdragon 7 series", "auto", "4", "full" }, { "sd6", "Snapdragon 6 / 4 series or older 7 series", "low", "2", "half" },
+    { "sd8", "Snapdragon 8 series", NULL, NULL, NULL }, { "sd8old", "older Snapdragon 8 series (855 to 8+ Gen 1)", "auto", "4", "full" }, { "sd7", "Snapdragon 7 series", "auto", "4", "full" }, { "sd6", "Snapdragon 6 / 4 series or older 7 series", "low", "2", "half" },
     { "high", "Dimensity 9000 / Exynos 2000 series", "auto", "4", "full" }, { "mid", "Dimensity 8000 series / Google Tensor", "low", "4", "half" },
     { "low", "MediaTek Dimensity 7000 and below / Exynos 1000 series", "low", "2", "half" },
 };
@@ -287,7 +303,7 @@ static const struct prof *profile_of(const char *maker, const char *model) {
     char m[PROP_VALUE_MAX]; size_t k = 0; for (; model[k] && k + 1 < sizeof m; k++) m[k] = (char)tolower((unsigned char)model[k]); m[k] = 0;
     const char *name = NULL; int num;
     if ((!strncmp(m, "sm", 2) && isdigit((unsigned char)m[2])) || (!strncmp(m, "sdm", 3) && isdigit((unsigned char)m[3]))) {   // Qualcomm
-        num = atoi(m + (m[1] == 'd' ? 3 : 2)); name = num >= 8000 && num < 9000 ? "sd8" : num >= 7300 && num < 8000 ? "sd7" : num >= 4000 && num < 7300 ? "sd6" : num > 0 && num < 1000 ? "sd6" : NULL;   // (SDM845 and the like: before the SMxxxx names)
+        num = atoi(m + (m[1] == 'd' ? 3 : 2)); name = num >= 8000 && num < 8500 ? "sd8old" : num >= 8500 && num < 9000 ? "sd8" : num >= 7300 && num < 8000 ? "sd7" : num >= 4000 && num < 7300 ? "sd6" : num > 0 && num < 1000 ? "sd6" : NULL;   // (SDM845 and the like: before the SMxxxx names)
     } else if (!strncmp(m, "mt", 2) && isdigit((unsigned char)m[2])) {   // MediaTek: MT6983 / 6985 / 6989 / 6991 Dimensity 9000-9400; MT6889-6899 Dimensity 1000-1200 and 8000-8400
         num = atoi(m + 2); name = num == 6983 || num == 6985 || num == 6989 || num == 6991 || num == 6993 ? "high" : num >= 6889 && num <= 6899 ? "mid" : "low";
     } else if (!strncmp(m, "s5e", 3) || strstr(m, "exynos")) {   // Exynos: s5e99xx and "Exynos 2xxx" are the 2000 series (Xclipse); s5e88xx, Exynos 1xxx and 9xx Mali
@@ -297,8 +313,17 @@ static const struct prof *profile_of(const char *maker, const char *model) {
     for (unsigned i = 0; name && i < sizeof g_profiles / sizeof *g_profiles; i++) if (!strcmp(g_profiles[i].name, name)) return &g_profiles[i];
     return NULL;
 }
+// Mesa PanVK (FristOneRR, chosen as the driver: a libvulkan_panfrost package) on the chips its compatibility table marks as needing PANVK_ATOM_STRIDE=56 to start
+// (Exynos 2100 = s5e9840, Exynos 1380 = s5e8835): set for them, unless env.txt (the setup screen's checkbox) already says
+static void panvk_defaults(const char *model) {
+    const char *drv = getenv("DM_VK_DRIVER"); if (!drv || !strstr(drv, "panfrost")) return;
+    char m[PROP_VALUE_MAX]; size_t k = 0; for (; model[k] && k + 1 < sizeof m; k++) m[k] = (char)tolower((unsigned char)model[k]); m[k] = 0;
+    if ((strstr(m, "s5e9840") || strstr(m, "s5e8835") || strstr(m, "exynos2100") || strstr(m, "exynos1380")) && !getenv("PANVK_ATOM_STRIDE")) {
+        setenv("PANVK_ATOM_STRIDE", "56", 0); fprintf(stderr, "boot: PanVK on %s: PANVK_ATOM_STRIDE=56 (the driver's own table: needed to start on this chip)\n", model); }
+}
 static void device_profile(void) {
     char maker[PROP_VALUE_MAX] = "", model[PROP_VALUE_MAX] = ""; __system_property_get("ro.soc.manufacturer", maker); __system_property_get("ro.soc.model", model);
+    panvk_defaults(model);
     const char *force = getenv("DM_PROFILE"); const struct prof *p = NULL;
     if (force) { for (unsigned i = 0; i < sizeof g_profiles / sizeof *g_profiles; i++) if (!strcmp(g_profiles[i].name, force)) p = &g_profiles[i]; }
     else p = profile_of(maker, model);
@@ -374,7 +399,7 @@ static void *log_mirror(void *p) {
         graphics_auto();
         if (n % 6 == 0) fprintf(stderr, "[mem] app %ld MB resident (%ld MB swapped), phone %ld MB available of %ld MB; heat %s\n", kb_of("/proc/self/status", "VmRSS:") / 1024,
                                 kb_of("/proc/self/status", "VmSwap:") / 1024, kb_of("/proc/meminfo", "MemAvailable:") / 1024, kb_of("/proc/meminfo", "MemTotal:") / 1024, thermal_text(th, sizeof th));
-        copy_file(src, DL "/" DM_GAME_FILE_STEM "-log.txt");
+        { char d[256]; snprintf(d, sizeof d, DL "/%s-log.txt", g_stem); copy_file(src, d); }
     }
     return NULL;
 }
@@ -432,12 +457,12 @@ static void *inspector_main(void *p) {
 static void host_start(void) {
     if (g_started++) return;
     const char *f = g_app->activity->externalDataPath; snprintf(g_files, sizeof g_files, "%s", f ? f : "/sdcard/nxnative");
-    mkdir(g_files, 0755);
+    mkdir(g_files, 0755); choose_game(g_files, sizeof g_files);
     { void touch_ui_set_dir(const char *dir); touch_ui_set_dir(g_files); }   // the player's control layout (touch_ui.c's editor)
     char p[1200], q[1200];
     snprintf(p, sizeof p, "%s/log.txt", g_files); snprintf(q, sizeof q, "%s/log.prev.txt", g_files); rename(p, q);
     if (freopen(p, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
-    copy_file(q, DL "/" DM_GAME_FILE_STEM "-log-previous.txt");
+    { char d[256]; snprintf(d, sizeof d, DL "/%s-log-previous.txt", g_stem); copy_file(q, d); }
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
     { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);

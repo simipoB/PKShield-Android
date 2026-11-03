@@ -36,6 +36,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.io.*;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -59,10 +60,17 @@ public final class SetupActivity extends Activity {
     // static: the setup runs in its own thread and outlives this screen; a new screen (Android may still make one, despite configChanges in the manifest, which keeps it
     // across rotation: #42) must not start a second setup next to it
     private static volatile boolean running;
+    private static final String UNOFFICIAL = "Unofficial build: not supported. Official PKShield releases come only from github.com/simipoB/PKShield-Android/releases.";
 
-    private File gameDir() { return getExternalFilesDir(null); }
+    private File gameDir() { return GameSettings.dir(this); }   // the chosen game's folder (GameSettings)
     private String[] game() { return GameSettings.game(this); }
     private String gameName() { return game()[1]; }
+    // a game set up (its folder has the ready file and the shader pack): the dual launcher's list
+    private boolean isReady(String id) {
+        File d = id.equalsIgnoreCase(GameSettings.games(this).get(0)[0]) ? GameSettings.root(this) : new File(GameSettings.root(this), id);
+        return new File(d, "ready").exists() && new File(d, "shaders.pak").exists();
+    }
+    private List<String> readyGames() { List<String> r = new ArrayList<>(); for (String[] g : GameSettings.games(this)) if (isReady(g[0])) r.add(g[0]); return r; }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
     private boolean setUp() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists(); }
     // set up for this app version: the shader pack's translation chain (the ready file) is the one the engine was built for (assets/shader_chain, build_apk.py);
@@ -77,18 +85,37 @@ public final class SetupActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        // official release or not (BuildSigner): into env.txt every start, so the game's log says which; an unofficial build is told so before the game starts
+        String[] signers = BuildSigner.digests(this); boolean official = BuildSigner.official(signers);
+        envSet("DM_BUILD_SIGNER", BuildSigner.label(signers));
+        if (!official) Toast.makeText(this, UNOFFICIAL, Toast.LENGTH_LONG).show();
         boolean asked = getIntent().getBooleanExtra("setup", false);
+        // which game: a game's home screen shortcut names it; from the app's icon, with more than one game set up, this screen lets the player choose (the dual launcher)
+        String want = getIntent().getStringExtra("game");
+        if (want != null) GameSettings.choose(this, want);
+        else if (!running && !asked) { List<String> ready = readyGames(); if (ready.size() == 1) GameSettings.choose(this, ready.get(0)); else if (ready.size() > 1) asked = true; }
         if (ready()) setupShortcut();
         if (ready() && !asked && !running) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 48, 48, 48); root.setGravity(Gravity.CENTER_HORIZONTAL);
         logo = new ImageView(this); logo.setVisibility(android.view.View.GONE); root.addView(logo, new LinearLayout.LayoutParams(320, 320));
+        if (GameSettings.games(this).size() > 1) {   // the game switcher: each game has its own setup, saves, settings and mods
+            android.widget.RadioGroup gs = new android.widget.RadioGroup(this); gs.setOrientation(LinearLayout.HORIZONTAL);
+            List<String[]> all = GameSettings.games(this); String cur = game()[0];
+            for (int k = 0; k < all.size(); k++) { android.widget.RadioButton rb = new android.widget.RadioButton(this); rb.setId(7000 + k);
+                rb.setText(all.get(k)[1] + (isReady(all.get(k)[0]) ? "" : " (not set up)")); gs.addView(rb); if (all.get(k)[0].equals(cur)) rb.setChecked(true); }
+            gs.setOnCheckedChangeListener((g, id) -> { if (running) { status.setText("Wait for the current setup to finish."); return; }
+                GameSettings.choose(this, all.get(id - 7000)[0]); Intent it = getIntent(); it.putExtra("setup", true); it.removeExtra("game"); recreate(); });
+            root.addView(gs);
+        }
         TextView title = new TextView(this); title.setText(gameName()); title.setTextSize(28); root.addView(title);
+        if (!official) { TextView u = new TextView(this); u.setText(UNOFFICIAL); u.setTextColor(0xffff5252); u.setPadding(0, 16, 0, 0); root.addView(u); }
         TextView note = new TextView(this); note.setText("Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone."); note.setPadding(0, 16, 0, 32); root.addView(note);
         gameText = row(root, "Game files", "Choose", v -> pick(PICK_GAME, true));
         keysText = row(root, "Keys", "Choose", v -> pick(PICK_KEYS, true));
         // the Vulkan driver: the phone's own, or an Adreno driver package (a zip with meta.json and the library, e.g. Mesa Turnip) opened through libadrenotools
         driverText = row(root, "Graphics driver", "Choose", v -> pick(PICK_DRIVER, false));
-        button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); refresh(); });
+        button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); envSet("DM_VK_DRIVER_SHA256", ""); driverChanged(); refresh(); });
+        maliOptions(root);
         TextView sn = new TextView(this); sn.setText("Settings (picture, graphics, textures, controller buttons, touch controls, mods) are in the game: tap the menu button at the top left, or hold − on a controller for 3 seconds for the controller buttons.");
         sn.setPadding(0, 24, 0, 24); root.addView(sn);
         setup = button(root, "Set up the game", v -> startSetup());
@@ -112,25 +139,64 @@ public final class SetupActivity extends Activity {
 
     private String envGet(String key) { return GameSettings.get(this, key); }
     private void envSet(String key, String value) { GameSettings.set(this, key, value); }
+    // Another driver: the pipeline cache the game kept (android_main.c DM_VK_PCACHE) was compiled by the old one. Drivers are meant to refuse a cache that is not
+    // theirs, but an experimental one (PanVK) may not, so it starts empty
+    private void driverChanged() { new File(gameDir(), "vk_pipeline_cache.bin").delete(); }
+    // The Mali driver's switches (MaliDriver), shown while a PanVK package is the driver: env.txt, read before the driver opens, so they reach it as its environment
+    private LinearLayout maliBox;
+    private void maliOptions(LinearLayout root) {
+        maliBox = new LinearLayout(this); maliBox.setOrientation(LinearLayout.VERTICAL); root.addView(maliBox);
+        TextView h = new TextView(this); h.setText("Mali driver (PanVK) options"); h.setPadding(0, 16, 0, 0); maliBox.addView(h);
+        check(maliBox, "Driver log (for bug reports)", MaliDriver.LOG, "1");
+        check(maliBox, "Fix for the driver not starting (some Exynos and Mali-G52 phones)", MaliDriver.STRIDE, "56");
+        check(maliBox, "Late stencil (fixes black triangles or missing light; can be darker and slower)", MaliDriver.STENCIL, "1");
+        TextView hl = new TextView(this); hl.setText("GPU memory reported to the game"); hl.setPadding(0, 8, 0, 0); maliBox.addView(hl);
+        android.widget.RadioGroup rg = new android.widget.RadioGroup(this); String cur = envGet(MaliDriver.HEAP);
+        for (int k = 0; k < MaliDriver.HEAP_MB.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(3000 + k);
+            b.setText(k == 0 ? "Driver's choice (a quarter of the RAM)" : MaliDriver.HEAP_MB[k] + " MB" + (k == 2 ? " (fixes missing textures on 4 GB phones)" : "")); rg.addView(b);
+            if (MaliDriver.HEAP_MB[k].equals(cur)) b.setChecked(true);
+        }
+        rg.setOnCheckedChangeListener((g, id) -> envSet(MaliDriver.HEAP, MaliDriver.HEAP_MB[id - 3000]));
+        maliBox.addView(rg);
+    }
+    private void check(LinearLayout root, String label, String key, String on) {
+        android.widget.CheckBox c = new android.widget.CheckBox(this); c.setText(label); c.setChecked(on.equals(envGet(key)));
+        c.setOnCheckedChangeListener((b, v) -> envSet(key, v ? on : "")); root.addView(c);
+    }
     // a driver package into the app's private storage (libadrenotools loads drivers only from there): its meta.json names the library
     private void installDriver(Uri u, String name) {
         File dir = new File(getFilesDir(), "drivers/" + name.replaceAll("[^A-Za-z0-9._-]", "_").replaceAll("\\.zip$", "")); String lib = null;
         try {
             deleteTree(dir); dir.mkdirs();
-            try (ZipInputStream z = new ZipInputStream(new BufferedInputStream(getContentResolver().openInputStream(u)))) { ZipEntry e;
+            java.security.MessageDigest zmd; try { zmd = java.security.MessageDigest.getInstance("SHA-256"); } catch (java.security.NoSuchAlgorithmException e) { throw new IOException(e); }
+            try (java.security.DigestInputStream zd = new java.security.DigestInputStream(new BufferedInputStream(getContentResolver().openInputStream(u)), zmd);
+                 ZipInputStream z = new ZipInputStream(zd)) { ZipEntry e;
                 while ((e = z.getNextEntry()) != null) { if (e.isDirectory()) continue; String n = new File(e.getName()).getName();
-                    try (OutputStream o = new FileOutputStream(new File(dir, n))) { copy(z, o); } } }
+                    try (OutputStream o = new FileOutputStream(new File(dir, n))) { copy(z, o); } }
+                byte[] rest = new byte[1 << 16]; while (zd.read(rest) > 0) { } }   // the zip's central directory too: the digest covers the whole file
+            String zipSha = MaliDriver.hex(zmd.digest());
             File meta = new File(dir, "meta.json");
             if (meta.exists()) { StringBuilder sb = new StringBuilder(); try (BufferedReader r = new BufferedReader(new FileReader(meta))) { String l; while ((l = r.readLine()) != null) sb.append(l); }
                 java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"libraryName\"\\s*:\\s*\"([^\"]+)\"").matcher(sb); if (m.find()) lib = m.group(1); }
             if (lib == null) { String[] so = dir.list((d, n) -> n.endsWith(".so")); if (so != null && so.length == 1) lib = so[0]; }
             if (lib == null || !new File(dir, lib).exists()) { status.setText(name + " is not a driver package (no meta.json naming its library)"); deleteTree(dir); return; }
-            envSet("DM_VK_DRIVER", new File(dir, lib).getPath()); status.setText("Driver " + name + " installed: it is used from the next start.");
+            File so = new File(dir, lib); String note = "";
+            // a PanVK (Mali) package: named when it is a known build (MaliDriver.KNOWN), else a warning with its digest; the digest goes into env.txt, so the log names the build
+            if (MaliDriver.isPanvk(lib)) {
+                String libSha = MaliDriver.sha256(so), known = MaliDriver.known(zipSha, libSha);
+                envSet("DM_VK_DRIVER_SHA256", libSha);
+                note = known != null ? "\nVerified: " + known + " (SHA-256 matches the release)."
+                     : "\nNot a known FristOneRR PanVK release (SHA-256 " + zipSha.substring(0, 16) + "…): download drivers only from the developer's own Releases page.";
+            } else envSet("DM_VK_DRIVER_SHA256", "");
+            envSet("DM_VK_DRIVER", so.getPath()); driverChanged();
+            status.setText("Driver " + name + " installed: it is used from the next start." + note); refresh();
         } catch (IOException e) { status.setText("could not read " + name + ": " + e.getMessage()); }
     }
     private static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) deleteTree(c); f.delete(); }
     private void refresh() {
-        if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? "the phone's own Vulkan driver" : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")"); }
+        if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? "the phone's own Vulkan driver" : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")");
+                                  if (maliBox != null) maliBox.setVisibility(MaliDriver.isPanvk(d) ? android.view.View.VISIBLE : android.view.View.GONE); }
         gameText.setText(games.isEmpty() ? "none chosen (.nsp / .xci: base game, update 1.3.2, DLC)" : String.join("\n", games));
         boolean keys = new File(keysDir(), "prod.keys").exists();
         keysText.setText(keys ? "prod.keys" + (new File(keysDir(), "title.keys").exists() ? " + title.keys" : "") + " (kept in the app's private storage)" : "none chosen (prod.keys, and title.keys if needed)");
@@ -186,6 +252,12 @@ public final class SetupActivity extends Activity {
             try {
                 String id = DocumentsContract.getDocumentId(u);
                 if (id.startsWith("raw:")) return readableFile(id.substring(4));
+                // the picker's Downloads entry: msf:<MediaStore id> (Android 10+), whose _data the media index knows; a copy of a several-GB dump is the fallback
+                if (id.startsWith("msf:")) {
+                    try (Cursor c = getContentResolver().query(android.provider.MediaStore.Files.getContentUri("external", Long.parseLong(id.substring(4))), new String[] { "_data" }, null, null, null)) {
+                        if (c != null && c.moveToFirst() && !c.isNull(0)) { String p = readableFile(c.getString(0)); if (p != null) return p; }
+                    } catch (NumberFormatException | SecurityException e) { }
+                }
                 if ("com.android.externalstorage.documents".equals(u.getAuthority())) {
                     int sep = id.indexOf(':');
                     if (sep > 0) {
@@ -389,6 +461,9 @@ public final class SetupActivity extends Activity {
                 cmd.addAll(args);
                 cmd.add("--out"); cmd.add(gameDir().getPath()); cmd.add("--work"); cmd.add(work.getPath()); cmd.add("--bin"); cmd.add(bin.getPath());
                 File ext = new File(dm, "android/app/assets/nintendo_ext.ttf"); if (ext.exists() && !args.contains("--captures")) { cmd.add("--ext-font"); cmd.add(ext.getPath()); }
+                if (!args.contains("--captures")) {   // the dump says which game it is: setup puts it in that game's place (GAME line below), one of each game
+                    StringBuilder ids = new StringBuilder(); for (String[] g : GameSettings.games(this)) ids.append(ids.length() > 0 ? "," : "").append(g[0]);
+                    cmd.add("--games"); cmd.add(ids.toString()); cmd.add("--root"); cmd.add(GameSettings.root(this).getPath()); }
                 ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
                 pb.environment().put("PYTHONHOME", py.getPath()); pb.environment().put("DM_GAME", game()[0]); pb.environment().put("PYTHONPATH", new File(dm, "android/pyshim").getPath());
                 // bin first: the .NET unpacker dlopens libssl.so.3 / libcrypto.so.3, which binDir() links to the OpenSSL 3 that ships with CPython for Android
@@ -403,6 +478,8 @@ public final class SetupActivity extends Activity {
                     else if (l.startsWith("PROGRESS ")) {
                         String[] f = l.substring(9).trim().split("/"); long a = Long.parseLong(f[0]), b = Math.max(1, Long.parseLong(f[1])); int pct = (int) Math.min(100, a * 100 / b), n = stepNo[0]; String s = stepName[0];
                         runOnUiThread(() -> { bar.setProgress((n - 1) * 100 + pct); status.setText(s + "... " + pct + "%\nThis takes a long time on a phone: keep this screen open, ideally plugged in."); }); }
+                    else if (l.startsWith("GAME ")) { String id = l.substring(5).trim(); GameSettings.choose(this, id);
+                        runOnUiThread(() -> status.setText("Your files are " + GameSettings.game(this)[1] + ": setting it up...")); }
                     else if (l.startsWith("FAILED")) err = l.substring(6).trim(); }
                 if (p.waitFor() != 0 && err == null) err = "setup stopped (" + p.exitValue() + ")";
             } catch (Exception e) { err = e.toString(); }
@@ -437,10 +514,12 @@ public final class SetupActivity extends Activity {
     // a home screen shortcut with the game's icon (the launcher asks the player to confirm), also offered on a long press of the app's icon
     private void pinShortcut() {
         Bitmap b = gameIcon(); ShortcutManager sm = getSystemService(ShortcutManager.class); if (b == null || sm == null) return;
-        Intent go = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN);
-        ShortcutInfo si = new ShortcutInfo.Builder(this, "game").setShortLabel(gameName()).setLongLabel("Play " + gameName()).setIcon(Icon.createWithBitmap(b)).setIntent(go).build();
+        // one shortcut per game, naming it (the first game keeps the id "game" its players' shortcut already has)
+        String sid = game()[0].equalsIgnoreCase(GameSettings.games(this).get(0)[0]) ? "game" : "game_" + game()[0];
+        Intent go = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN).putExtra("game", game()[0]);
+        ShortcutInfo si = new ShortcutInfo.Builder(this, sid).setShortLabel(gameName()).setLongLabel("Play " + gameName()).setIcon(Icon.createWithBitmap(b)).setIntent(go).build();
         try { sm.addDynamicShortcuts(Arrays.asList(si)); } catch (Exception e) { }
-        for (ShortcutInfo p : sm.getPinnedShortcuts()) if (p.getId().equals("game")) { sm.updateShortcuts(Arrays.asList(si)); status.setText("The " + gameName() + " shortcut is on the home screen."); return; }
+        for (ShortcutInfo p : sm.getPinnedShortcuts()) if (p.getId().equals(sid)) { sm.updateShortcuts(Arrays.asList(si)); status.setText("The " + gameName() + " shortcut is on the home screen."); return; }
         if (sm.isRequestPinShortcutSupported()) sm.requestPinShortcut(si, null); else status.setText("This launcher cannot add shortcuts: long-press the app's icon for " + gameName() + ".");
     }
     // the executables the setup runs, under the names the scripts call them by (links into the app's native library folder, where Android allows execution);

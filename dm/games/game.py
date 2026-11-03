@@ -93,6 +93,10 @@ def by_title(tid):
     return next((g for g in all_games() if g.title_id == tid), None)
 
 
+def family(g):   # g, then every profile whose tables_from names it (Pokémon Shield: Sword): the games one engine build of g runs
+    return [g] + [o for o in all_games() if o.id != g.id and o.get('tables_from', '') == g.id]
+
+
 def file_stem(g):   # the name in ASCII letters and digits, for files the app writes to Download (Pokémon Shield → PokemonShield)
     n = unicodedata.normalize('NFKD', g.get('name')).encode('ascii', 'ignore').decode()
     return re.sub(r'[^A-Za-z0-9]', '', n)
@@ -104,7 +108,8 @@ def header(g):
     mods = g.words('modules')
     ssbo = dict(g.pairs('nvn_ssbo_bases'))
     sb = ' : '.join(f'(stage) == {STAGES[k]} ? {v}' for k, v in ssbo.items()) + ' : -1'
-    vers = ', '.join('{' + q(b['main']) + ', ' + q(b['display']) + '}' for b in g.builds().values() if 'main' in b)
+    fam = family(g)   # the games one engine build runs (android_main.c choose_game): this profile first, then those taking their tables from it
+    vers = ', '.join('{' + q(b['main']) + ', ' + q(b['display']) + '}' for f in fam for b in f.builds().values() if 'main' in b)
     pi = g.get('present_interval', 'game')   # present interval: game = as the game sets it (as on the Switch), display = one frame per display tick
     if pi not in ('game', 'display'): sys.exit(f'{g.id}: present_interval must be game or display: {pi}')
     ft = g.get('fps_target', '0')   # frame rate cap of the rewriter's frame step (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0) or of the engine's own frame limit (hle_fpslock.c): 0 = the game's own step, 30 / 60
@@ -157,6 +162,7 @@ def header(g):
          f'#define DM_GAME_ID {q(g.id)}',
          f'#define DM_GAME_NAME {q(g.get("name"))}',
          f'#define DM_GAME_FILE_STEM {q(file_stem(g))}',
+         '#define DM_GAME_FAMILY {' + ', '.join('{' + q(f.id) + ', ' + q(file_stem(f)) + '}' for f in fam) + '}',
          f'#define DM_GAME_PROGRAM_ID 0x{int(g.get("program_id"), 16):016X}ull',
          f'#define DM_GAME_MODULES {{{", ".join(map(q, mods))}}}',
          f'#define DM_GAME_NMOD {len(mods)}',

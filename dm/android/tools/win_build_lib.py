@@ -29,8 +29,7 @@ def newer(src, dst):   # also when any header changed (no dependency files here)
 
 os.makedirs(OUT + "/gen", exist_ok=True)
 gh = OUT + "/gen/game_profile.h"
-if not os.path.exists(gh):
-    run([sys.executable, "../games/game.py", "header", GAME, gh])
+run([sys.executable, "../games/game.py", "header", GAME, gh])   # every build: it rewrites the header only when it changes (it also follows other profiles: DM_GAME_FAMILY)
 
 g = lambda p: sorted(glob.glob(p))
 src = [s for s in g(HOST + "/*.c") if os.path.basename(s) not in ("hle_movie_avc.c", "main.c")]

@@ -29,7 +29,7 @@ VPX_OBJ = $(patsubst $(VPX)/%.c,$(OUT)/vpx/%.o,$(sort $(shell find $(VPX) -name 
 
 $(OUT)/dmhost: $(OBJ) $(OUT)/libvpx.a
 	$(CC) -o $@ $(OBJ) $(OUT)/libvpx.a -lm -ldl -llog -lz -laaudio -lmediandk $(if $(filter vulkan,$(GFX)),-lvulkan -landroid) -Wl,-z,max-page-size=16384
-$(GAME_H): $(GAME_DIR)/game.tsv ../games/game.py
+$(GAME_H): $(wildcard ../games/*/game.tsv) ../games/game.py   # (every profile: the header lists the games one engine runs, DM_GAME_FAMILY)
 	@mkdir -p $(dir $@); python3 ../games/game.py header $(GAME) $@
 $(OUT)/obj/%.o: ../%.c $(GAME_H) $(wildcard compat/*.h compat/*/*.h)
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
