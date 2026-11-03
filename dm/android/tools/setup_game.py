@@ -75,7 +75,9 @@ def main():
     ap.add_argument('--keys'); ap.add_argument('--base'); ap.add_argument('--captures'); ap.add_argument('--update'); ap.add_argument('--dlc', action='append', default=[])
     ap.add_argument('--out', required=True); ap.add_argument('--work', required=True); ap.add_argument('--bin', required=True)
     ap.add_argument('--ext-font'); ap.add_argument('--std-font'); ap.add_argument('--games'); ap.add_argument('--root')
+    ap.add_argument('--mod-shaders', help="the RomFS folders of the mods that are on, ':'-separated: their new shaders translated into the pack")
     a = ap.parse_args()
+    if a.mod_shaders is not None: return mod_shaders(a)
     if a.games and not a.root: ap.error('--games needs --root')
     if a.captures: return captures(a)
     if not (a.keys and a.base): ap.error('--keys and --base are needed (or --captures)')
@@ -269,6 +271,59 @@ def pak_merge(path, add):   # merge a new uncompressed shader pack into the exis
             out.write(chunk)
         for blob in blobs: out.write(blob)
     src.close(); os.replace(tmp, path)
+
+def mod_shaders(a):
+    # Mods with shaders of their own (a changed .bfsha, a new effect): the game would hand the engine shaders the pack lacks, which then draw nothing until a capture
+    # is translated on the next start, and captures miss the vertex / pixel pairing and compute facts a full scan has. So the mods' RomFS is scanned as setup scans the
+    # game's (shader_split.py), and the shaders the pack does not have are translated with their pairs and facts and merged into it, before the game starts
+    log = open(os.path.join(a.work, 'setup.log'), 'a', buffering=1); py = sys.executable
+    env = dict(os.environ, PYTHONUNBUFFERED='1', PATH=a.bin + os.pathsep + os.environ.get('PATH', ''))
+    tool = lambda n: os.path.join(a.bin, n)
+    def run(cmd, **kw):
+        log.write('$ ' + ' '.join(map(str, cmd)) + '\n')
+        r = subprocess.run(list(map(str, cmd)), stdout=log, stderr=subprocess.STDOUT, env=kw.pop('env', env), **kw)
+        if r.returncode: raise RuntimeError(f'{os.path.basename(str(cmd[1]))} failed ({r.returncode}): see {log.name}')
+    roots = [r for r in a.mod_shaders.split(':') if r and os.path.isdir(r)]
+    log.write(f'== {time.strftime("%H:%M:%S")} mod shaders: {", ".join(roots) or "no mod folders"}\n')
+    if not roots: print('DONE', flush=True); return
+    chain = subprocess.run([py, os.path.join(DM, 'gfx/tools/dmsh_chain.py')], capture_output=True, text=True, env=env).stdout.strip()
+    pak = os.path.join(a.out, 'shaders.pak'); have, pchain = pak_keys(pak)
+    if pchain != chain: raise RuntimeError(f'the shader pack is version {pchain}, this app makes {chain}: set the game up again')
+    mw = os.path.join(a.work, 'mods'); shutil.rmtree(mw, ignore_errors=True)
+    pkg, cache = os.path.join(mw, 'pkg'), os.path.join(mw, 'shader_cache'); vk, built = os.path.join(mw, 'vk', 'b-' + chain), os.path.join(cache, 'b-' + chain)
+    smap, facts, pairs = (os.path.join(mw, f) for f in ('map.tsv', 'facts.tsv', 'pairs.tsv'))
+    os.makedirs(vk)
+    print('STEP 1/3 find the mods\' shaders', flush=True)
+    run([py, os.path.join(DM, 'gfx/tools/shader_split.py'), ','.join(roots), ','.join('-' for _ in roots), pkg, smap, facts, pairs])
+    new = []
+    for ln in open(smap, encoding='utf-8'):
+        c = ln.rstrip('\n').split('\t')
+        if len(c) > 3 and not ln.startswith(('#', 'package\t')) and bytes.fromhex(c[3][:16]) not in have: new.append(c)
+    log.write(f'mod shaders: {len(new)} the pack does not have\n')
+    if not new: shutil.rmtree(mw, ignore_errors=True); print('DONE', flush=True); return
+    keys = [c[3] for c in new]
+    print(f'STEP 2/3 translate {len(keys)} shaders', flush=True)
+    gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
+    xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=mw) if gate else dict(XLATE=tool('dmsh_xlate'))
+    benv = dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, **xenv, DMSH_CAS=os.path.join(mw, 'cas'), WORK=mw, DMSH_SOURCE_MAP=smap, DMSH_FACTS=facts, DMSH_PAIRS=pairs)
+    try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache, *keys], env=benv)
+    except RuntimeError as e: log.write(f'mod shaders: {e}; the ones translated are kept\n')
+    ok = [k for k in keys if os.path.exists(os.path.join(vk, k + '.spv')) and os.path.exists(os.path.join(built, k + '_b.json'))]
+    for k in keys:
+        if k not in ok:
+            log.write(f'mod shader {k}: not translated\n')
+            if os.path.exists(os.path.join(vk, k + '.spv')): os.unlink(os.path.join(vk, k + '.spv'))
+    for k in ok: shutil.copyfile(os.path.join(built, k + '_b.json'), os.path.join(vk, k + '_b.json'))
+    if not ok: shutil.rmtree(mw, ignore_errors=True); print('DONE', flush=True); return
+    print('STEP 3/3 pack the shaders', flush=True)
+    run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
+    small = os.path.join(mw, 'new.pak'); run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, small])
+    pak_merge(pak, small)
+    gmap = os.path.join(a.out, 'shader_map.tsv'); got = set(ok)   # the engine reads the map at start: the keys and their stage, with where they came from
+    with open(gmap, 'a', encoding='utf-8') as f: f.writelines('\t'.join(c[:4] + ['/mods' + c[4] if len(c) > 4 else '/mods']) + '\n' for c in new if c[3] in got)
+    log.write(f'mod shaders: {len(ok)} of {len(keys)} translated and added to the pack\n')
+    shutil.rmtree(mw, ignore_errors=True)
+    print('DONE', flush=True)
 
 def captures(a):
     # The profile's map places each in-memory shader at a fixed index of <stage>_other.bin; the package is written with the captured ones there and an empty record

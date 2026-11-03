@@ -64,13 +64,12 @@ Link battles, trades and Max Raids with nearby phones on the same Wi-Fi, or with
 
 ## Mods
 
-Import a mod `.zip` (`romfs/` file replacements, `exefs/*.pchtxt` code patches for 1.3.2) and switch mods on or off in ☰ → Mods. If the game crashes with mods on, they're switched off on the next start.
+Import a mod `.zip` (`romfs/` file replacements, `exefs/*.pchtxt` code patches for 1.3.2) and switch mods on or off in ☰ → Mods. If the game crashes with mods on, they're switched off on the next start. When the mods change, the app translates any new shaders they bring before the game starts (a short wait, once).
 
 ## Known gaps
 
 - Nintendo's online services (Surprise Trade, online battles and raids).
 - Wild Area water renders darker than on the Switch.
-- Mods with their own new shaders may draw incorrectly.
 
 ## Credits
 

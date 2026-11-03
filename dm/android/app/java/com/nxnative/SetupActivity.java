@@ -120,7 +120,7 @@ public final class SetupActivity extends Activity {
         else if (!running && !asked) { List<String> ready = readyGames(); if (ready.size() == 1) GameSettings.choose(this, ready.get(0)); else if (ready.size() > 1) asked = true; }
         if (ready()) setupShortcut();
         if (ready() && !asked && !running && notices()) asked = true;   // the last run crashed starting its graphics: this screen offers a driver instead of starting the game
-        if (ready() && !asked && !running) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
+        if (ready() && !asked && !running) { gameIcon(); if (!pendingWork(gameDir())) { startGame(); return; } }
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 48, 48, 48); root.setGravity(Gravity.CENTER_HORIZONTAL);
         logo = new ImageView(this); logo.setVisibility(android.view.View.GONE); root.addView(logo, new LinearLayout.LayoutParams(320, 320));
         if (GameSettings.games(this).size() > 1) {   // the game switcher: each game has its own setup, saves, settings and mods
@@ -433,13 +433,41 @@ public final class SetupActivity extends Activity {
         for (String n : all) if (!done.contains(n)) out.add(n);
         return out;
     }
+    // work before the game starts: shaders captured last time, or mods switched on or changed since their shaders were last read (GameActivity asks too)
+    static boolean pendingWork(File gameDir) { return !pendingCaptures(gameDir).isEmpty() || modShaderState(gameDir) != null; }
+    // the RomFS folders of the mods that are on (as android_main.c mods_romfs picks them) and a fingerprint of their files; null when nothing changed since the
+    // last read (mod_shaders_done holds the fingerprint then) or no mod has RomFS files
+    static String[] modShaderState(File gameDir) {
+        File mods = new File(gameDir, "mods"); List<String> roots = new ArrayList<>(); File top = new File(mods, "romfs"); if (top.isDirectory()) roots.add(top.getPath());
+        String[] names = mods.list(); if (names != null) { Arrays.sort(names);
+            for (String n : names) { File r = new File(new File(mods, n), "romfs"); if (!n.startsWith(".") && !n.startsWith("-") && !n.equals("romfs") && r.isDirectory()) roots.add(r.getPath()); } }
+        long[] fp = { 1469598103934665603L };
+        for (String r : roots) fingerprint(new File(r), r.length(), fp);
+        String sig = roots.isEmpty() ? "" : Long.toHexString(fp[0]) + " " + String.join(":", roots), done = "";
+        try (BufferedReader rd = new BufferedReader(new FileReader(new File(gameDir, "mod_shaders_done")))) { String l = rd.readLine(); if (l != null) done = l.trim(); } catch (IOException e) { }
+        return roots.isEmpty() || sig.equals(done) ? null : new String[] { String.join(":", roots), sig };
+    }
+    private static void fingerprint(File d, int cut, long[] fp) {   // every file's path, size and time
+        File[] fs = d.listFiles(); if (fs == null) return; Arrays.sort(fs);
+        for (File f : fs) { if (f.isDirectory()) { fingerprint(f, cut, fp); continue; }
+            String s = f.getPath().substring(cut) + "|" + f.length() + "|" + f.lastModified(); for (int i = 0; i < s.length(); i++) fp[0] = (fp[0] ^ s.charAt(i)) * 1099511628211L; }
+    }
+    private void startModShaders() {
+        String[] st = modShaderState(gameDir()); if (st == null) { startGame(); return; }
+        bar.setMax(300); bar.setProgress(0); status.setText("Reading the shaders of your mods...");
+        runSetup(new ArrayList<>(Arrays.asList("--mod-shaders", st[0])), err -> {
+            try (FileWriter w = new FileWriter(new File(gameDir(), "mod_shaders_done"))) { w.write(st[1] + "\n"); } catch (IOException e) { }   // (also after a failure: not tried again each start)
+            if (err != null) Toast.makeText(this, "Could not add your mods' shaders (" + err + "); the game still plays, some mod effects may not show.", Toast.LENGTH_LONG).show();
+            startGame();
+        });
+    }
     private void startCaptures() {
-        List<String> todo = pendingCaptures(); if (todo.isEmpty()) return;
+        List<String> todo = pendingCaptures(); if (todo.isEmpty()) { startModShaders(); return; }
         bar.setMax(300); bar.setProgress(0); status.setText("Adding " + todo.size() + " shader" + (todo.size() == 1 ? "" : "s") + " the game made last time...");
         runSetup(new ArrayList<>(Arrays.asList("--captures", new File(gameDir(), "nvn_capture").getPath())), err -> {
             if (err != null) { status.setText("Could not add the new shaders (" + err + "); the game still plays without them."); return; }
             try (FileWriter w = new FileWriter(new File(gameDir(), "captures_done"), true)) { for (String n : todo) w.write(n + "\n"); } catch (IOException e) { }
-            startGame();
+            startModShaders();
         });
     }
     // setup_game.py with the given arguments (plus the folders every run needs): progress from its "STEP n/total what" lines (100 bar units a step) and, inside a step,

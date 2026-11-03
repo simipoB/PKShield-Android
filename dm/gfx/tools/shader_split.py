@@ -730,8 +730,8 @@ def main():
     for i, (romfs, mainnso) in enumerate(zip(romfs_v, main_v)):
         tag = os.path.basename(os.path.dirname(os.path.abspath(romfs))) if i else ''
         files += sorted((os.path.join(dp, f), (tag + '/' if tag else '') + os.path.relpath(os.path.join(dp, f), romfs)) for dp, _, fs in os.walk(romfs) for f in fs)
-        img = nso_image(mainnso)
-        if not i:
+        img = nso_image(mainnso) if mainnso != '-' else b''   # ('-': no main, e.g. the RomFS of mods)
+        if not i and img:
             import unityfs
             try: common = unityfs.common_strings(img)
             except ValueError: common = None   # not a Unity game
