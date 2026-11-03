@@ -170,6 +170,11 @@ def main():
     pkg = os.path.join(a.work, 'shader_pkg'); shutil.rmtree(pkg, ignore_errors=True)
     # the shaders an earlier run of the game captured (nvn_capture/ in the game dir, android_main.c DM_NVN_CAPTURE) go into the new pack too: the game saves each
     # one only once, so a pack rebuilt without them would never get them back
+    # Trinity games (Violet: every file of arc/data.trpfs is Oodle-compressed): the scan decodes them with the game's own decoder, dmoodle running the rewritten
+    # modules of step 2, and only the files that hold shaders come back over the pipe (hle_oodle.c DM_OODLE_SERVE=BNSH)
+    if PROFILE.get('shader_oodle', 'off') == 'on':
+        if not os.path.isfile(tool('dmoodle')): raise RuntimeError(f'{NAME} needs the dmoodle tool, which this app build does not have')
+        env.update(DM_OODLE_HOST=tool('dmoodle'), DM_OODLE_MODULES=pat, DM_OODLE_FILTER='BNSH')
     run([py, os.path.join(DM, 'gfx/tools/shader_split.py'), romfs, os.path.join(exefs, 'main'), pkg,
          os.path.join(a.work, 'shader_map.found.tsv'), os.path.join(a.work, 'shader_facts.found.tsv'), os.path.join(a.work, 'shader_pairs.found.tsv')],
         env=dict(env, DM_NVN_CAPTURE=os.path.join(a.out, 'nvn_capture')))

@@ -581,9 +581,9 @@ public final class SetupActivity extends Activity {
     // also OpenSSL 3 under the names the .NET unpacker dlopens (libssl.so.3 / libcrypto.so.3), so it does not pick up the system's BoringSSL
     private File binDir() throws IOException {
         File d = new File(getFilesDir(), "bin"); d.mkdirs(); String lib = getApplicationInfo().nativeLibraryDir;
-        String[][] links = { { "nx_extract", "libnx_extract.so" }, { "dmsh_xlate", "libdmsh_xlate.so" }, { "spirv-cross", "libspirv_cross.so" }, { "dmsh_gate", "libdmsh_gate.so" },
+        String[][] links = { { "nx_extract", "libnx_extract.so" }, { "dmsh_xlate", "libdmsh_xlate.so" }, { "spirv-cross", "libspirv_cross.so" }, { "dmsh_gate", "libdmsh_gate.so" }, { "dmoodle", "libdmoodle.so" },
                              { "libssl.so.3", "libssl_python.so" }, { "libcrypto.so.3", "libcrypto_python.so" } };
-        for (String[] l : links) { File f = new File(d, l[0]); f.delete(); if (!new File(lib, l[1]).exists() && l[0].equals("dmsh_gate")) continue; try { android.system.Os.symlink(lib + "/" + l[1], f.getPath()); } catch (Exception e) { throw new IOException("link " + l[0] + ": " + e); } }
+        for (String[] l : links) { File f = new File(d, l[0]); f.delete(); if (!new File(lib, l[1]).exists() && (l[0].equals("dmsh_gate") || l[0].equals("dmoodle"))) continue; try { android.system.Os.symlink(lib + "/" + l[1], f.getPath()); } catch (Exception e) { throw new IOException("link " + l[0] + ": " + e); } }
         return d;
     }
     private File unpackPython() throws IOException { return unpack("python.zip", new File(getFilesDir(), "python")); }

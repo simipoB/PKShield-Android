@@ -11,7 +11,9 @@
 int main(int argc, char **argv) {
     if (argc < 2) { fprintf(stderr, "usage: dmoodle <rewritten modules folder>\n"); return 2; }
     char lib[4096]; const char *e = getenv("DM_ENGINE");
+    const char *nl = getenv("NX_NATIVE_LIB_DIR");   // (the setup: the app's native library folder)
     if (e && *e) snprintf(lib, sizeof lib, "%s", e);
+    else if (nl && *nl) snprintf(lib, sizeof lib, "%s/libnxnative.so", nl);
     else { char self[4096]; snprintf(self, sizeof self, "%s", argv[0]); snprintf(lib, sizeof lib, "%s/libnxnative.so", dirname(self)); }
     void *h = dlopen(lib, RTLD_NOW | RTLD_GLOBAL); if (!h) h = dlopen("libnxnative.so", RTLD_NOW | RTLD_GLOBAL);   // (the app's native library folder)
     if (!h) { fprintf(stderr, "dmoodle: cannot load the engine (%s): %s\n", lib, dlerror()); return 127; }

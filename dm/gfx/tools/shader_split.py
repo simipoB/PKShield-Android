@@ -359,7 +359,7 @@ def oodle(comp, n):
         if not host or not mods: red('Oodle-compressed packs: set DM_OODLE_HOST (the Mac host, make -C dm/host GAME=<id> dmhost) and DM_OODLE_MODULES (the rewritten modules) to decode them with the game\'s own decoder')
         err = tempfile.TemporaryFile()
         import shlex
-        _OODLE = (subprocess.Popen(shlex.split(host, posix=os.name != 'nt') + [mods], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
+        _OODLE = (subprocess.Popen([w.strip('"') for w in shlex.split(host, posix=os.name != 'nt')] + [mods], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
                                    env=dict(os.environ, DM_OODLE_SERVE=os.environ.get('DM_OODLE_FILTER') or '1')), err)
     p, err = _OODLE
     try:
