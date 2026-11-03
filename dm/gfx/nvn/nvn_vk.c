@@ -44,6 +44,7 @@
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/bc_decode.h"
 #include "../tex/etc_encode.h"
+#include "../tex/tex_cache.h"
 #include "dmsh_chain.h"
 #include "game_profile.h"
 #include "../../host/dm.h"
@@ -244,8 +245,9 @@ void mtl_init(void) {
     // BC1–BC7: sampled directly where the GPU has them (Adreno, Xclipse, desktop), else decoded on upload (Mali, PowerVR; DM_VK_NO_BC=1 tries that path anywhere)
     if (getenv("DM_VK_NO_BC") && atoi(getenv("DM_VK_NO_BC"))) f2.features.textureCompressionBC = VK_FALSE;
     nvn_fmt_vk_bc(f2.features.textureCompressionBC);
-    // DM_VK_BC_TRANSCODE=etc2: BC1–BC5 re-encoded as ETC2 / EAC on upload instead (etc_encode.h): the same size as BC in memory, not 4–8 times it as plain texels
-    { const char *tc = getenv("DM_VK_BC_TRANSCODE"); nvn_fmt_vk_etc(!f2.features.textureCompressionBC && f2.features.textureCompressionETC2 && tc && !strcmp(tc, "etc2"), f2.features.textureCompressionASTC_LDR); }
+    // without BC: re-encoded as ETC2 / EAC / ASTC on upload instead (etc_encode.h), the same size as BC in memory, not 4–8 times it as plain texels;
+    // DM_VK_BC_TRANSCODE=off keeps the plain decode
+    { const char *tc = getenv("DM_VK_BC_TRANSCODE"); nvn_fmt_vk_etc(!f2.features.textureCompressionBC && f2.features.textureCompressionETC2 && !(tc && !strcmp(tc, "off")), f2.features.textureCompressionASTC_LDR); }
     float prio = 1;
     VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_qf, .queueCount = 1, .pQueuePriorities = &prio };
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = ndext, .ppEnabledExtensionNames = dext };
@@ -1072,6 +1074,14 @@ static VkImageView view_get(vtex *t, VkImageViewType vt, VkFormat fmt, uint32_t 
     return v;
 }
 
+// one level / layer of BC blocks (z slices) into staging: transcoded (etk; read from the texture cache when it was converted before, tex_cache.h) or decoded
+static void bc_convert(int kind, int etk, const uint8_t *src, size_t pitch, size_t rows, int w, int h, uint32_t z, uint8_t *out, size_t opitch, size_t orows) {
+    size_t in = pitch * rows * z, on = opitch * orows * z; uint64_t key = 0; uint8_t *tmp = NULL;
+    if (etk) { key = tex_cache_key(src, in, kind, w, h, (int)z); if (tex_cache_get(key, out, on)) return; tmp = malloc(on); }   // (converted into memory first: staging may be slow to read back)
+    uint8_t *o = tmp ? tmp : out;
+    for (uint32_t s = 0; s < z; s++) (etk ? bc_transcode_image : bc_decode_image_mt)(kind, src + s * pitch * rows, pitch, w, h, o + s * opitch * orows, opitch);
+    if (tmp) { memcpy(out, tmp, on); tex_cache_put(key, tmp, on); free(tmp); }
+}
 // CPU-filled texture upload: deswizzled level by level / layer by layer into staging (the submission's arena, else a one-off buffer), copied into the image in the upload command buffer
 static int tex_upload(vtex *x, const tex_t *t) {
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); if (!bpb) return -1;
@@ -1098,7 +1108,7 @@ static int tex_upload(vtex *x, const tex_t *t) {
             if (linear) {   // LINEAR: rows at the texture's stride (one level, one layer)
                 size_t stride = t->d.stride ? t->d.stride : pitch; for (size_t r = 0; r < rows; r++) memcpy(dst + r * pitch, t->mem + r * stride, pitch);
             } else if (nvn_deswizzle(&t->d, l + (unsigned)x->drop, y, t->mem, dst, pitch)) { RED_ONCE(5, "deswizzle failed format %#x target %d", t->d.format, t->d.target); break; }
-            if (bck) for (uint32_t s = 0; s < z; s++) (etk ? bc_transcode_image : bc_decode_image_mt)(bck, scratch + s * pitch * rows, pitch, (int)w, (int)h, sp + off + s * opitch * orows, opitch);
+            if (bck) bc_convert(bck, etk, scratch, pitch, rows, (int)w, (int)h, z, sp + off, opitch, orows);
             rg[nrg++] = (VkBufferImageCopy){ .bufferOffset = so + off, .bufferRowLength = (uint32_t)(opitch / obpb * obw), .bufferImageHeight = (uint32_t)(orows * obh),
                 .imageSubresource = { x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : x->aspect, l, x->is3d ? 0 : y, 1 }, .imageExtent = { w, h, z } };
             off += opitch * orows * z;

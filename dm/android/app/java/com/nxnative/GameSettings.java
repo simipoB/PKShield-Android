@@ -65,7 +65,7 @@ final class GameSettings {
     // the games the built-in 60 fps patch knows (loader.c FPS_SITES: Pokémon Shield and Sword 1.3.2)
     static boolean has60(Context c) { String id = game(c)[0]; return "01008DB008C2C000".equalsIgnoreCase(id) || "0100ABF008968000".equalsIgnoreCase(id); }
 
-    // What Auto gives this phone, from what it is rather than a list of models: { chip family, a description, graphics, textures, anisotropic filtering, frame rate }.
+    // What Auto gives this phone, from what it is rather than a list of models: { chip family, a description, graphics, textures, anisotropic filtering, frame rate, upscaler }.
     // Three tiers, each 0 low / 1 mid / 2 top:
     //   CPU  the fastest core's top clock (sysfs cpufreq): 3.0 GHz or more top, 2.4 GHz or more mid (the chip family when unreadable)
     //   GPU  the chip family (Snapdragon 8 Gen 2+, Dimensity 9000+, Exynos 2000: top; older Snapdragon 8, Snapdragon 7, Dimensity 8000, Tensor: mid; the rest low)
@@ -95,10 +95,11 @@ final class GameSettings {
         String tex = ram == 0 || (gpu == 0 && ram < 2) ? "half" : "full";
         String aniso = gpu == 2 ? "8" : gpu == 1 ? "4" : "2";
         String fps = AUTO_60 && cpu == 2 && gpu == 2 && ram == 2 && displayDivides(c, 60) ? "60" : "30";
+        String scaler = gpu >= 1 ? "sgsr" : "sharp";   // (SGSR's extra passes on a GPU with room for them; the cheaper Sharp on a low one)
         String[] t = { "low", "mid", "top" };
         String what = String.format(java.util.Locale.ROOT, "%s CPU%s, %s GPU, %s memory (%.0f GB), display up to %.0f Hz", t[cpu], khz > 0 ? String.format(java.util.Locale.ROOT, " %.1f GHz", khz / 1e6) : "",
                                     t[gpu], t[ram], Math.ceil(gb), maxRefresh(c));
-        return new String[] { n, what, gfx, tex, aniso, fps };
+        return new String[] { n, what, gfx, tex, aniso, fps, scaler };
     }
     // the fastest core's top clock in kHz (cpu*/cpufreq/cpuinfo_max_freq), 0 when unreadable
     static long maxCpuKhz() {

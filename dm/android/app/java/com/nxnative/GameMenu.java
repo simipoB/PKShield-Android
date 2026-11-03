@@ -54,8 +54,14 @@ public final class GameMenu {
                                 { "half", "Half: large textures at half size, less memory and GPU work" } };
     }
     private static final String[][] PICTURE = { { "", "16:9, as the game is made" }, { "fill", "Fill the screen (stretched)" }, { "20:9", "20:9, for a widescreen mod" } };
-    private static final String[][] SCALER = { { "", "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)" },
-        { "sgsr", "Snapdragon Game Super Resolution (Qualcomm's upscaler)" }, { "smooth", "Smooth: a plain stretch" } };
+    private static String[][] scaler(Activity a) {
+        String rec = GameSettings.profile(a)[6].equals("sgsr") ? "SGSR" : "Sharp";
+        return new String[][] { { "", "Auto: this phone gets " + rec }, { "sharp", "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)" },
+                                { "sgsr", "Snapdragon Game Super Resolution (Qualcomm's upscaler)" }, { "smooth", "Smooth: a plain stretch" } };
+    }
+    // GPUs without BC textures (Mali, Xclipse, PowerVR): Auto converts them to formats the GPU reads, as small as on the Switch; Full decodes them (4-8 times the memory)
+    private static final String[][] TEXFMT = { { "", "Auto: compact on GPUs without BC (Mali, Xclipse, PowerVR), converted once and kept" },
+        { "off", "Full decode: more memory, no conversion (Snapdragon is not affected either way)" } };
     private static String[][] fps(Activity a) {
         String[] p = GameSettings.profile(a);
         return new String[][] { { "", "Auto: this phone gets " + p[5] + " fps (" + p[1] + ")" }, { "30", "30 fps, as the game is made" }, { "60", "60 fps (experimental: needs a fast phone)" } };
@@ -66,9 +72,11 @@ public final class GameMenu {
         List<String> rows = new ArrayList<>(); List<Runnable> acts = new ArrayList<>();
         String[][] g = graphics(a), t = textures(a);
         rows.add("Picture: " + label(PICTURE, GameSettings.get(a, "DM_ASPECT"))); acts.add(() -> choose(a, "Picture", PICTURE, "DM_ASPECT"));
-        rows.add("Upscaling: " + label(SCALER, GameSettings.get(a, "DM_SCALER"))); acts.add(() -> choose(a, "Upscaling", SCALER, "DM_SCALER"));
+        String[][] sc = scaler(a);
+        rows.add("Upscaling: " + label(sc, GameSettings.get(a, "DM_SCALER"))); acts.add(() -> choose(a, "Upscaling", scaler(a), "DM_SCALER"));
         rows.add("Graphics: " + label(g, GameSettings.get(a, "DM_GRAPHICS"))); acts.add(() -> choose(a, "Graphics", graphics(a), "DM_GRAPHICS"));
         rows.add("Textures: " + label(t, GameSettings.get(a, "DM_VK_TEX_QUALITY"))); acts.add(() -> choose(a, "Textures", textures(a), "DM_VK_TEX_QUALITY"));
+        rows.add("Texture format: " + label(TEXFMT, GameSettings.get(a, "DM_VK_BC_TRANSCODE"))); acts.add(() -> choose(a, "Texture format", TEXFMT, "DM_VK_BC_TRANSCODE"));
         if (GameSettings.has60(a)) { rows.add("Frame rate: " + label(fps(a), GameSettings.get(a, "DM_FPS_TARGET"))); acts.add(() -> choose(a, "Frame rate", fps(a), "DM_FPS_TARGET")); }
         rows.add("Controller buttons: " + label(PAD, GameSettings.get(a, "DM_PAD_LAYOUT"))); acts.add(() -> choose(a, "Controller buttons", PAD, "DM_PAD_LAYOUT"));
         rows.add("Graphics driver: " + DriverPackages.label(DriverPackages.current(a))); acts.add(() -> driverMenu(a));
