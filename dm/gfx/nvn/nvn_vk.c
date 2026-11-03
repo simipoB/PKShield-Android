@@ -120,6 +120,7 @@ static PFN_vkVoidFunction vk_dev_fn(const char *name) {   // a device function; 
     return vkGetDeviceProcAddr(g_dev, name);
 }
 #define VK_LOAD_D(f) f = (PFN_##f)vk_dev_fn(#f);
+const char *nvn_vk_gpu_name(void) { return g_dev ? g_props.deviceName : NULL; }   // android_main.c boot_guard
 void mtl_init(void) {
     if (g_dev) return;
     if (!vkGetInstanceProcAddr) {

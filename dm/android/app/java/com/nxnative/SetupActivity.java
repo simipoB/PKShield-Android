@@ -65,6 +65,30 @@ public final class SetupActivity extends Activity {
     private File gameDir() { return GameSettings.dir(this); }   // the chosen game's folder (GameSettings)
     private String[] game() { return GameSettings.game(this); }
     private String gameName() { return game()[1]; }
+    // What the engine noted about the last run (android_main.c boot_guard, notice.txt: kind TAB text): mods switched off after a crash (told, the game still starts);
+    // a crash starting the graphics on the phone's own driver (a dialog offering a driver package for this GPU; returns true: the game is not started straight away)
+    private boolean notices() {
+        File f = new File(gameDir(), "notice.txt"); if (!f.exists()) return false;
+        List<String[]> ns = new ArrayList<>();
+        try (BufferedReader r = new BufferedReader(new FileReader(f))) { String l; while ((l = r.readLine()) != null) { String[] k = l.split("\t", 2); if (k.length == 2) ns.add(k); } } catch (IOException e) { }
+        f.delete(); boolean block = false;
+        for (String[] n : ns) {
+            if (n[0].equals("mods")) Toast.makeText(this, n[1], Toast.LENGTH_LONG).show();
+            else if (n[0].equals("driver")) { block = true; final String gpu = n[1];
+                new android.app.AlertDialog.Builder(this).setTitle("The game closed while starting its graphics")
+                    .setMessage("Last time, " + gameName() + " closed while starting its graphics on this phone's own driver (" + gpu + "). " + driverAdvice(gpu))
+                    .setPositiveButton("Choose a driver", (d, w) -> pick(PICK_DRIVER, false))
+                    .setNeutralButton("Start anyway", (d, w) -> startGame())
+                    .setNegativeButton("Close", null).show(); }
+        }
+        return block;
+    }
+    private static String driverAdvice(String gpu) {
+        String g = gpu.toLowerCase(java.util.Locale.ROOT);
+        if (g.contains("adreno")) return "A recent Mesa Turnip package for Adreno usually fixes this: choose its .zip as the graphics driver.";
+        if (g.matches(".*mali-g(57|68|77|78|52|72|76).*")) return "FristOneRR's PanVK driver supports this Mali: download its .zip from the developer's GitHub Releases and choose it as the graphics driver.";
+        return "No replacement driver supports this GPU yet. Please report it with the log in Download (the -log-previous.txt file), so the app can be fixed for it.";
+    }
     // a game set up (its folder has the ready file and the shader pack): the dual launcher's list
     private boolean isReady(String id) {
         File d = id.equalsIgnoreCase(GameSettings.games(this).get(0)[0]) ? GameSettings.root(this) : new File(GameSettings.root(this), id);
@@ -95,6 +119,7 @@ public final class SetupActivity extends Activity {
         if (want != null) GameSettings.choose(this, want);
         else if (!running && !asked) { List<String> ready = readyGames(); if (ready.size() == 1) GameSettings.choose(this, ready.get(0)); else if (ready.size() > 1) asked = true; }
         if (ready()) setupShortcut();
+        if (ready() && !asked && !running && notices()) asked = true;   // the last run crashed starting its graphics: this screen offers a driver instead of starting the game
         if (ready() && !asked && !running) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 48, 48, 48); root.setGravity(Gravity.CENTER_HORIZONTAL);
         logo = new ImageView(this); logo.setVisibility(android.view.View.GONE); root.addView(logo, new LinearLayout.LayoutParams(320, 320));

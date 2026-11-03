@@ -261,6 +261,64 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
 
 // ---------- Host start ----------
 static int g_started;
+// ---------- Crash-aware starts: <files>/boot_state says how far a run got (start → device: the graphics device is up → gone after 30 s of play), and "crashed" when
+// the crash handler ran (crash.c dm_crash_note). A crashed run's stage decides what the next start does:
+//   · crashed before 30 s of play on the phone's own driver, with the device not up or no frames yet: the app offers a driver package for this GPU (notice.txt,
+//     SetupActivity reads it and does not start the game straight away)
+//   · crashed with mods on: the mods are switched off (each folder renamed with a leading "-", loose .pchtxt files to .pchtxt.off), and the player is told
+// A run Android ends (swiped away, low memory) writes no "crashed": nothing is changed then
+static char g_boot_path[1100]; static int g_boot_fd = -1;
+void dm_crash_note(void) { if (g_boot_fd >= 0) { static const char m[] = "crashed\n"; (void)!write(g_boot_fd, m, sizeof m - 1); } }
+const char *nvn_vk_gpu_name(void) __attribute__((weak));
+uint64_t dm_nvn_frame_count(void) __attribute__((weak));
+static void notice(const char *kind, const char *text) {
+    char p[1200]; snprintf(p, sizeof p, "%s/notice.txt", g_files); FILE *f = fopen(p, "a"); if (f) { fprintf(f, "%s\t%s\n", kind, text); fclose(f); }
+    fprintf(stderr, "boot: notice %s: %s\n", kind, text);
+}
+static int mods_off(const char *mods) {   // every mod switched off; returns how many
+    struct dirent **ents = NULL; int n = scandir(mods, &ents, NULL, alphasort), off = 0; if (n < 0) return 0;
+    for (int i = 0; i < n; i++) { const char *nm = ents[i]->d_name; char a[1200], b[1200]; struct stat st; size_t l = strlen(nm);
+        snprintf(a, sizeof a, "%s/%s", mods, nm);
+        if (nm[0] != '.' && nm[0] != '-' && !stat(a, &st) && S_ISDIR(st.st_mode)) { snprintf(b, sizeof b, "%s/-%s", mods, nm); if (!rename(a, b)) off++; }
+        else if (l > 7 && !strcasecmp(nm + l - 7, ".pchtxt")) { snprintf(b, sizeof b, "%s.off", a); if (!rename(a, b)) off++; }
+        free(ents[i]); }
+    free(ents); return off;
+}
+static int mods_on(const char *mods) {   // how many mods are on (what mods_romfs and the loader will use)
+    struct dirent **ents = NULL; int n = scandir(mods, &ents, NULL, alphasort), on = 0; if (n < 0) return 0;
+    for (int i = 0; i < n; i++) { const char *nm = ents[i]->d_name; char a[1200]; struct stat st; size_t l = strlen(nm); snprintf(a, sizeof a, "%s/%s", mods, nm);
+        if ((nm[0] != '.' && nm[0] != '-' && !stat(a, &st) && S_ISDIR(st.st_mode)) || (l > 7 && !strcasecmp(nm + l - 7, ".pchtxt"))) on++; free(ents[i]); }
+    free(ents); return on;
+}
+static void boot_guard(const char *mods) {
+    snprintf(g_boot_path, sizeof g_boot_path, "%s/boot_state", g_files);
+    char prev[512] = ""; FILE *f = fopen(g_boot_path, "r"); if (f) { size_t k = fread(prev, 1, sizeof prev - 1, f); prev[k] = 0; fclose(f); }
+    if (prev[0] && strstr(prev, "crashed")) {
+        int had_mods = strstr(prev, "mods 0") == NULL && strstr(prev, "mods ") != NULL, device = strstr(prev, "device") != NULL;
+        const char *drv = getenv("DM_VK_DRIVER"); int stock = !drv || !*drv;
+        fprintf(stderr, "boot: the last run crashed (%s)\n", device ? "after the graphics device came up" : "before the graphics device came up");
+        if (had_mods) { int n = mods_off(mods); if (n) { char t[200]; snprintf(t, sizeof t, "The game closed while %d mod%s were on, so they are switched off. Switch them back on in the menu, Mods.", n, n == 1 ? "" : "s"); notice("mods", t); } }
+        else if (stock && !strstr(prev, "playing")) {
+            char gpu[256] = ""; char gp[1200]; snprintf(gp, sizeof gp, "%s/gpu.txt", g_files); FILE *g = fopen(gp, "r"); if (g) { if (!fgets(gpu, sizeof gpu, g)) gpu[0] = 0; fclose(g); }
+            char *nl = strchr(gpu, '\n'); if (nl) *nl = 0;
+            notice("driver", *gpu ? gpu : "unknown");
+        }
+    }
+    g_boot_fd = open(g_boot_path, O_WRONLY | O_CREAT | O_TRUNC, 0660);
+    if (g_boot_fd >= 0) { char t[160]; int k = snprintf(t, sizeof t, "start driver %s mods %d\n", getenv("DM_VK_DRIVER") && *getenv("DM_VK_DRIVER") ? "custom" : "stock", mods_on(mods)); (void)!write(g_boot_fd, t, k); }
+}
+static void *boot_guard_main(void *p) {
+    (void)p; int dev = 0; time_t t0 = time(NULL);
+    for (;;) { sleep(1);
+        const char *gpu = nvn_vk_gpu_name ? nvn_vk_gpu_name() : NULL;
+        if (gpu && !dev) { dev = 1; if (g_boot_fd >= 0) { static const char m[] = "device\n"; (void)!write(g_boot_fd, m, sizeof m - 1); }
+            char gp[1200]; snprintf(gp, sizeof gp, "%s/gpu.txt", g_files); FILE *g = fopen(gp, "w"); if (g) { fprintf(g, "%s\n", gpu); fclose(g); } }
+        uint64_t fr = dm_nvn_frame_count ? dm_nvn_frame_count() : 0;
+        if (dev && fr >= 300 && time(NULL) - t0 >= 30) {   // played: the run is known good
+            if (g_boot_fd >= 0) { static const char m[] = "playing\n"; (void)!write(g_boot_fd, m, sizeof m - 1); }
+            unlink(g_boot_path); fprintf(stderr, "boot: 30 s of play: this start is good\n"); return NULL; }
+    }
+}
 // The game's frame rate told to Android (30, or DM_FPS_TARGET with the 60 fps patch), as a fixed source: a 90 / 120 Hz phone then runs the display at a rate the
 // frames divide evenly (60 fps on a 90 Hz screen would otherwise show frames for 1 and 2 refreshes in turn, an uneven judder). Presentation never tears (FIFO /
 // MAILBOX swapchains); this keeps the frames evenly spaced
@@ -508,6 +566,7 @@ static void host_start(void) {
     // pipelines: every one the game makes is recorded here and built ahead at the next start, the list shipped with the game too, and the driver's compiled code kept
     SETP("DM_MODS_DIR", "mods");   // IPSwitch .pchtxt code mods, applied when their build ID matches (loader.c); env.txt may point elsewhere
     snprintf(p, sizeof p, "%s/mods", g_files); mkdir(p, 0770);   // made by the app itself, so it can read what is put there (a folder another user made, adb's for one, it cannot)
+    boot_guard(p);   // (before the mods are read: a crash with mods switches them off)
     mods_romfs(p);
     SETP("DM_VK_PSO_RECORD", "vk_pipelines.bin"); SETP("DM_VK_PCACHE", "vk_pipeline_cache.bin"); SETG("DM_VK_PSO_SEED", "vk_pipelines_seed.bin");
     snprintf(q, sizeof q, "%s/shaders.pak", g_game); if (!stat(q, &st)) setenv("DM_SPV_PAK", q, 0);   // the packed shader set, else vk/b-<chain>/
@@ -544,6 +603,7 @@ static void host_start(void) {
     fprintf(stderr, "boot: game files %s%s\n", g_game, inapk ? " (inside the installed APKs)" : "");
     pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 64u << 20);
     pthread_t t; pthread_create(&t, &at, host_thread, NULL); pthread_detach(t);
+    { pthread_t g; if (!pthread_create(&g, NULL, boot_guard_main, NULL)) pthread_detach(g); }
 }
 // ---------- Performance hints (Android 13+): one session for the game's main thread and the presenting thread, told every frame how long the presenting thread
 // worked against the frame's period (nvn_vk.c mtl_present). That is what brings the fastest cores and higher clocks when the game needs them, and lower ones
