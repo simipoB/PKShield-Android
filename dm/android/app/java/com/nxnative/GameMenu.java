@@ -1,21 +1,30 @@
-// The in-game settings: an Android dialog over the game, opened by the touch controls' menu button (touch_ui.c), by holding − and + together on a controller for 1 s,
-// or by holding − for 3 s, which goes straight to the controller buttons (android_main.c front_open_menu). Every change is written to env.txt (GameSettings) for the
-// next start; the picture, the touch controls, the controller buttons, rumble and the performance overlay also change at once, the rest say they apply from the next start.
-// Every text goes through T.t (the player's language)
+// The in-game settings: one panel that slides in from the right over the dimmed game (opened by the touch controls' ☰ button, touch_ui.c; by holding − and + together on
+// a controller for 1 s; or by holding − for 3 s, which opens it on the controller buttons: android_main.c front_open_menu). Tabs down its left side, each setting a card with
+// its choices as chips and what the chosen one does under them; mods, the graphics driver, the controller buttons and the online room are pages inside the panel. Nothing
+// pops up over the game: a setting that applies from the next start says so on its card, other news goes to the panel's status line. Every change is written to env.txt
+// (GameSettings); the picture, the touch controls, the controller buttons, rumble and the performance overlay change at once (nativeSetting). Every text goes through T.t
 package com.nxnative;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
+import android.text.InputType;
+import android.view.Gravity;
 import android.view.KeyEvent;
-import android.widget.Button;
+import android.view.View;
+import android.view.Window;
+import android.view.WindowManager;
 import android.widget.EditText;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
-import android.widget.Toast;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -24,9 +33,6 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipInputStream;
-import java.util.zip.ZipOutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -34,18 +40,174 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 
 public final class GameMenu {
     private GameMenu() { }
     private static native boolean nativeSetting(String key, String value);
     private static native void nativeEditTouch();
-    private static boolean open;   // one menu at a time (UI thread)
 
-    // android_main.c: what 0 = the menu, 1 = the controller buttons
-    public static void show(Activity a, int what) {
-        a.runOnUiThread(() -> { if (open) return; if (what == 1) remap(a); else menu(a); });
+    // ---------- look ----------
+    private static final int BG = 0xF0121419, CARD = 0xFF1C1F26, CARD_LINE = 0xFF2A2E37, TEXT = 0xFFF2F3F5, SUB = 0xFF9AA0AB, CHIP = 0xFF262A33, WARN = 0xFFFFB74D;
+    private static int accent(Activity a) {   // the game's colour: Sword blue, Shield magenta, Violet purple, Scarlet red
+        String id = GameSettings.game(a)[0].toUpperCase(java.util.Locale.ROOT);
+        return id.startsWith("0100ABF") ? 0xFF2E9BFF : id.startsWith("01008DB") ? 0xFFE0306E : id.startsWith("01008F6") ? 0xFF9B5CFF : id.startsWith("0100A3D") ? 0xFFFF4D3D : 0xFF3DDC97;
+    }
+    private static int dp(Activity a, float v) { return Math.round(v * a.getResources().getDisplayMetrics().density); }
+    private static GradientDrawable round(int color, float r, int stroke, int strokeColor) {
+        GradientDrawable g = new GradientDrawable(); g.setColor(color); g.setCornerRadius(r); if (stroke > 0) g.setStroke(stroke, strokeColor); return g;
+    }
+    private static TextView text(Activity a, String s, float sp, int color, boolean bold) {
+        TextView t = new TextView(a); t.setText(s); t.setTextSize(sp); t.setTextColor(color); if (bold) t.setTypeface(Typeface.DEFAULT_BOLD); return t;
     }
     private static String t(Activity a, String en, Object... args) { return T.t(a, en, args); }
+
+    // ---------- the panel ----------
+    private static Dialog dlg; private static Activity act; private static LinearLayout rail, body; private static ScrollView scroll; private static TextView status;
+    private static String page = "display"; private static final Set<String> RESTART = new HashSet<>();   // settings changed that apply from the next start
+    private static final String[][] TABS = { { "display", "Display" }, { "perf", "Performance" }, { "controls", "Controls" }, { "mods", "Mods" }, { "saves", "Saves" },
+                                             { "online", "Online" }, { "system", "System" } };
+
+    // android_main.c: what 0 = the menu, 1 = the controller buttons
+    public static void show(Activity a, int what) { a.runOnUiThread(() -> open(a, what == 1 ? "remap" : null)); }
+
+    private static void open(Activity a, String start) {
+        if (dlg != null && dlg.isShowing()) { if (start != null) go(start); return; }
+        act = a; if (start != null) page = start; else if (page.equals("remap") || page.equals("driver") || page.equals("order")) page = "display";
+        Dialog d = new Dialog(a); d.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        int sw = a.getResources().getDisplayMetrics().widthPixels, sh = a.getResources().getDisplayMetrics().heightPixels;
+        LinearLayout panel = new LinearLayout(a); panel.setOrientation(LinearLayout.VERTICAL);
+        GradientDrawable pbg = new GradientDrawable(); pbg.setColor(BG); pbg.setCornerRadii(new float[] { dp(a, 22), dp(a, 22), 0, 0, 0, 0, dp(a, 22), dp(a, 22) }); panel.setBackground(pbg);
+        // header: the game, a close button
+        LinearLayout head = new LinearLayout(a); head.setGravity(Gravity.CENTER_VERTICAL); head.setPadding(dp(a, 20), dp(a, 14), dp(a, 12), dp(a, 8));
+        View dot = new View(a); dot.setBackground(round(accent(a), dp(a, 6), 0, 0)); head.addView(dot, new LinearLayout.LayoutParams(dp(a, 10), dp(a, 10)));
+        TextView title = text(a, GameSettings.game(a)[1], 19, TEXT, true); title.setPadding(dp(a, 10), 0, 0, 0); head.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView close = text(a, "✕", 20, SUB, false); close.setPadding(dp(a, 14), dp(a, 6), dp(a, 14), dp(a, 6)); close.setOnClickListener(v -> d.dismiss()); head.addView(close);
+        panel.addView(head);
+        LinearLayout mid = new LinearLayout(a); mid.setOrientation(LinearLayout.HORIZONTAL);
+        rail = new LinearLayout(a); rail.setOrientation(LinearLayout.VERTICAL); rail.setPadding(dp(a, 10), dp(a, 4), dp(a, 6), dp(a, 10));
+        ScrollView rs = new ScrollView(a); rs.addView(rail); mid.addView(rs, new LinearLayout.LayoutParams(dp(a, 150), -1));
+        scroll = new ScrollView(a); body = new LinearLayout(a); body.setOrientation(LinearLayout.VERTICAL); body.setPadding(dp(a, 8), dp(a, 4), dp(a, 18), dp(a, 18));
+        scroll.addView(body); mid.addView(scroll, new LinearLayout.LayoutParams(0, -1, 1));
+        panel.addView(mid, new LinearLayout.LayoutParams(-1, 0, 1));
+        status = text(a, "", 13, SUB, false); status.setPadding(dp(a, 20), dp(a, 6), dp(a, 20), dp(a, 12)); status.setVisibility(View.GONE); panel.addView(status);
+        d.setContentView(panel);
+        Window w = d.getWindow();
+        w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        w.setLayout(Math.min(sw, Math.max(dp(a, 560), (int) (sw * 0.6f))), sh); w.setGravity(Gravity.END | Gravity.FILL_VERTICAL);
+        w.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND); w.setDimAmount(0.45f);
+        w.setWindowAnimations(android.R.style.Animation_InputMethod);   // (slides in from the edge)
+        hideBars(w);
+        d.setOnKeyListener((x, kc, e) -> remapKey(kc, e));
+        d.setOnDismissListener(x -> { dlg = null; RESTART.clear(); capture = null; });
+        dlg = d; d.show(); hideBars(w);
+        go(page);
+    }
+    @SuppressWarnings("deprecation")
+    private static void hideBars(Window w) {   // the game stays full screen behind the panel (Immersive.java's flags on the panel's own window)
+        w.getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_FULLSCREEN
+            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+    }
+    private static void say(String s) {   // the status line (in place of toasts over the game)
+        if (status == null) return;
+        status.setText(s); status.setVisibility(s.isEmpty() ? View.GONE : View.VISIBLE);
+    }
+    private static void go(String p) {
+        page = p; Activity a = act; if (a == null || body == null) return;
+        rail.removeAllViews();
+        String top = p.equals("remap") ? "controls" : p.equals("driver") ? "system" : p.equals("order") ? "mods" : p;
+        for (String[] tb : TABS) {
+            boolean on = tb[0].equals(top);
+            TextView r = text(a, t(a, tb[1]), 15, on ? TEXT : SUB, on); r.setPadding(dp(a, 14), dp(a, 11), dp(a, 10), dp(a, 11));
+            r.setBackground(on ? round((accent(a) & 0x00FFFFFF) | 0x38000000, dp(a, 12), 0, 0) : null);
+            r.setOnClickListener(v -> { say(""); capture = null; go(tb[0]); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.bottomMargin = dp(a, 4); rail.addView(r, lp);
+        }
+        body.removeAllViews();
+        switch (p) {
+            case "display": display(a); break;
+            case "perf": perf(a); break;
+            case "controls": controls(a); break;
+            case "remap": remap(a); break;
+            case "mods": mods(a); break;
+            case "order": order(a); break;
+            case "saves": saves(a); break;
+            case "online": online(a); break;
+            case "driver": driver(a); break;
+            default: system(a);
+        }
+    }
+    private static void redraw() { int y = scroll.getScrollY(); go(page); scroll.post(() -> scroll.scrollTo(0, y)); }   // (the same page, kept where it was scrolled)
+
+    // ---------- building blocks ----------
+    private static void heading(Activity a, String s) {
+        TextView h = text(a, s, 13, SUB, true); h.setAllCaps(true); h.setLetterSpacing(0.08f); h.setPadding(dp(a, 6), dp(a, 14), 0, dp(a, 6)); body.addView(h);
+    }
+    private static LinearLayout card(Activity a) {
+        LinearLayout c = new LinearLayout(a); c.setOrientation(LinearLayout.VERTICAL); c.setBackground(round(CARD, dp(a, 16), 1, CARD_LINE)); c.setPadding(dp(a, 16), dp(a, 12), dp(a, 16), dp(a, 14));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.bottomMargin = dp(a, 10); body.addView(c, lp); return c;
+    }
+    private static LinearLayout titleRow(Activity a, LinearLayout c, String title, String tag) {
+        LinearLayout r = new LinearLayout(a); r.setGravity(Gravity.CENTER_VERTICAL);
+        r.addView(text(a, title, 16, TEXT, true), new LinearLayout.LayoutParams(0, -2, 1));
+        if (tag != null) { TextView tg = text(a, tag, 11, accent(a), true); tg.setBackground(round(0, dp(a, 10), dp(a, 1), accent(a))); tg.setPadding(dp(a, 8), dp(a, 2), dp(a, 8), dp(a, 2)); r.addView(tg); }
+        c.addView(r); return r;
+    }
+    private static TextView pill(Activity a, String label, boolean on) {
+        TextView p = text(a, label, 13, on ? Color.WHITE : SUB, true); p.setPadding(dp(a, 14), dp(a, 5), dp(a, 14), dp(a, 5));
+        p.setBackground(on ? round(accent(a), dp(a, 14), 0, 0) : round(CHIP, dp(a, 14), 1, CARD_LINE)); return p;
+    }
+    // a choice: { value, chip label, what it does }; the chosen one's line under the chips. Applied at once when the engine can (nativeSetting), else tagged "Applies next start"
+    private static void choice(Activity a, String key, String title, String[][] opts) {
+        LinearLayout c = card(a); String cur = GameSettings.get(a, key);
+        titleRow(a, c, title, RESTART.contains(key) ? t(a, "Applies next start") : null);
+        HorizontalScrollView hs = new HorizontalScrollView(a); hs.setHorizontalScrollBarEnabled(false);
+        LinearLayout chips = new LinearLayout(a); chips.setPadding(0, dp(a, 10), 0, dp(a, 6)); hs.addView(chips); c.addView(hs);
+        TextView desc = text(a, "", 13, SUB, false); c.addView(desc);
+        boolean found = false; for (String[] o : opts) if (o[0].equals(cur)) found = true;
+        for (String[] o : opts) {
+            boolean on = o[0].equals(cur) || (!found && o == opts[0]);
+            TextView ch = text(a, o[1], 14, on ? Color.WHITE : TEXT, on); ch.setPadding(dp(a, 16), dp(a, 8), dp(a, 16), dp(a, 8));
+            ch.setBackground(on ? round(accent(a), dp(a, 18), 0, 0) : round(CHIP, dp(a, 18), 1, CARD_LINE));
+            ch.setOnClickListener(v -> { if (!o[0].equals(GameSettings.get(a, key))) set(a, key, o[0]); redraw(); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.rightMargin = dp(a, 8); chips.addView(ch, lp);
+            if (on) desc.setText(o.length > 2 ? o[2] : "");
+        }
+        if (desc.getText().length() == 0) desc.setVisibility(View.GONE);
+    }
+    private static void action(Activity a, String title, String sub, Runnable r) {
+        LinearLayout c = card(a); LinearLayout row = titleRow(a, c, title, null);
+        row.addView(text(a, "›", 22, SUB, false));
+        if (sub != null && !sub.isEmpty()) { TextView s = text(a, sub, 13, SUB, false); s.setPadding(0, dp(a, 4), 0, 0); c.addView(s); }
+        c.setOnClickListener(v -> r.run());
+    }
+    private static void slider(Activity a, String title, String key, int min, int max, int def, java.util.function.IntFunction<String> fmt) {
+        LinearLayout c = card(a); LinearLayout row = titleRow(a, c, title, null);
+        int v; try { v = Integer.parseInt(GameSettings.get(a, key)); } catch (NumberFormatException e) { v = def; }
+        v = Math.max(min, Math.min(max, v));
+        TextView val = text(a, fmt.apply(v), 14, accent(a), true); row.addView(val);
+        SeekBar sb = new SeekBar(a); sb.setMax(max - min); sb.setProgress(v - min); sb.setPadding(dp(a, 4), dp(a, 12), dp(a, 4), 0);
+        sb.getProgressDrawable().setTint(accent(a)); sb.getThumb().setTint(accent(a));
+        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar b, int p, boolean user) { val.setText(fmt.apply(p + min)); if (user) set(a, key, String.valueOf(p + min)); }
+            public void onStartTrackingTouch(SeekBar b) { }
+            public void onStopTrackingTouch(SeekBar b) { }
+        });
+        c.addView(sb);
+    }
+    private static void note(Activity a, String s) { TextView n = text(a, s, 13, SUB, false); n.setPadding(dp(a, 6), dp(a, 2), dp(a, 6), dp(a, 10)); body.addView(n); }
+    private static TextView button(Activity a, LinearLayout parent, String label, boolean primary, Runnable r) {
+        TextView b = text(a, label, 14, primary ? Color.WHITE : TEXT, true); b.setGravity(Gravity.CENTER); b.setPadding(dp(a, 16), dp(a, 9), dp(a, 16), dp(a, 9));
+        b.setBackground(primary ? round(accent(a), dp(a, 18), 0, 0) : round(CHIP, dp(a, 18), 1, CARD_LINE)); b.setOnClickListener(v -> r.run());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.rightMargin = dp(a, 8); lp.topMargin = dp(a, 8); parent.addView(b, lp); return b;
+    }
+    private static EditText field(Activity a, LinearLayout parent, String hint) {
+        EditText e = new EditText(a); e.setHint(hint); e.setSingleLine(); e.setTextColor(TEXT); e.setHintTextColor(SUB); e.setTextSize(15);
+        e.setBackground(round(CHIP, dp(a, 12), 1, CARD_LINE)); e.setPadding(dp(a, 12), dp(a, 10), dp(a, 12), dp(a, 10));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.topMargin = dp(a, 8); parent.addView(e, lp); return e;
+    }
 
     private static void set(Activity a, String key, String value) {
         String was = GameSettings.get(a, key);
@@ -55,146 +217,94 @@ public final class GameMenu {
         else if (key.equals("DM_LANG")) now = true;
         else if (key.equals("DM_RUMBLE")) now = !value.equals("off") && !was.equals("off");   // (controller / phone: at once; off and back on: the game's motors, from the next start)
         else { try { now = nativeSetting(key, value); } catch (UnsatisfiedLinkError e) { now = false; } }
-        if (!now) Toast.makeText(a, t(a, "Saved: applies the next time you start the game."), Toast.LENGTH_SHORT).show();
+        if (!now) RESTART.add(key);
     }
-    private static String label(String[][] opts, String cur) { for (String[] o : opts) if (o[0].equals(cur)) return o[1]; return opts[0][1]; }
 
-    private static String[][] graphics(Activity a) {
-        String[] p = GameSettings.profile(a); String rec = t(a, p[2].equals("high") ? "High" : p[2].equals("auto") ? "Adaptive" : "Low");
-        return new String[][] { { "", t(a, "Auto: this phone gets %s (%s)", rec, p[1]) }, { "high", t(a, "High: TV mode, 1080p, full effects") },
-                                { "low", t(a, "Low: handheld mode, 720p, lighter") }, { "auto", t(a, "Adaptive: High, Low while the phone is hot") } };
-    }
-    private static String[][] textures(Activity a) {
-        String[] p = GameSettings.profile(a); String rec = t(a, p[3].equals("half") ? "Half" : "Full");
-        return new String[][] { { "", t(a, "Auto: this phone gets %s (%s)", rec, p[1]) }, { "full", t(a, "Full: the game's textures as they are") },
-                                { "half", t(a, "Half: large textures at half size, less memory and GPU work") } };
-    }
-    private static String[][] picture(Activity a) {
-        return new String[][] { { "", t(a, "16:9, as the game is made") }, { "fill", t(a, "Fill the screen (stretched)") }, { "20:9", t(a, "20:9, for a widescreen mod") } };
-    }
-    private static String[][] scaler(Activity a) {
+    // ---------- the pages ----------
+    private static void display(Activity a) {
+        heading(a, t(a, "Screen"));
+        choice(a, "DM_ASPECT", t(a, "Picture"), new String[][] { { "", "16:9", t(a, "16:9, as the game is made") }, { "fill", t(a, "Fill"), t(a, "Fill the screen (stretched)") },
+                                                                    { "20:9", "20:9", t(a, "20:9, for a widescreen mod") } });
         String rec = GameSettings.profile(a)[6].equals("sgsr") ? "SGSR" : t(a, "Sharp");
-        return new String[][] { { "", t(a, "Auto: this phone gets %s", rec) }, { "sharp", t(a, "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)") },
-                                { "sgsr", t(a, "Snapdragon Game Super Resolution (Qualcomm's upscaler)") }, { "smooth", t(a, "Smooth: a plain stretch") } };
+        choice(a, "DM_SCALER", t(a, "Upscaling"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", rec) },
+            { "sharp", t(a, "Sharp"), t(a, "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)") },
+            { "sgsr", "SGSR", t(a, "Snapdragon Game Super Resolution (Qualcomm's upscaler)") }, { "smooth", t(a, "Smooth"), t(a, "Smooth: a plain stretch") } });
+        heading(a, t(a, "Overlay"));
+        choice(a, "DM_PERF_OVERLAY", t(a, "Performance overlay"), new String[][] { { "", t(a, "Off"), "" }, { "on", t(a, "On"), t(a, "On: fps, temperature, GPU, memory, battery") } });
     }
-    // GPUs without BC textures (Mali, Xclipse, PowerVR): Auto converts them to formats the GPU reads, as small as on the Switch; Full decodes them (4-8 times the memory)
-    private static String[][] texfmt(Activity a) {
-        return new String[][] { { "", t(a, "Auto: compact on GPUs without BC (Mali, Xclipse, PowerVR), converted once and kept") },
-                                { "off", t(a, "Full decode: more memory, no conversion (Snapdragon is not affected either way)") } };
-    }
-    private static String[][] fps(Activity a) {
+    private static void perf(Activity a) {
         String[] p = GameSettings.profile(a);
-        return new String[][] { { "", t(a, "Auto: this phone gets %s fps (%s)", p[5], p[1]) }, { "30", t(a, "30 fps, as the game is made") }, { "60", t(a, "60 fps (experimental: needs a fast phone)") } };
+        note(a, t(a, "This phone: %s", p[1]));
+        heading(a, t(a, "Speed"));
+        String g = t(a, p[2].equals("high") ? "High" : p[2].equals("auto") ? "Adaptive" : "Low");
+        choice(a, "DM_GRAPHICS", t(a, "Graphics"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", g) }, { "high", t(a, "High"), t(a, "High: TV mode, 1080p, full effects") },
+            { "low", t(a, "Low"), t(a, "Low: handheld mode, 720p, lighter") }, { "auto", t(a, "Adaptive"), t(a, "Adaptive: High, Low while the phone is hot") } });
+        if (GameSettings.has60(a)) choice(a, "DM_FPS_TARGET", t(a, "Frame rate"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s fps", p[5]) },
+            { "30", "30 fps", t(a, "30 fps, as the game is made") }, { "60", "60 fps", t(a, "60 fps (experimental: needs a fast phone)") } });
+        heading(a, t(a, "Memory"));
+        choice(a, "DM_VK_TEX_QUALITY", t(a, "Textures"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", t(a, p[3].equals("half") ? "Half" : "Full")) },
+            { "full", t(a, "Full"), t(a, "Full: the game's textures as they are") }, { "half", t(a, "Half"), t(a, "Half: large textures at half size, less memory and GPU work") } });
+        choice(a, "DM_VK_BC_TRANSCODE", t(a, "Texture format"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: compact on GPUs without BC (Mali, Xclipse, PowerVR), converted once and kept") },
+            { "off", t(a, "Full decode"), t(a, "Full decode: more memory, no conversion (Snapdragon is not affected either way)") } });
     }
-    private static String[][] pad(Activity a) { return new String[][] { { "", t(a, "By position, as on a Switch pad") }, { "labels", t(a, "By label (the button marked A is A)") } }; }
-    private static String[][] rumble(Activity a) {
-        return new String[][] { { "", t(a, "On: the controller's motor, else the phone's") }, { "pad", t(a, "Controllers only") }, { "off", t(a, "Off") } };
+    private static void controls(Activity a) {
+        heading(a, t(a, "Controller"));
+        choice(a, "DM_PAD_LAYOUT", t(a, "Controller buttons"), new String[][] { { "", t(a, "By position"), t(a, "By position, as on a Switch pad") },
+                                                                                 { "labels", t(a, "By label"), t(a, "By label (the button marked A is A)") } });
+        action(a, t(a, "Remap controller buttons"), t(a, "Or hold − for 3 s on a controller. Hold − and + together for 1 s to open this menu."), () -> go("remap"));
+        choice(a, "DM_RUMBLE", t(a, "Rumble"), new String[][] { { "", t(a, "On"), t(a, "On: the controller's motor, else the phone's") }, { "pad", t(a, "Controllers only"), "" },
+                                                                 { "off", t(a, "Off"), "" } });
+        heading(a, t(a, "Touch controls"));
+        slider(a, t(a, "Opacity"), "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");
+        slider(a, t(a, "Fade after"), "DM_TOUCH_FADE", 0, 10, 3, v -> v == 0 ? t(a, "never fade") : t(a, "%d s without a touch", v));
+        action(a, t(a, "Move the touch controls"), t(a, "Drag a control to move it, pinch to resize, double-tap to hide. Hold − for 2 s to save (hold + to reset)."), () -> {
+            if (dlg != null) dlg.dismiss(); try { nativeEditTouch(); } catch (UnsatisfiedLinkError e) { } });
     }
-    private static String[][] perf(Activity a) { return new String[][] { { "", t(a, "Off") }, { "on", t(a, "On: fps, temperature, GPU, memory, battery") } }; }
-    private static String[][] langs(Activity a) { String[][] l = T.LANGS.clone(); l[0] = new String[] { "", t(a, "Auto (the phone's language)") }; return l; }
-
-    private static void menu(Activity a) {
-        List<String> rows = new ArrayList<>(); List<Runnable> acts = new ArrayList<>();
-        row(a, rows, acts, "Picture", picture(a), "DM_ASPECT");
-        row(a, rows, acts, "Upscaling", scaler(a), "DM_SCALER");
-        row(a, rows, acts, "Graphics", graphics(a), "DM_GRAPHICS");
-        row(a, rows, acts, "Textures", textures(a), "DM_VK_TEX_QUALITY");
-        row(a, rows, acts, "Texture format", texfmt(a), "DM_VK_BC_TRANSCODE");
-        if (GameSettings.has60(a)) row(a, rows, acts, "Frame rate", fps(a), "DM_FPS_TARGET");
-        row(a, rows, acts, "Controller buttons", pad(a), "DM_PAD_LAYOUT");
-        row(a, rows, acts, "Rumble", rumble(a), "DM_RUMBLE");
-        row(a, rows, acts, "Performance overlay", perf(a), "DM_PERF_OVERLAY");
-        rows.add(t(a, "Graphics driver") + ": " + DriverPackages.label(DriverPackages.current(a))); acts.add(() -> driverMenu(a));
-        rows.add(t(a, "Remap controller buttons (or hold − for 3 s)")); acts.add(() -> remap(a));
-        rows.add(t(a, "Touch controls: look")); acts.add(() -> touchLook(a));
-        rows.add(t(a, "Move the touch controls")); acts.add(() -> {
-            try { nativeEditTouch(); } catch (UnsatisfiedLinkError e) { }
-            Toast.makeText(a, t(a, "Drag a control to move it, pinch to resize, double-tap to hide. Hold − for 2 s to save (hold + to reset)."), Toast.LENGTH_LONG).show(); });
-        String room = GameSettings.get(a, "DM_RELAY_ROOM");
-        rows.add(t(a, "Online room") + ": " + (room.isEmpty() ? t(a, "off (local play on this Wi-Fi)") : room)); acts.add(() -> onlineRoom(a));
-        rows.add(t(a, "Mods (%d)", mods(a).size())); acts.add(() -> modList(a));
-        rows.add(t(a, "Import a mod (.zip)")); acts.add(() -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_MOD));
-        rows.add(t(a, "Export save data")); acts.add(() -> pick(a, Intent.ACTION_CREATE_DOCUMENT, GameSettings.game(a)[2] + "-save.zip", REQ_EXPORT));
-        rows.add(t(a, "Import save data")); acts.add(() -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_IMPORT));
-        row(a, rows, acts, "Language", langs(a), "DM_LANG");
-        open = true;
-        new AlertDialog.Builder(a).setTitle(t(a, "%s settings", GameSettings.game(a)[1])).setItems(rows.toArray(new String[0]), (d, w) -> { open = false; acts.get(w).run(); })
-            .setNegativeButton(t(a, "Back to the game"), null).setOnDismissListener(d -> open = false).show();
-    }
-    private static void row(Activity a, List<String> rows, List<Runnable> acts, String title, String[][] opts, String key) {
-        rows.add(t(a, title) + ": " + label(opts, GameSettings.get(a, key))); acts.add(() -> choose(a, title, opts, key));
-    }
-    // a choice: picking one saves it and comes back to the menu (built again: a new language shows at once)
-    private static void choose(Activity a, String title, String[][] opts, String key) {
-        String cur = GameSettings.get(a, key); int sel = 0; String[] names = new String[opts.length];
-        for (int k = 0; k < opts.length; k++) { names[k] = opts[k][1]; if (opts[k][0].equals(cur)) sel = k; }
-        open = true;
-        new AlertDialog.Builder(a).setTitle(t(a, title)).setSingleChoiceItems(names, sel, (d, w) -> { set(a, key, opts[w][0]); d.dismiss(); })
-            .setNegativeButton(t(a, "Back"), null).setOnDismissListener(d -> { open = false; menu(a); }).show();
-    }
-    private static void touchLook(Activity a) {
-        LinearLayout root = new LinearLayout(a); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 24, 48, 0);
-        slider(a, root, t(a, "Opacity"), "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");
-        slider(a, root, t(a, "Fade after"), "DM_TOUCH_FADE", 0, 10, 3, v -> v == 0 ? t(a, "never fade") : t(a, "%d s without a touch", v));
-        open = true;
-        new AlertDialog.Builder(a).setTitle(t(a, "Touch controls")).setView(root).setPositiveButton(t(a, "Done"), null).setOnDismissListener(d -> { open = false; menu(a); }).show();
-    }
-    private static void slider(Activity a, LinearLayout root, String label, String key, int min, int max, int def, java.util.function.IntFunction<String> fmt) {
-        TextView tv = new TextView(a); tv.setPadding(0, 16, 0, 0); root.addView(tv);
-        SeekBar sb = new SeekBar(a); sb.setMax(max - min);
-        int v; try { v = Integer.parseInt(GameSettings.get(a, key)); } catch (NumberFormatException e) { v = def; }
-        v = Math.max(min, Math.min(max, v)); sb.setProgress(v - min); tv.setText(label + ": " + fmt.apply(v));
-        sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onProgressChanged(SeekBar b, int p, boolean user) { tv.setText(label + ": " + fmt.apply(p + min)); if (user) set(a, key, String.valueOf(p + min)); }
-            public void onStartTrackingTouch(SeekBar b) { }
-            public void onStopTrackingTouch(SeekBar b) { }
-        });
-        root.addView(sb);
-    }
-
-    // Remapping (PadMapping.java, DM_PAD_MAPPING): each Switch button with the key it is on; choosing one waits for a press on the controller, Reset clears the remapping
+    // Remapping (PadMapping.java, DM_PAD_MAPPING): tap a Switch button, then press the controller key for it (the panel takes the key: remapKey)
+    private static String capture;
     private static void remap(Activity a) {
         Map<String, Integer> map = PadMapping.parse(GameSettings.get(a, "DM_PAD_MAPPING"));
-        String[] rows = new String[PadMapping.BUTTONS.length];
-        for (int i = 0; i < rows.length; i++) { Integer kc = map.get(PadMapping.BUTTONS[i][0]); rows[i] = PadMapping.BUTTONS[i][1] + ": " + (kc != null ? PadMapping.keyName(kc) : t(a, "default")); }
-        open = true;
-        new AlertDialog.Builder(a).setTitle(t(a, "Remap controller buttons")).setItems(rows, (d, which) -> { open = false; captureKey(a, map, which); })
-            .setNeutralButton(t(a, "Reset all"), (d, w) -> { set(a, "DM_PAD_MAPPING", ""); Toast.makeText(a, t(a, "Controller buttons reset."), Toast.LENGTH_SHORT).show(); })
-            .setNegativeButton(t(a, "Done"), null).setOnDismissListener(d -> open = false).show();
+        heading(a, t(a, "Remap controller buttons"));
+        note(a, t(a, "Tap a button, then press the controller key you want for it."));
+        for (String[] btn : PadMapping.BUTTONS) {
+            LinearLayout c = card(a); LinearLayout row = titleRow(a, c, btn[1], null);
+            Integer kc = map.get(btn[0]); boolean wait = btn[0].equals(capture);
+            row.addView(text(a, wait ? t(a, "Press a key…") : kc != null ? PadMapping.keyName(kc) : t(a, "default"), 14, wait ? accent(a) : SUB, wait));
+            if (wait) c.setBackground(round(CARD, dp(a, 16), dp(a, 2), accent(a)));
+            c.setOnClickListener(x -> { capture = btn[0]; redraw(); });
+        }
+        LinearLayout r = new LinearLayout(a); body.addView(r);
+        button(a, r, t(a, "Reset all"), false, () -> { set(a, "DM_PAD_MAPPING", ""); capture = null; say(t(a, "Controller buttons reset.")); redraw(); });
+        button(a, r, t(a, "Done"), true, () -> { capture = null; go("controls"); });
     }
-    private static void captureKey(Activity a, Map<String, Integer> map, int which) {
-        String[] btn = PadMapping.BUTTONS[which];
-        AlertDialog d = new AlertDialog.Builder(a).setTitle(btn[1]).setMessage(t(a, "Press the controller button for %s.", btn[1]))
-            .setNegativeButton(t(a, "Cancel"), (x, w) -> remap(a)).create();
-        d.setOnKeyListener((x, kc, e) -> {
-            if (e.getAction() != KeyEvent.ACTION_DOWN || !PadMapping.isPadKey(e)) return false;
-            map.values().removeIf(v -> v == kc);   // a key drives one Switch button
-            map.put(btn[0], kc); set(a, "DM_PAD_MAPPING", PadMapping.serialize(map));
-            d.dismiss(); remap(a); return true;
-        });
-        d.show();
+    private static boolean remapKey(int kc, KeyEvent e) {
+        if (capture == null || e.getAction() != KeyEvent.ACTION_DOWN || !PadMapping.isPadKey(e)) return false;
+        Map<String, Integer> map = PadMapping.parse(GameSettings.get(act, "DM_PAD_MAPPING"));
+        map.values().removeIf(v -> v == kc);   // a key drives one Switch button
+        map.put(capture, kc); set(act, "DM_PAD_MAPPING", PadMapping.serialize(map)); capture = null;
+        redraw(); return true;
     }
 
     // ---------- mods ----------
     // <files>/mods/<mod>/romfs (files that replace the game's) and <mod>/exefs/*.pchtxt (code patches for this game version), as the Switch emulators lay them out;
-    // loose .pchtxt files in mods/ work too. Ticking one on or off renames its folder (a leading "-" switches it off, android_main.c / loader.c); applies at the next start.
+    // loose .pchtxt files in mods/ work too. Switching one on or off renames its folder (a leading "-" switches it off, android_main.c / loader.c); applies at the next start.
     // Load order: mods/order.txt, one name a line (without the "-"), first = wins where two mods replace the same file (android_main.c mods_romfs); mods it does not list
     // come after, by name. Notes: <mod>/notes.txt (the mod's own readme when the zip has one, or what the player writes)
     private static File modsDir(Activity a) { return new File(GameSettings.dir(a), "mods"); }
     private static String plain(File f) { String n = f.getName(); return n.startsWith("-") ? n.substring(1) : n; }
-    private static List<String> order(Activity a) {
+    private static List<String> order(File dir) {
         List<String> o = new ArrayList<>();
-        try (BufferedReader r = new BufferedReader(new FileReader(new File(modsDir(a), "order.txt")))) { String l; while ((l = r.readLine()) != null) if (!l.trim().isEmpty()) o.add(l.trim()); } catch (IOException e) { }
+        try (BufferedReader r = new BufferedReader(new FileReader(new File(dir, "order.txt")))) { String l; while ((l = r.readLine()) != null) if (!l.trim().isEmpty()) o.add(l.trim()); } catch (IOException e) { }
         return o;
     }
     private static void saveOrder(Activity a, List<File> ms) {
         try (FileWriter w = new FileWriter(new File(modsDir(a), "order.txt"))) { for (File f : ms) w.write(plain(f) + "\n"); } catch (IOException e) { }
     }
-    private static List<File> mods(Activity a) {
+    private static List<File> modList(Activity a) {
         File[] fs = modsDir(a).listFiles(); List<File> all = new ArrayList<>(); if (fs == null) return all;
         Arrays.sort(fs); for (File f : fs) if (f.isDirectory() && !f.getName().startsWith(".") && !f.getName().equals("romfs")) all.add(f);
         List<File> out = new ArrayList<>();
-        for (String n : order(a)) for (File f : all) if (plain(f).equals(n) && !out.contains(f)) out.add(f);
+        for (String n : order(modsDir(a))) for (File f : all) if (plain(f).equals(n) && !out.contains(f)) out.add(f);
         for (File f : all) if (!out.contains(f)) out.add(f);
         return out;
     }
@@ -213,95 +323,125 @@ public final class GameMenu {
         }
         return out;
     }
-    private static void modList(Activity a) {
-        List<File> ms = mods(a);
-        String where = t(a, "Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s 1.3.2).",
-                         a.getPackageName(), GameSettings.game(a)[1]);
-        open = true;
-        boolean[] next = { false };   // (going on to the load order: not back to the menu)
-        AlertDialog.Builder b = new AlertDialog.Builder(a).setTitle(t(a, "Mods")).setNegativeButton(t(a, "Back"), null).setOnDismissListener(d -> { open = false; if (!next[0]) menu(a); });
-        if (ms.isEmpty()) { b.setMessage(t(a, "No mods yet.") + " " + where).show(); return; }
-        Map<File, Map<File, Integer>> cf = conflicts(ms);
-        String[] names = new String[ms.size()]; boolean[] on = new boolean[ms.size()];
-        for (int i = 0; i < names.length; i++) { File f = ms.get(i); on[i] = !f.getName().startsWith("-"); names[i] = (i + 1) + ". " + plain(f) + (cf.containsKey(f) ? "  ⚠" : ""); }
-        b.setMultiChoiceItems(names, on, (d, i, checked) -> {
-            File f = ms.get(i), to = new File(f.getParentFile(), checked ? plain(f) : "-" + plain(f));
-            if (!f.getName().equals(to.getName()) && f.renameTo(to)) { ms.set(i, to); Toast.makeText(a, t(a, checked ? "On: applies the next time you start the game." : "Off: applies the next time you start the game."), Toast.LENGTH_SHORT).show(); }
-        }).setPositiveButton(t(a, "Order and notes"), (d, w) -> { next[0] = true; modOrder(a); })
-          .setNeutralButton(t(a, "Where do mods go?"), (d, w) -> Toast.makeText(a, where, Toast.LENGTH_LONG).show()).show();
-    }
-    // the load order: tap a mod for its notes, the files it shares with others, moving it up or down, or deleting it
-    private static void modOrder(Activity a) {
-        List<File> ms = mods(a); Map<File, Map<File, Integer>> cf = conflicts(ms);
-        String[] rows = new String[ms.size()];
-        for (int i = 0; i < rows.length; i++) { File f = ms.get(i); Map<File, Integer> c = cf.get(f);
-            rows[i] = (i + 1) + ". " + plain(f) + (f.getName().startsWith("-") ? " (" + t(a, "off") + ")" : "") + (c != null ? "  ⚠ " + t(a, "shares files with %d other mod(s)", c.size()) : ""); }
-        open = true;
-        new AlertDialog.Builder(a).setTitle(t(a, "Load order: higher wins")).setItems(rows, (d, i) -> modDetail(a, ms, i, cf.get(ms.get(i))))
-            .setNegativeButton(t(a, "Back"), (d, w) -> modList(a)).setOnDismissListener(d -> open = false).show();
-    }
-    private static void modDetail(Activity a, List<File> ms, int i, Map<File, Integer> shared) {
-        File m = ms.get(i), notes = new File(m, "notes.txt");
-        StringBuilder sb = new StringBuilder();
-        String n = ""; try { n = new String(java.nio.file.Files.readAllBytes(notes.toPath()), java.nio.charset.StandardCharsets.UTF_8).trim(); } catch (IOException e) { }
-        sb.append(n.isEmpty() ? t(a, "No notes.") : n);
-        if (shared != null) for (Map.Entry<File, Integer> e : shared.entrySet()) {
-            boolean wins = ms.indexOf(m) < ms.indexOf(e.getKey());
-            sb.append("\n\n⚠ ").append(t(a, wins ? "Replaces %d of the same files as %s: this mod's are used (it is higher)." : "Replaces %d of the same files as %s: that mod's are used (it is higher).", e.getValue(), plain(e.getKey())));
+    private static void mods(Activity a) {
+        List<File> ms = modList(a); Map<File, Map<File, Integer>> cf = conflicts(ms);
+        heading(a, t(a, "Mods (%d)", ms.size()));
+        if (RESTART.contains("mods")) note(a, t(a, "Mods change from the next start."));
+        LinearLayout top = new LinearLayout(a); body.addView(top);
+        button(a, top, t(a, "Import a mod (.zip)"), true, () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_MOD));
+        if (ms.size() > 1) button(a, top, t(a, "Order and notes"), false, () -> go("order"));
+        if (ms.isEmpty()) { note(a, t(a, "No mods yet.") + " " + where(a)); return; }
+        for (File m : ms) {
+            boolean on = !m.getName().startsWith("-");
+            LinearLayout c = card(a); LinearLayout row = titleRow(a, c, plain(m), null); row.addView(pill(a, on ? t(a, "On") : t(a, "Off"), on));
+            if (cf.containsKey(m)) { TextView w = text(a, "⚠ " + t(a, "shares files with %d other mod(s)", cf.get(m).size()), 13, WARN, false); w.setPadding(0, dp(a, 4), 0, 0); c.addView(w); }
+            c.setOnClickListener(v -> { if (m.renameTo(new File(m.getParentFile(), on ? "-" + plain(m) : plain(m)))) RESTART.add("mods"); redraw(); });
         }
-        LinearLayout root = new LinearLayout(a); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 24, 48, 0);
-        TextView tv = new TextView(a); tv.setText(sb.toString()); tv.setTextIsSelectable(true); root.addView(tv);
-        ScrollView sv = new ScrollView(a); sv.addView(root);
-        open = true;
-        AlertDialog[] dlg = new AlertDialog[1];
-        LinearLayout btns = new LinearLayout(a); btns.setOrientation(LinearLayout.VERTICAL); root.addView(btns);
-        java.util.function.BiConsumer<String, Runnable> btn = (label, r) -> { Button b = new Button(a); b.setText(label); b.setOnClickListener(v -> { dlg[0].dismiss(); r.run(); }); btns.addView(b); };
-        if (i > 0) btn.accept(t(a, "Move up"), () -> { java.util.Collections.swap(ms, i, i - 1); saveOrder(a, ms); modOrder(a); });
-        if (i < ms.size() - 1) btn.accept(t(a, "Move down"), () -> { java.util.Collections.swap(ms, i, i + 1); saveOrder(a, ms); modOrder(a); });
-        btn.accept(t(a, "Edit notes"), () -> editNotes(a, notes));
-        btn.accept(t(a, "Delete this mod"), () -> new AlertDialog.Builder(a).setTitle(plain(m)).setMessage(t(a, "Delete this mod from the phone?"))
-            .setPositiveButton(t(a, "Delete"), (d, w) -> { deleteTree(m); ms.remove(m); saveOrder(a, ms); Toast.makeText(a, t(a, "Deleted: applies the next time you start the game."), Toast.LENGTH_SHORT).show(); modOrder(a); })
-            .setNegativeButton(t(a, "Cancel"), (d, w) -> modOrder(a)).show());
-        dlg[0] = new AlertDialog.Builder(a).setTitle(plain(m)).setView(sv).setNegativeButton(t(a, "Back"), (d, w) -> modOrder(a)).setOnDismissListener(d -> open = false).create();
-        dlg[0].show();
+        note(a, where(a));
     }
-    private static void editNotes(Activity a, File notes) {
-        EditText e = new EditText(a); e.setMinLines(4);
-        try { e.setText(new String(java.nio.file.Files.readAllBytes(notes.toPath()), java.nio.charset.StandardCharsets.UTF_8)); } catch (IOException x) { }
-        open = true;
-        new AlertDialog.Builder(a).setTitle(t(a, "Notes")).setView(e)
-            .setPositiveButton(t(a, "Save"), (d, w) -> { try (FileWriter fw = new FileWriter(notes)) { fw.write(e.getText().toString()); } catch (IOException x) { } })
-            .setNegativeButton(t(a, "Cancel"), null).setOnDismissListener(d -> modOrder(a)).show();
+    private static String where(Activity a) {
+        return t(a, "Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s 1.3.2).",
+                 a.getPackageName(), GameSettings.game(a)[1]);
+    }
+    // the load order: higher wins; each mod's notes, the files it shares, moving it, deleting it
+    private static void order(Activity a) {
+        List<File> ms = modList(a); Map<File, Map<File, Integer>> cf = conflicts(ms);
+        heading(a, t(a, "Load order: higher wins"));
+        for (int i = 0; i < ms.size(); i++) {
+            File m = ms.get(i); final int k = i; LinearLayout c = card(a);
+            titleRow(a, c, (i + 1) + ". " + plain(m) + (m.getName().startsWith("-") ? " (" + t(a, "off") + ")" : ""), null);
+            String n = ""; try { n = new String(java.nio.file.Files.readAllBytes(new File(m, "notes.txt").toPath()), java.nio.charset.StandardCharsets.UTF_8).trim(); } catch (IOException e) { }
+            TextView nt = text(a, n.isEmpty() ? t(a, "No notes.") : n, 13, SUB, false); nt.setMaxLines(6); nt.setPadding(0, dp(a, 4), 0, 0); c.addView(nt);
+            Map<File, Integer> sh = cf.get(m);
+            if (sh != null) for (Map.Entry<File, Integer> e : sh.entrySet()) {
+                boolean wins = ms.indexOf(m) < ms.indexOf(e.getKey());
+                TextView w = text(a, "⚠ " + t(a, wins ? "Replaces %d of the same files as %s: this mod's are used (it is higher)." : "Replaces %d of the same files as %s: that mod's are used (it is higher).", e.getValue(), plain(e.getKey())), 13, WARN, false);
+                w.setPadding(0, dp(a, 4), 0, 0); c.addView(w);
+            }
+            LinearLayout r = new LinearLayout(a); c.addView(r);
+            if (i > 0) button(a, r, "↑ " + t(a, "Move up"), false, () -> { java.util.Collections.swap(ms, k, k - 1); saveOrder(a, ms); RESTART.add("mods"); redraw(); });
+            if (i < ms.size() - 1) button(a, r, "↓ " + t(a, "Move down"), false, () -> { java.util.Collections.swap(ms, k, k + 1); saveOrder(a, ms); RESTART.add("mods"); redraw(); });
+            button(a, r, t(a, "Edit notes"), false, () -> notes(a, m));
+            button(a, r, t(a, "Delete"), false, () -> confirm(a, t(a, "Delete this mod from the phone?"), () -> { deleteTree(m); ms.remove(m); saveOrder(a, ms); RESTART.add("mods"); go("order"); }));
+        }
+        LinearLayout r = new LinearLayout(a); body.addView(r); button(a, r, t(a, "Done"), true, () -> go("mods"));
+    }
+    private static void notes(Activity a, File m) {
+        body.removeAllViews(); heading(a, plain(m) + " · " + t(a, "Notes"));
+        LinearLayout c = card(a); EditText e = field(a, c, ""); e.setSingleLine(false); e.setMinLines(5); e.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        try { e.setText(new String(java.nio.file.Files.readAllBytes(new File(m, "notes.txt").toPath()), java.nio.charset.StandardCharsets.UTF_8)); } catch (IOException x) { }
+        LinearLayout r = new LinearLayout(a); body.addView(r);
+        button(a, r, t(a, "Save"), true, () -> { try (FileWriter fw = new FileWriter(new File(m, "notes.txt"))) { fw.write(e.getText().toString()); } catch (IOException x) { } go("order"); });
+        button(a, r, t(a, "Cancel"), false, () -> go("order"));
+    }
+    private static void confirm(Activity a, String q, Runnable yes) {   // asked in a card at the top of the page, not a pop-up
+        LinearLayout c = new LinearLayout(a); c.setOrientation(LinearLayout.VERTICAL); c.setBackground(round(CARD, dp(a, 16), dp(a, 2), WARN)); c.setPadding(dp(a, 16), dp(a, 12), dp(a, 16), dp(a, 12));
+        c.addView(text(a, q, 15, TEXT, true)); LinearLayout r = new LinearLayout(a); c.addView(r);
+        button(a, r, t(a, "Delete"), true, yes); button(a, r, t(a, "Cancel"), false, () -> go(page));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.bottomMargin = dp(a, 10); body.addView(c, 0, lp); scroll.scrollTo(0, 0);
     }
 
-    // ---------- files: save data out and in, mods in (the system file picker; GameActivity.onActivityResult hands the answer here) ----------
-    static final int REQ_EXPORT = 101, REQ_IMPORT = 102, REQ_MOD = 103, REQ_DRIVER = 104;
-    // the graphics driver: the phone's own, an installed package (Turnip, PanVK...), a new package from the file picker, or the releases page for this GPU; from the next start
-    private static void driverMenu(Activity a) {
-        List<String[]> pk = DriverPackages.installed(a); String cur = DriverPackages.current(a); String[] src = DriverPackages.source(a);
-        List<String> rows = new ArrayList<>(); List<Runnable> acts = new ArrayList<>();
-        rows.add((cur.isEmpty() ? "✓ " : "") + t(a, "The phone's own driver")); acts.add(() -> { DriverPackages.useSystem(a); Toast.makeText(a, t(a, "The phone's own driver: from the next start."), Toast.LENGTH_LONG).show(); });
-        for (String[] p : pk) { rows.add((p[1].equals(cur) ? "✓ " : "") + p[0]); acts.add(() -> { DriverPackages.use(a, new File(p[1])); Toast.makeText(a, t(a, "%s: from the next start.", p[0]), Toast.LENGTH_LONG).show(); }); }
-        rows.add(t(a, "Install a driver package (.zip)")); acts.add(() -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_DRIVER));
-        if (DriverPackages.isTurnip(cur)) { rows.add(t(a, "Turnip options")); acts.add(() -> turnipOptions(a)); }
-        if (src != null) { rows.add(src[0]); acts.add(() -> a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(src[1])))); }
-        open = true;
-        new AlertDialog.Builder(a).setTitle(t(a, "Graphics driver")).setItems(rows.toArray(new String[0]), (dd, w) -> { open = false; acts.get(w).run(); })
-            .setNegativeButton(t(a, "Back"), null).setOnDismissListener(dd -> open = false).show();
+    // ---------- saves, online, system ----------
+    private static void saves(Activity a) {
+        heading(a, t(a, "Saves"));
+        action(a, t(a, "Export save data"), t(a, "Save in the game first: the export is the last save the game wrote."),
+               () -> pick(a, Intent.ACTION_CREATE_DOCUMENT, GameSettings.game(a)[2] + "-save.zip", REQ_EXPORT));
+        action(a, t(a, "Import save data"), t(a, "Your current save is kept as a backup."), () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_IMPORT));
     }
+    // Online room (hle_relay.c, dm/server): local play with players elsewhere through a room server someone hosts (their own Railway service, or any PC); everyone enters the
+    // same server address and room code. Applies from the next start; mods stay off for local play, as on Wi-Fi
+    private static void online(Activity a) {
+        heading(a, t(a, "Online room"));
+        note(a, t(a, "Play the game's local link battles, trades and Max Raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off."));
+        String room = GameSettings.get(a, "DM_RELAY_ROOM");
+        LinearLayout c = card(a); titleRow(a, c, room.isEmpty() ? t(a, "off (local play on this Wi-Fi)") : t(a, "Room: %s", room), RESTART.contains("DM_RELAY_ROOM") ? t(a, "Applies next start") : null);
+        EditText srv = field(a, c, t(a, "server (address:port)")); srv.setText(GameSettings.get(a, "DM_RELAY"));
+        EditText code = field(a, c, t(a, "room code")); code.setText(room);
+        LinearLayout r = new LinearLayout(a); c.addView(r);
+        button(a, r, t(a, "Join"), true, () -> { String sv = srv.getText().toString().trim(), cd = code.getText().toString().trim();
+            if (sv.isEmpty() || cd.isEmpty()) { say(t(a, "Enter both the server and the room code.")); return; }
+            GameSettings.set(a, "DM_RELAY", sv); GameSettings.set(a, "DM_RELAY_ROOM", cd.replaceAll("\\s+", "")); RESTART.add("DM_RELAY_ROOM"); go("online"); });
+        if (!room.isEmpty()) button(a, r, t(a, "Leave room"), false, () -> { GameSettings.set(a, "DM_RELAY_ROOM", ""); RESTART.add("DM_RELAY_ROOM"); go("online"); });
+    }
+    private static void system(Activity a) {
+        heading(a, t(a, "Graphics driver"));
+        action(a, t(a, "Graphics driver"), DriverPackages.label(DriverPackages.current(a)), () -> go("driver"));
+        heading(a, t(a, "Language"));
+        String[][] l = new String[T.LANGS.length][]; for (int i = 0; i < l.length; i++) l[i] = new String[] { T.LANGS[i][0], i == 0 ? t(a, "Auto") : T.LANGS[i][1], i == 0 ? t(a, "Auto (the phone's language)") : "" };
+        choice(a, "DM_LANG", t(a, "Language"), l);
+    }
+    // the graphics driver: the phone's own, an installed package (Turnip, PanVK...), a new package from the file picker, or the releases page for this GPU; from the next start
+    private static void driver(Activity a) {
+        List<String[]> pk = DriverPackages.installed(a); String cur = DriverPackages.current(a); String[] src = DriverPackages.source(a);
+        heading(a, t(a, "Graphics driver"));
+        if (RESTART.contains("driver")) note(a, t(a, "The new driver is used from the next start."));
+        driverRow(a, t(a, "The phone's own driver"), cur.isEmpty(), () -> DriverPackages.useSystem(a));
+        for (String[] p : pk) driverRow(a, p[0], p[1].equals(cur), () -> DriverPackages.use(a, new File(p[1])));
+        LinearLayout r = new LinearLayout(a); body.addView(r);
+        button(a, r, t(a, "Install a driver package (.zip)"), true, () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_DRIVER));
+        if (src != null) button(a, r, src[0], false, () -> a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(src[1]))));
+        if (DriverPackages.isTurnip(cur)) {
+            heading(a, t(a, "Turnip options (from the next start)"));
+            Set<String> on = DriverPackages.turnipOptions(a);
+            for (String[] o : DriverPackages.TURNIP_OPTIONS) {
+                boolean v = on.contains(o[0]); LinearLayout c = card(a); LinearLayout row = titleRow(a, c, o[1], null); row.addView(pill(a, v ? t(a, "On") : t(a, "Off"), v));
+                c.setOnClickListener(x -> { if (v) on.remove(o[0]); else on.add(o[0]); DriverPackages.setTurnipOptions(a, on); RESTART.add("driver"); redraw(); });
+            }
+        }
+        LinearLayout d = new LinearLayout(a); body.addView(d); button(a, d, t(a, "Done"), false, () -> go("system"));
+    }
+    private static void driverRow(Activity a, String name, boolean on, Runnable use) {
+        LinearLayout c = card(a); LinearLayout row = titleRow(a, c, name, null);
+        if (on) { row.addView(text(a, "✓", 18, accent(a), true)); c.setBackground(round(CARD, dp(a, 16), dp(a, 2), accent(a))); }
+        c.setOnClickListener(v -> { use.run(); RESTART.add("driver"); redraw(); });
+    }
+
+    // ---------- files: save data out and in, mods and drivers in (the system file picker; GameActivity.onActivityResult hands the answer here) ----------
+    static final int REQ_EXPORT = 101, REQ_IMPORT = 102, REQ_MOD = 103, REQ_DRIVER = 104;
     private static void pick(Activity a, String action, String name, int req) {
         Intent i = new Intent(action); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("application/zip");
         if (name != null) i.putExtra(Intent.EXTRA_TITLE, name);
-        if (req == REQ_EXPORT) Toast.makeText(a, t(a, "Save in the game first: the export is the last save the game wrote."), Toast.LENGTH_LONG).show();
         a.startActivityForResult(i, req);
-    }
-    private static void turnipOptions(Activity a) {
-        String[][] o = DriverPackages.TURNIP_OPTIONS; java.util.Set<String> on = DriverPackages.turnipOptions(a);
-        String[] names = new String[o.length]; boolean[] chk = new boolean[o.length];
-        for (int i = 0; i < o.length; i++) { names[i] = o[i][1]; chk[i] = on.contains(o[i][0]); }
-        open = true;
-        new AlertDialog.Builder(a).setTitle(t(a, "Turnip options (from the next start)")).setMultiChoiceItems(names, chk, (d, i, v) -> { if (v) on.add(o[i][0]); else on.remove(o[i][0]); DriverPackages.setTurnipOptions(a, on); })
-            .setPositiveButton(t(a, "Done"), null).setOnDismissListener(d -> open = false).show();
     }
     static boolean onResult(Activity a, int req, int res, Intent data) {
         if (req != REQ_EXPORT && req != REQ_IMPORT && req != REQ_MOD && req != REQ_DRIVER) return false;
@@ -327,7 +467,12 @@ public final class GameMenu {
                 }
             } catch (IOException | SecurityException e) {
                 msg = t(a, req == REQ_EXPORT ? "Could not export the save: %s" : req == REQ_IMPORT ? "Could not import the save: %s" : "Could not install the mod: %s", e.getMessage()); }
-            final String m = msg; a.runOnUiThread(() -> Toast.makeText(a, m, Toast.LENGTH_LONG).show());
+            final String m = msg;
+            a.runOnUiThread(() -> {   // (the answer in the panel's status line, on the page it belongs to)
+                if (dlg == null) open(a, null);
+                if (req == REQ_MOD) { RESTART.add("mods"); go("mods"); } else if (req == REQ_DRIVER) go("driver"); else go("saves");
+                say(m);
+            });
         }).start();
         return true;
     }
@@ -382,21 +527,4 @@ public final class GameMenu {
         return last.toLowerCase(java.util.Locale.ROOT).endsWith(".pchtxt") && !last.contains("..") ? "exefs/" + last : null;
     }
     private static void deleteTree(File f) { File[] cs = f.listFiles(); if (cs != null) for (File c : cs) deleteTree(c); f.delete(); }
-
-    // Online room (hle_relay.c, dm/server): local play with players elsewhere through a room server someone hosts (their own Railway service, or any PC); everyone enters the
-    // same server address and room code. Applies from the next start; mods stay off for local play, as on Wi-Fi
-    private static void onlineRoom(Activity a) {
-        LinearLayout root = new LinearLayout(a); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 24, 48, 0);
-        TextView h = new TextView(a); h.setText(t(a, "Play the game's local link battles, trades and Max Raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off.")); root.addView(h);
-        EditText srv = new EditText(a); srv.setHint(t(a, "server (address:port)")); srv.setSingleLine(); srv.setText(GameSettings.get(a, "DM_RELAY")); root.addView(srv);
-        EditText code = new EditText(a); code.setHint(t(a, "room code")); code.setSingleLine(); code.setText(GameSettings.get(a, "DM_RELAY_ROOM")); root.addView(code);
-        open = true;
-        new AlertDialog.Builder(a).setTitle(t(a, "Online room")).setView(root)
-            .setPositiveButton(t(a, "Join"), (d, w) -> { String sv = srv.getText().toString().trim(), c = code.getText().toString().trim();
-                if (sv.isEmpty() || c.isEmpty()) { Toast.makeText(a, t(a, "Enter both the server and the room code."), Toast.LENGTH_LONG).show(); return; }
-                GameSettings.set(a, "DM_RELAY", sv); GameSettings.set(a, "DM_RELAY_ROOM", c.replaceAll("\\s+", ""));
-                Toast.makeText(a, t(a, "Saved: close the game and start it again, then use the game's local link options."), Toast.LENGTH_LONG).show(); })
-            .setNeutralButton(t(a, "Leave room"), (d, w) -> { GameSettings.set(a, "DM_RELAY_ROOM", ""); Toast.makeText(a, t(a, "Local play is back on this Wi-Fi from the next start."), Toast.LENGTH_LONG).show(); })
-            .setNegativeButton(t(a, "Back"), null).setOnDismissListener(d -> { open = false; }).show();
-    }
 }

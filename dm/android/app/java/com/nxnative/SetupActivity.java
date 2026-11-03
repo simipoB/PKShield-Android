@@ -110,6 +110,10 @@ public final class SetupActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        if (getIntent().getStringExtra("menu") != null) {   // am start ... --es menu 1: the in-game settings panel over this screen (a look at it without the game, over adb)
+            setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE); setContentView(new android.view.View(this));
+            getWindow().getDecorView().post(() -> GameMenu.show(this, 0)); return;
+        }
         // official release or not (BuildSigner): into env.txt every start, so the game's log says which; an unofficial build is told so before the game starts
         String[] signers = BuildSigner.digests(this); boolean official = BuildSigner.official(signers);
         envSet("DM_BUILD_SIGNER", BuildSigner.label(signers));
