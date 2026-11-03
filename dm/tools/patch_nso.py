@@ -144,6 +144,10 @@ CUTS = {
   '709bfd66115298640155fcc4979dba15': [
     (0x167d54c, '6200c0d2', '2200c0d2', 'StandardAllocator::Initialize(nullptr, size): address space mov x2,#0x300000000 → mov x2,#0x100000000 (12 GB → 4 GB)'),
   ],
+  # Pokémon Scarlet 4.0.0 main: Violet's allocator setup at the same offset (the same function, byte for byte up to it)
+  '421c5411b487eb4d049dd065fec95477': [
+    (0x167d54c, '6200c0d2', '2200c0d2', 'StandardAllocator::Initialize(nullptr, size): address space mov x2,#0x300000000 → mov x2,#0x100000000 (12 GB → 4 GB)'),
+  ],
   # Pokémon Legends: Arceus 1.1.1 (v262144) sdk (SDK 11): the same node area cut. The constructor is at sdk+0x34e038 (AddressRegionManager::AddressRegionManager, limit = alias start + 0x3fe00000
   # at +0x10, the area registered as occupied at +0x34e0e4)
   'b39add63421be525d352e576dab438d3': [
