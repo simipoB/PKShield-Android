@@ -169,6 +169,7 @@ public final class GameMenu {
         rows.add((cur.isEmpty() ? "✓ " : "") + "The phone's own driver"); acts.add(() -> { DriverPackages.useSystem(a); Toast.makeText(a, "The phone's own driver: from the next start.", Toast.LENGTH_LONG).show(); });
         for (String[] p : pk) { rows.add((p[1].equals(cur) ? "✓ " : "") + p[0]); acts.add(() -> { DriverPackages.use(a, new File(p[1])); Toast.makeText(a, p[0] + ": from the next start.", Toast.LENGTH_LONG).show(); }); }
         rows.add("Install a driver package (.zip)"); acts.add(() -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_DRIVER));
+        if (DriverPackages.isTurnip(cur)) { rows.add("Turnip options"); acts.add(() -> turnipOptions(a)); }
         if (src != null) { rows.add(src[0]); acts.add(() -> a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(src[1])))); }
         open = true;
         new AlertDialog.Builder(a).setTitle("Graphics driver").setItems(rows.toArray(new String[0]), (dd, w) -> { open = false; acts.get(w).run(); })
@@ -179,6 +180,14 @@ public final class GameMenu {
         if (name != null) i.putExtra(Intent.EXTRA_TITLE, name);
         if (req == REQ_EXPORT) Toast.makeText(a, "Save in the game first: the export is the last save the game wrote.", Toast.LENGTH_LONG).show();
         a.startActivityForResult(i, req);
+    }
+    private static void turnipOptions(Activity a) {
+        String[][] o = DriverPackages.TURNIP_OPTIONS; java.util.Set<String> on = DriverPackages.turnipOptions(a);
+        String[] names = new String[o.length]; boolean[] chk = new boolean[o.length];
+        for (int i = 0; i < o.length; i++) { names[i] = o[i][1]; chk[i] = on.contains(o[i][0]); }
+        open = true;
+        new AlertDialog.Builder(a).setTitle("Turnip options (from the next start)").setMultiChoiceItems(names, chk, (d, i, v) -> { if (v) on.add(o[i][0]); else on.remove(o[i][0]); DriverPackages.setTurnipOptions(a, on); })
+            .setPositiveButton("Done", null).setOnDismissListener(d -> open = false).show();
     }
     static boolean onResult(Activity a, int req, int res, Intent data) {
         if (req != REQ_EXPORT && req != REQ_IMPORT && req != REQ_MOD && req != REQ_DRIVER) return false;

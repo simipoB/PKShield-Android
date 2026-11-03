@@ -75,9 +75,18 @@ final class DriverPackages {
     static String[] source(Context c) {
         String gpu = ""; try (BufferedReader r = new BufferedReader(new FileReader(new File(GameSettings.dir(c), "gpu.txt")))) { String l = r.readLine(); if (l != null) gpu = l.toLowerCase(java.util.Locale.ROOT); } catch (IOException e) { }
         String fam = GameSettings.profile(c)[0];
-        if (gpu.contains("adreno") || (gpu.isEmpty() && fam.startsWith("sd"))) return new String[] { "Get Turnip for Adreno (StevenMXZ's releases)", TURNIP_RELEASES };
+        if (gpu.contains("adreno") || (gpu.isEmpty() && fam.startsWith("sd"))) {   // the Turnip build for this Adreno: Gen8 for the 8xx series (8 Elite), the R builds for 6xx / 7xx
+            boolean a8 = gpu.matches(".*adreno[^0-9]*8[0-9][0-9].*");
+            return new String[] { "Get Turnip for Adreno (StevenMXZ's releases: pick a " + (a8 ? "\"Turnip Gen8\" build for this Adreno 8xx)" : "\"Turnip v…-R\" build)"), TURNIP_RELEASES }; }
         if (gpu.matches(".*mali-g(57|68|77|78|52|72|76).*")) return new String[] { "Get PanVK for Mali (FristOneRR's releases)", PANVK_RELEASES };
         return null;
     }
+    // Mesa Turnip's own switches (TU_DEBUG, read by the driver from the environment: env.txt), offered while a Turnip package is the driver. They do on any Turnip build
+    // what patched variants bake in (StevenMXZ's force_sysmem patch is TU_DEBUG=sysmem)
+    static final String[][] TURNIP_OPTIONS = { { "sysmem", "Render to memory (fixes flicker / corrupted frames from tiled rendering; slower)" },
+        { "noubwc", "No framebuffer compression (UBWC: fixes corrupted or striped textures)" }, { "nolrz", "No early depth rejection (LRZ: fixes some depth glitches)" } };
+    static boolean isTurnip(String lib) { return lib != null && new File(lib).getName().toLowerCase(java.util.Locale.ROOT).contains("freedreno"); }
+    static java.util.Set<String> turnipOptions(Context c) { java.util.Set<String> s = new java.util.LinkedHashSet<>(); for (String o : GameSettings.get(c, "TU_DEBUG").split(",")) if (!o.isEmpty()) s.add(o); return s; }
+    static void setTurnipOptions(Context c, java.util.Set<String> s) { setAll(c, "TU_DEBUG", String.join(",", s)); }
     static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File x : k) deleteTree(x); f.delete(); }
 }
