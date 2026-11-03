@@ -97,7 +97,7 @@ framebuffers keep its compression (AFBC). The driver can be changed any time fro
 | Upscaling | Sharp (ours), SGSR (Qualcomm's), Smooth (a plain stretch) | at once |
 | Graphics | **Auto**, High (TV mode, 1080p), Low (handheld mode, 720p), Adaptive (High, Low while the phone is hot) | next start |
 | Textures | **Auto**, Full, Half (large textures at half size: less memory and GPU work) | next start |
-| Frame rate (Shield) | 30 fps, 60 fps (experimental) | next start |
+| Frame rate (Sword & Shield) | Auto, 30 fps, 60 fps (experimental) | next start |
 | Controller buttons | by position (as on a Switch pad) or by label; remap any button | at once |
 | Touch controls | opacity, fade time, layout | at once |
 
@@ -121,7 +121,6 @@ with their options) and setting a game up again.
 
 - No online features (Y-Comm, link trades, online raids).
 - The water in the Wild Area renders darker than on the Switch.
-- 60 fps is Shield only for now (Sword's addresses still to be found).
 
 ## Building
 
