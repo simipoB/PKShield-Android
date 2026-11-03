@@ -53,11 +53,12 @@ final class GameSettings {
         try (BufferedReader r = new BufferedReader(new FileReader(envFile(c)))) { String l; while ((l = r.readLine()) != null) if (l.startsWith(key + "=")) return l.substring(key.length() + 1); } catch (IOException e) { }
         return "";
     }
-    static synchronized void set(Context c, String key, String value) {
+    static void set(Context c, String key, String value) { setIn(envFile(c), key, value); }
+    static synchronized void setIn(File env, String key, String value) {   // (DriverPackages: every game's env.txt)
         List<String> lines = new ArrayList<>();
-        try (BufferedReader r = new BufferedReader(new FileReader(envFile(c)))) { String l; while ((l = r.readLine()) != null) if (!l.startsWith(key + "=")) lines.add(l); } catch (IOException e) { }
+        try (BufferedReader r = new BufferedReader(new FileReader(env))) { String l; while ((l = r.readLine()) != null) if (!l.startsWith(key + "=")) lines.add(l); } catch (IOException e) { }
         if (!value.isEmpty()) lines.add(key + "=" + value.replace("\n", " "));
-        try (FileWriter w = new FileWriter(envFile(c))) { for (String l : lines) w.write(l + "\n"); } catch (IOException e) { }
+        try (FileWriter w = new FileWriter(env)) { for (String l : lines) w.write(l + "\n"); } catch (IOException e) { }
     }
 
     static boolean isShield(Context c) { return "01008DB008C2C000".equalsIgnoreCase(game(c)[0]); }

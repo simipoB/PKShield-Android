@@ -1,0 +1,83 @@
+// The Vulkan driver the game uses: the phone's own, or a driver package (a .zip with meta.json naming the library, as emulators use: Mesa Turnip for Adreno, Mesa PanVK
+// for Mali), unpacked into the app's private storage (libadrenotools loads drivers only from there; nvn_vk.c vk_open opens PanVK directly). The choice is the phone's,
+// so it goes to every game's env.txt, and each game's pipeline cache is dropped (compiled by the old driver). Used by the setup screen and the in-game menu.
+// The app ships no driver and downloads none: the player gets a package from its developer's own releases page (offered as links for the phone's GPU)
+package com.nxnative;
+
+import android.content.Context;
+import android.net.Uri;
+import java.io.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+
+final class DriverPackages {
+    private DriverPackages() { }
+    static final String TURNIP_RELEASES = "https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases";
+    static final String PANVK_RELEASES = "https://github.com/FristOneRR/FristOneRR-Panvk-Driver/releases";
+
+    static File root(Context c) { return new File(c.getFilesDir(), "drivers"); }
+    // every game's folder (the driver is the phone's): its env.txt and pipeline cache
+    private static List<File> gameDirs(Context c) {
+        List<File> out = new ArrayList<>(); List<String[]> gs = GameSettings.games(c);
+        for (int i = 0; i < gs.size(); i++) out.add(i == 0 ? GameSettings.root(c) : new File(GameSettings.root(c), gs.get(i)[0]));
+        return out;
+    }
+    private static void setAll(Context c, String key, String value) {
+        for (File d : gameDirs(c)) { d.mkdirs(); GameSettings.setIn(new File(d, "env.txt"), key, value); new File(d, "vk_pipeline_cache.bin").delete(); }
+    }
+    static String current(Context c) { return GameSettings.get(c, "DM_VK_DRIVER"); }
+    static String label(String lib) { if (lib == null || lib.isEmpty()) return "the phone's own driver"; File f = new File(lib); return f.getParentFile().getName() + " (" + f.getName() + ")"; }
+    static void useSystem(Context c) { setAll(c, "DM_VK_DRIVER", ""); setAll(c, "DM_VK_DRIVER_SHA256", ""); }
+    static void use(Context c, File lib) {
+        String sha = ""; if (MaliDriver.isPanvk(lib.getName())) try { sha = MaliDriver.sha256(lib); } catch (IOException e) { }
+        setAll(c, "DM_VK_DRIVER_SHA256", sha); setAll(c, "DM_VK_DRIVER", lib.getPath());
+    }
+    // the installed packages: { folder name, library path }
+    static List<String[]> installed(Context c) {
+        List<String[]> out = new ArrayList<>(); File[] ds = root(c).listFiles(); if (ds == null) return out;
+        java.util.Arrays.sort(ds);
+        for (File d : ds) { String lib = library(d); if (lib != null) out.add(new String[] { d.getName(), new File(d, lib).getPath() }); }
+        return out;
+    }
+    private static String library(File dir) {
+        String lib = null; File meta = new File(dir, "meta.json");
+        if (meta.exists()) { StringBuilder sb = new StringBuilder(); try (BufferedReader r = new BufferedReader(new FileReader(meta))) { String l; while ((l = r.readLine()) != null) sb.append(l); } catch (IOException e) { }
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"libraryName\"\\s*:\\s*\"([^\"]+)\"").matcher(sb); if (m.find()) lib = m.group(1); }
+        if (lib == null) { String[] so = dir.list((d, n) -> n.endsWith(".so")); if (so != null && so.length == 1) lib = so[0]; }
+        return lib != null && new File(dir, lib).exists() ? lib : null;
+    }
+    // a package from the file picker: unpacked, checked, made the driver; returns what to tell the player
+    static String install(Context c, Uri u, String name) {
+        File dir = new File(root(c), name.replaceAll("[^A-Za-z0-9._-]", "_").replaceAll("\\.zip$", ""));
+        try {
+            deleteTree(dir); dir.mkdirs();
+            java.security.MessageDigest zmd; try { zmd = java.security.MessageDigest.getInstance("SHA-256"); } catch (java.security.NoSuchAlgorithmException e) { throw new IOException(e); }
+            try (java.security.DigestInputStream zd = new java.security.DigestInputStream(new BufferedInputStream(c.getContentResolver().openInputStream(u)), zmd);
+                 ZipInputStream z = new ZipInputStream(zd)) { ZipEntry e; byte[] b = new byte[1 << 16];
+                while ((e = z.getNextEntry()) != null) { if (e.isDirectory()) continue; String n = new File(e.getName()).getName();
+                    try (OutputStream o = new FileOutputStream(new File(dir, n))) { int k; while ((k = z.read(b)) > 0) o.write(b, 0, k); } }
+                while (zd.read(b) > 0) { } }   // the zip's central directory too: the digest covers the whole file
+            String zipSha = MaliDriver.hex(zmd.digest()), lib = library(dir);
+            if (lib == null) { deleteTree(dir); return name + " is not a driver package (no meta.json naming its library)"; }
+            File so = new File(dir, lib); String note = "";
+            if (MaliDriver.isPanvk(lib)) {   // a PanVK (Mali) package: named when it is a known build, else a warning with its digest
+                String known = MaliDriver.known(zipSha, MaliDriver.sha256(so));
+                note = known != null ? "\nVerified: " + known + " (SHA-256 matches the release)."
+                     : "\nNot a known FristOneRR PanVK release (SHA-256 " + zipSha.substring(0, 16) + "…): download drivers only from the developer's own Releases page.";
+            }
+            use(c, so);
+            return "Driver " + name + " installed: it is used from the next start." + note;
+        } catch (IOException e) { return "could not read " + name + ": " + e.getMessage(); }
+    }
+    // where this phone's GPU gets a replacement driver: { label, url }, or null when none supports it (gpu: the engine's gpu.txt, else the chip family)
+    static String[] source(Context c) {
+        String gpu = ""; try (BufferedReader r = new BufferedReader(new FileReader(new File(GameSettings.dir(c), "gpu.txt")))) { String l = r.readLine(); if (l != null) gpu = l.toLowerCase(java.util.Locale.ROOT); } catch (IOException e) { }
+        String fam = GameSettings.profile(c)[0];
+        if (gpu.contains("adreno") || (gpu.isEmpty() && fam.startsWith("sd"))) return new String[] { "Get Turnip for Adreno (StevenMXZ's releases)", TURNIP_RELEASES };
+        if (gpu.matches(".*mali-g(57|68|77|78|52|72|76).*")) return new String[] { "Get PanVK for Mali (FristOneRR's releases)", PANVK_RELEASES };
+        return null;
+    }
+    static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File x : k) deleteTree(x); f.delete(); }
+}

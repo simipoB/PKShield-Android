@@ -71,6 +71,7 @@ public final class GameMenu {
         rows.add("Textures: " + label(t, GameSettings.get(a, "DM_VK_TEX_QUALITY"))); acts.add(() -> choose(a, "Textures", textures(a), "DM_VK_TEX_QUALITY"));
         if (GameSettings.has60(a)) { rows.add("Frame rate: " + label(fps(a), GameSettings.get(a, "DM_FPS_TARGET"))); acts.add(() -> choose(a, "Frame rate", fps(a), "DM_FPS_TARGET")); }
         rows.add("Controller buttons: " + label(PAD, GameSettings.get(a, "DM_PAD_LAYOUT"))); acts.add(() -> choose(a, "Controller buttons", PAD, "DM_PAD_LAYOUT"));
+        rows.add("Graphics driver: " + DriverPackages.label(DriverPackages.current(a))); acts.add(() -> driverMenu(a));
         rows.add("Remap controller buttons (or hold − for 3 s)"); acts.add(() -> remap(a));
         rows.add("Touch controls: look"); acts.add(() -> touchLook(a));
         rows.add("Move the touch controls"); acts.add(() -> {
@@ -160,7 +161,19 @@ public final class GameMenu {
         }).setPositiveButton("Where do mods go?", (d, w) -> Toast.makeText(a, where, Toast.LENGTH_LONG).show()).show();
     }
     // ---------- files: save data out and in, mods in (the system file picker; GameActivity.onActivityResult hands the answer here) ----------
-    static final int REQ_EXPORT = 101, REQ_IMPORT = 102, REQ_MOD = 103;
+    static final int REQ_EXPORT = 101, REQ_IMPORT = 102, REQ_MOD = 103, REQ_DRIVER = 104;
+    // the graphics driver: the phone's own, an installed package (Turnip, PanVK...), a new package from the file picker, or the releases page for this GPU; from the next start
+    private static void driverMenu(Activity a) {
+        List<String[]> pk = DriverPackages.installed(a); String cur = DriverPackages.current(a); String[] src = DriverPackages.source(a);
+        List<String> rows = new ArrayList<>(); List<Runnable> acts = new ArrayList<>();
+        rows.add((cur.isEmpty() ? "✓ " : "") + "The phone's own driver"); acts.add(() -> { DriverPackages.useSystem(a); Toast.makeText(a, "The phone's own driver: from the next start.", Toast.LENGTH_LONG).show(); });
+        for (String[] p : pk) { rows.add((p[1].equals(cur) ? "✓ " : "") + p[0]); acts.add(() -> { DriverPackages.use(a, new File(p[1])); Toast.makeText(a, p[0] + ": from the next start.", Toast.LENGTH_LONG).show(); }); }
+        rows.add("Install a driver package (.zip)"); acts.add(() -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_DRIVER));
+        if (src != null) { rows.add(src[0]); acts.add(() -> a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(src[1])))); }
+        open = true;
+        new AlertDialog.Builder(a).setTitle("Graphics driver").setItems(rows.toArray(new String[0]), (dd, w) -> { open = false; acts.get(w).run(); })
+            .setNegativeButton("Back", null).setOnDismissListener(dd -> open = false).show();
+    }
     private static void pick(Activity a, String action, String name, int req) {
         Intent i = new Intent(action); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("application/zip");
         if (name != null) i.putExtra(Intent.EXTRA_TITLE, name);
@@ -168,13 +181,14 @@ public final class GameMenu {
         a.startActivityForResult(i, req);
     }
     static boolean onResult(Activity a, int req, int res, Intent data) {
-        if (req != REQ_EXPORT && req != REQ_IMPORT && req != REQ_MOD) return false;
+        if (req != REQ_EXPORT && req != REQ_IMPORT && req != REQ_MOD && req != REQ_DRIVER) return false;
         Uri u = res == Activity.RESULT_OK && data != null ? data.getData() : null; if (u == null) return true;
         File files = GameSettings.dir(a);
         new Thread(() -> {
             String msg;
             try {
-                if (req == REQ_EXPORT) {
+                if (req == REQ_DRIVER) msg = DriverPackages.install(a, u, displayName(a, u));
+                else if (req == REQ_EXPORT) {
                     try (OutputStream o = a.getContentResolver().openOutputStream(u, "wt"); ZipOutputStream z = new ZipOutputStream(o)) {
                         File save = new File(files, "save").getCanonicalFile(); int n = zipTree(save, save, z); msg = "Exported " + n + " save file" + (n == 1 ? "" : "s") + "."; }
                 } else if (req == REQ_IMPORT) {

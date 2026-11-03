@@ -139,7 +139,7 @@ public final class SetupActivity extends Activity {
         keysText = row(root, "Keys", "Choose", v -> pick(PICK_KEYS, true));
         // the Vulkan driver: the phone's own, or an Adreno driver package (a zip with meta.json and the library, e.g. Mesa Turnip) opened through libadrenotools
         driverText = row(root, "Graphics driver", "Choose", v -> pick(PICK_DRIVER, false));
-        button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); envSet("DM_VK_DRIVER_SHA256", ""); driverChanged(); refresh(); });
+        button(root, "Use the phone's own driver", v -> { DriverPackages.useSystem(this); refresh(); });
         maliOptions(root);
         TextView sn = new TextView(this); sn.setText("Settings (picture, graphics, textures, controller buttons, touch controls, mods) are in the game: tap the menu button at the top left, or hold − on a controller for 3 seconds for the controller buttons.");
         sn.setPadding(0, 24, 0, 24); root.addView(sn);
@@ -190,34 +190,7 @@ public final class SetupActivity extends Activity {
         c.setOnCheckedChangeListener((b, v) -> envSet(key, v ? on : "")); root.addView(c);
     }
     // a driver package into the app's private storage (libadrenotools loads drivers only from there): its meta.json names the library
-    private void installDriver(Uri u, String name) {
-        File dir = new File(getFilesDir(), "drivers/" + name.replaceAll("[^A-Za-z0-9._-]", "_").replaceAll("\\.zip$", "")); String lib = null;
-        try {
-            deleteTree(dir); dir.mkdirs();
-            java.security.MessageDigest zmd; try { zmd = java.security.MessageDigest.getInstance("SHA-256"); } catch (java.security.NoSuchAlgorithmException e) { throw new IOException(e); }
-            try (java.security.DigestInputStream zd = new java.security.DigestInputStream(new BufferedInputStream(getContentResolver().openInputStream(u)), zmd);
-                 ZipInputStream z = new ZipInputStream(zd)) { ZipEntry e;
-                while ((e = z.getNextEntry()) != null) { if (e.isDirectory()) continue; String n = new File(e.getName()).getName();
-                    try (OutputStream o = new FileOutputStream(new File(dir, n))) { copy(z, o); } }
-                byte[] rest = new byte[1 << 16]; while (zd.read(rest) > 0) { } }   // the zip's central directory too: the digest covers the whole file
-            String zipSha = MaliDriver.hex(zmd.digest());
-            File meta = new File(dir, "meta.json");
-            if (meta.exists()) { StringBuilder sb = new StringBuilder(); try (BufferedReader r = new BufferedReader(new FileReader(meta))) { String l; while ((l = r.readLine()) != null) sb.append(l); }
-                java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"libraryName\"\\s*:\\s*\"([^\"]+)\"").matcher(sb); if (m.find()) lib = m.group(1); }
-            if (lib == null) { String[] so = dir.list((d, n) -> n.endsWith(".so")); if (so != null && so.length == 1) lib = so[0]; }
-            if (lib == null || !new File(dir, lib).exists()) { status.setText(name + " is not a driver package (no meta.json naming its library)"); deleteTree(dir); return; }
-            File so = new File(dir, lib); String note = "";
-            // a PanVK (Mali) package: named when it is a known build (MaliDriver.KNOWN), else a warning with its digest; the digest goes into env.txt, so the log names the build
-            if (MaliDriver.isPanvk(lib)) {
-                String libSha = MaliDriver.sha256(so), known = MaliDriver.known(zipSha, libSha);
-                envSet("DM_VK_DRIVER_SHA256", libSha);
-                note = known != null ? "\nVerified: " + known + " (SHA-256 matches the release)."
-                     : "\nNot a known FristOneRR PanVK release (SHA-256 " + zipSha.substring(0, 16) + "…): download drivers only from the developer's own Releases page.";
-            } else envSet("DM_VK_DRIVER_SHA256", "");
-            envSet("DM_VK_DRIVER", so.getPath()); driverChanged();
-            status.setText("Driver " + name + " installed: it is used from the next start." + note); refresh();
-        } catch (IOException e) { status.setText("could not read " + name + ": " + e.getMessage()); }
-    }
+    private void installDriver(Uri u, String name) { status.setText(DriverPackages.install(this, u, name)); refresh(); }   // (DriverPackages: shared with the in-game menu)
     private static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) deleteTree(c); f.delete(); }
     private void refresh() {
         if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? "the phone's own Vulkan driver" : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")");
