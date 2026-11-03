@@ -1,4 +1,6 @@
-# PKShield & Sword
+# Galar Native
+
+*(formerly PKShield)*
 
 **Pokémon Sword and Pokémon Shield (Nintendo Switch, update 1.3.2) running natively on Android phones.** This is not emulation: the game's
 own ARM64 code runs directly on the phone's processor, rewritten only where Android requires it, and its graphics (NVN) are rebuilt on Vulkan.
@@ -13,7 +15,7 @@ own ARM64 code runs directly on the phone's processor, rewritten only where Andr
 
 ## One app, both games
 
-**Pokémon Sword & Shield** (`PokemonSwordShield.apk`, package `com.nxnative.pokemonshield`: it updates the Shield app in place, keeping
+**Galar Native** (`GalarNative.apk`, package `com.nxnative.pokemonshield`: it updates the PKShield app in place, keeping
 your setup and saves) runs both games with one engine: Sword (`0100ABF008968000`) is the same engine build as Shield (`01008DB008C2C000`).
 
 - **Setup reads your files** and installs whichever game they are: choose a Shield dump and Shield is set up, a Sword dump and Sword is.
@@ -32,7 +34,7 @@ shaders translated to SPIR-V by Ryujinx's shader translator, on the phone, durin
 
 ## Install and play
 
-1. Install `PokemonSwordShield.apk` (from the releases, or build it yourself: [docs/BUILDING.md](docs/BUILDING.md)) and open it.
+1. Install `GalarNative.apk` (from the releases, or build it yourself: [docs/BUILDING.md](docs/BUILDING.md)) and open it.
 2. **Game files → Choose**: your `.nsp` / `.xci` files (base game, update 1.3.2, any DLC; a merged XCI works too). **Keys → Choose**: your
    `prod.keys` (and `title.keys` if your dump needs it). The keys stay in the app's private storage: never uploaded, never part of the APK.
 3. **Set up the game.** The phone unpacks the game, rewrites its code and translates its shaders. When it is done the app *is* the game: it
@@ -48,7 +50,7 @@ files: an APK that comes with the game already in it is not from this project. E
 SHA-256: a5f49b44b6181758d82504f3beb0851c92093f454c792b49688728130673a070
 ```
 
-Check a download with `apksigner verify --print-certs PokemonSwordShield.apk`. A build signed with any other key says **"Unofficial build: not
+Check a download with `apksigner verify --print-certs GalarNative.apk`. A build signed with any other key says **"Unofficial build: not
 supported"** on its setup screen, and its log records it (`DM_BUILD_SIGNER=unofficial …`).
 
 A few shaders the game builds while it runs are saved the first time and added at the next start.

@@ -70,7 +70,7 @@ def main():
     ap.add_argument('--debuggable', action='store_true', help='test builds: adb run-as can reach the private storage of the app')
     a = ap.parse_args()
     g = _game.load(a.game); fam = _game.family(g)   # the games the engine built for g runs (Pokémon Shield: Shield and Sword, one app)
-    a.name = a.name or ' & '.join(f.get('name') for f in reversed(fam)).replace('Pokémon Sword & Pokémon Shield', 'Pokémon Sword & Shield')
+    a.name = a.name or ('Galar Native' if len(fam) > 1 else g.get('name'))   # the app's name: Galar Native runs Sword and Shield (each game's own shortcut names it)
     a.package = a.package or 'com.nxnative.' + _game.file_stem(g).lower()   # com.nxnative.pokemonshield: the Shield app's package, so its players update in place
     exe = '.exe' if os.name == 'nt' else ''; bat = '.bat' if os.name == 'nt' else ''
     bt = a.bt or os.path.expanduser('~/nxnative-work/tools/android-15'); jar = a.jar or os.path.expanduser('~/nxnative-work/tools/android-35/android.jar')
