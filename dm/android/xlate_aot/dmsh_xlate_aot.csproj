@@ -29,4 +29,8 @@
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Graphics.Shader/Ryujinx.Graphics.Shader.csproj" />
     <ProjectReference Include="$(RyuSrc)/src/Ryujinx.Common/Ryujinx.Common.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- 16 KB aligned, as every library in the app: phones with 16 KB pages load nothing else -->
+    <LinkerArg Include="-Wl,-z,max-page-size=16384" />
+  </ItemGroup>
 </Project>

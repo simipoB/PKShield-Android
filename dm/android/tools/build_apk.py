@@ -47,6 +47,14 @@ def shader_chain(g):   # the translation chain the engine is compiled for (DMSH_
         if ln.startswith('#define DMSH_CHAIN '): return ln.split('"')[1]
     sys.exit(f'[RED] no DMSH_CHAIN in {h}')
 
+def load_align(path):   # the smallest p_align of an ELF64's LOAD segments (0: not an ELF)
+    with open(path, 'rb') as f: h = f.read(64)
+    if h[:4] != b'\x7fELF' or h[4] != 2: return 0
+    phoff, = struct.unpack_from('<Q', h, 0x20); phentsize, phnum = struct.unpack_from('<HH', h, 0x36)
+    with open(path, 'rb') as f: f.seek(phoff); ph = f.read(phentsize * phnum)
+    al = [struct.unpack_from('<Q', ph, i * phentsize + 0x30)[0] for i in range(phnum) if struct.unpack_from('<I', ph, i * phentsize)[0] == 1]
+    return min(al) if al else 0
+
 def validate_extractor(path):
     with open(path, 'rb') as f: data = f.read()
     obsolete_error = 'LibHac cache count was not found'
@@ -69,6 +77,13 @@ def main():
     missing = [l for l in LIBS if not os.path.isfile(os.path.join(a.libs, l))]
     if missing: sys.exit('[RED] missing native libraries in ' + a.libs + ': ' + ', '.join(missing))
     validate_extractor(os.path.join(a.libs, 'libnx_extract.so'))
+    # 16 KB pages: Android 15+ warns about an app with a 4 KB aligned library ("Android App Compatibility"), and a phone with 16 KB pages cannot load one at all
+    # (scripts/build_apk_pc.sh links them all 16 KB aligned). STRICT_16K=1 refuses to package one
+    small = [l for l in LIBS + OPTIONAL if os.path.isfile(os.path.join(a.libs, l)) and 0 < load_align(os.path.join(a.libs, l)) < 0x4000]
+    if small:
+        msg = 'native libraries not 16 KB aligned (rebuild them with scripts/build_apk_pc.sh): ' + ', '.join(small)
+        if os.environ.get('STRICT_16K') == '1': sys.exit('[RED] ' + msg)
+        print('[WARNING] ' + msg)
     # the engine must be built for the chain setup makes (v0.36 shipped an engine built before a translation change: every fresh shader pack was refused, a blue screen)
     with open(os.path.join(a.libs, 'libnxnative.so'), 'rb') as f:
         so = f.read()

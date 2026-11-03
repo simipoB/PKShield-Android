@@ -13,6 +13,6 @@ FILES="main.cpp spirv_cross.cpp spirv_parser.cpp spirv_cross_parsed_ir.cpp spirv
 cd "$SRC"
 FLAGS="-O2 -std=c++11"
 g++ $FLAGS $FILES -o "$HERE/out/spirv-cross"
-"$TC/aarch64-linux-android$API-clang++" $FLAGS -fPIE -pie -static-libstdc++ $FILES -o "$HERE/out/libspirv_cross.so"
+"$TC/aarch64-linux-android$API-clang++" $FLAGS -fPIE -pie -Wl,-z,max-page-size=16384 -static-libstdc++ $FILES -o "$HERE/out/libspirv_cross.so"
 "$TC/llvm-strip" "$HERE/out/libspirv_cross.so"
 echo "spirv-cross $TAG: $(ls -l "$HERE/out/libspirv_cross.so" | awk '{print $5}') bytes (android), linux build at out/spirv-cross"

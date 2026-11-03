@@ -22,4 +22,8 @@
     <Compile Include="$(MSBuildThisFileDirectory)../../tools/nx_extract/Program.cs" />
     <PackageReference Include="LibHac" Version="0.19.0" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- 16 KB aligned, as every library in the app: phones with 16 KB pages load nothing else -->
+    <LinkerArg Include="-Wl,-z,max-page-size=16384" />
+  </ItemGroup>
 </Project>

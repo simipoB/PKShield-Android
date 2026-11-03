@@ -17,6 +17,7 @@ WORK=${WORK:-$HOME/psa-build}; mkdir -p "$WORK"; cd "$WORK"
 GAME=01008DB008C2C000; API=31; PYV=3.14.9; CAPV=5.0.7; LZ4V=1.10.0
 export NDK=${NDK:-$WORK/android-ndk-r27c} DOTNET=${DOTNET:-$WORK/dotnet/dotnet} DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 DOTNET_CLI_TELEMETRY_OPTOUT=1
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin; CC="$TC/aarch64-linux-android$API-clang"
+P16="-Wl,-z,max-page-size=16384"   # every native library 16 KB aligned: phones with 16 KB pages load nothing else (Android 15+ also warns about the rest)
 LIBS=$WORK/libs; mkdir -p "$LIBS"
 step() { echo; echo "== $*"; }
 need() { for t in "$@"; do command -v "$t" >/dev/null || { echo "[RED] $t is missing (see the top of this script for what to install)"; exit 1; }; done; }
@@ -70,14 +71,14 @@ if [ ! -f "$PY/prefix/lib/libpython3.14.so" ]; then
     mkdir -p "$PY"; curl -fsSLo py.tar.gz "https://www.python.org/ftp/python/$PYV/python-$PYV-aarch64-linux-android.tar.gz"; tar -xzf py.tar.gz -C "$PY"; rm py.tar.gz
 fi
 cp "$PY/prefix/lib/libpython3.14.so" "$PY/prefix/lib/libssl_python.so" "$PY/prefix/lib/libcrypto_python.so" "$LIBS/"
-"$CC" -O2 -fPIE -pie -I"$PY/prefix/include/python3.14" "$A/python/pylaunch.c" -L"$PY/prefix/lib" -lpython3.14 -o "$LIBS/libpython_exe.so"
+"$CC" -O2 -fPIE -pie $P16 -I"$PY/prefix/include/python3.14" "$A/python/pylaunch.c" -L"$PY/prefix/lib" -lpython3.14 -o "$LIBS/libpython_exe.so"
 
 step "6/8 capstone $CAPV and lz4 $LZ4V for Android (the code rewriter's disassembler, the NSO decompressor)"
 [ -d capstone-$CAPV ] || { curl -fsSLo cap.tar.gz https://github.com/capstone-engine/capstone/archive/refs/tags/$CAPV.tar.gz; tar -xzf cap.tar.gz; rm cap.tar.gz; }
-( cd capstone-$CAPV && "$CC" -O2 -shared -fPIC -DCAPSTONE_HAS_ARM64 -DCAPSTONE_USE_SYS_DYN_MEM -Iinclude cs.c MCInst.c MCInstrDesc.c MCRegisterInfo.c SStream.c Mapping.c utils.c \
+( cd capstone-$CAPV && "$CC" -O2 -shared -fPIC $P16 -DCAPSTONE_HAS_ARM64 -DCAPSTONE_USE_SYS_DYN_MEM -Iinclude cs.c MCInst.c MCInstrDesc.c MCRegisterInfo.c SStream.c Mapping.c utils.c \
     arch/AArch64/*.c -o "$LIBS/libcapstone.so" )
 [ -d lz4-$LZ4V ] || { curl -fsSLo lz4.tar.gz https://github.com/lz4/lz4/archive/refs/tags/v$LZ4V.tar.gz; tar -xzf lz4.tar.gz; rm lz4.tar.gz; }
-"$CC" -O2 -shared -fPIC "lz4-$LZ4V/lib/lz4.c" -o "$LIBS/liblz4.so"
+"$CC" -O2 -shared -fPIC $P16 "lz4-$LZ4V/lib/lz4.c" -o "$LIBS/liblz4.so"
 [ -d capstone-py ] || { python3 -m venv venv && venv/bin/pip install -q --target capstone-py capstone==$CAPV; }   # the Python binding (pure Python; its own library is not used)
 
 step "7/8 libadrenotools (custom Vulkan drivers)"
@@ -85,7 +86,7 @@ if [ "${TURNIP:-${CUSTOM_DRIVER:-1}}" = 1 ]; then   # on by default: every relea
     need cmake ninja
     [ -d libadrenotools ] || git clone -q --recursive --depth 1 https://github.com/bylaws/libadrenotools.git
     cmake -S libadrenotools -B libadrenotools/build -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a \
-        -DANDROID_PLATFORM=android-$API -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 >/dev/null
+        -DANDROID_PLATFORM=android-$API -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_SHARED_LINKER_FLAGS="$P16" -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON >/dev/null
     ninja -C libadrenotools/build >/dev/null
     find libadrenotools/build -name "*.so" -exec cp {} "$LIBS/" \;
 else   # an earlier build's copies in $LIBS would otherwise still go into the APK (build_apk.py takes the optional libraries it finds)
