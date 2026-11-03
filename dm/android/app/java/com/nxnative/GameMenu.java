@@ -44,18 +44,21 @@ public final class GameMenu {
     private static String label(String[][] opts, String cur) { for (String[] o : opts) if (o[0].equals(cur)) return o[1]; return opts[0][1]; }
 
     private static String[][] graphics(Activity a) {
-        String[] p = GameSettings.profile(a); String rec = p == null || p[2].equals("high") ? "High" : p[2].equals("auto") ? "Auto" : "Low";
-        return new String[][] { { "", "Auto for this phone (" + rec + ")" }, { "high", "High: TV mode, 1080p, full effects" },
+        String[] p = GameSettings.profile(a); String rec = p[2].equals("high") ? "High" : p[2].equals("auto") ? "Adaptive" : "Low";
+        return new String[][] { { "", "Auto: this phone gets " + rec + " (" + p[1] + ")" }, { "high", "High: TV mode, 1080p, full effects" },
                                 { "low", "Low: handheld mode, 720p, lighter" }, { "auto", "Adaptive: High, Low while the phone is hot" } };
     }
     private static String[][] textures(Activity a) {
-        String[] p = GameSettings.profile(a); String rec = p != null && p[3].equals("half") ? "Half" : "Full";
-        return new String[][] { { "", "Auto: this phone gets " + rec + (p != null ? " (" + p[1] + ")" : "") }, { "full", "Full: the game's textures as they are" },
+        String[] p = GameSettings.profile(a); String rec = p[3].equals("half") ? "Half" : "Full";
+        return new String[][] { { "", "Auto: this phone gets " + rec + " (" + p[1] + ")" }, { "full", "Full: the game's textures as they are" },
                                 { "half", "Half: large textures at half size, less memory and GPU work" } };
     }
     private static final String[][] PICTURE = { { "", "16:9, as the game is made" }, { "fill", "Fill the screen (stretched)" }, { "20:9", "20:9, for a widescreen mod" } };
     private static final String[][] SCALER = { { "", "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)" }, { "smooth", "Smooth: a plain stretch" } };
-    private static final String[][] FPS = { { "", "30 fps, as the game is made" }, { "60", "60 fps (experimental)" } };
+    private static String[][] fps(Activity a) {
+        String[] p = GameSettings.profile(a);
+        return new String[][] { { "", "Auto: this phone gets " + p[5] + " fps (" + p[1] + ")" }, { "30", "30 fps, as the game is made" }, { "60", "60 fps (experimental: needs a fast phone)" } };
+    }
     private static final String[][] PAD = { { "", "By position, as on a Switch pad" }, { "labels", "By label (the button marked A is A)" } };
 
     private static void menu(Activity a) {
@@ -65,7 +68,7 @@ public final class GameMenu {
         rows.add("Upscaling: " + label(SCALER, GameSettings.get(a, "DM_SCALER"))); acts.add(() -> choose(a, "Upscaling", SCALER, "DM_SCALER"));
         rows.add("Graphics: " + label(g, GameSettings.get(a, "DM_GRAPHICS"))); acts.add(() -> choose(a, "Graphics", graphics(a), "DM_GRAPHICS"));
         rows.add("Textures: " + label(t, GameSettings.get(a, "DM_VK_TEX_QUALITY"))); acts.add(() -> choose(a, "Textures", textures(a), "DM_VK_TEX_QUALITY"));
-        if (GameSettings.has60(a)) { rows.add("Frame rate: " + label(FPS, GameSettings.get(a, "DM_FPS_TARGET"))); acts.add(() -> choose(a, "Frame rate", FPS, "DM_FPS_TARGET")); }
+        if (GameSettings.has60(a)) { rows.add("Frame rate: " + label(fps(a), GameSettings.get(a, "DM_FPS_TARGET"))); acts.add(() -> choose(a, "Frame rate", fps(a), "DM_FPS_TARGET")); }
         rows.add("Controller buttons: " + label(PAD, GameSettings.get(a, "DM_PAD_LAYOUT"))); acts.add(() -> choose(a, "Controller buttons", PAD, "DM_PAD_LAYOUT"));
         rows.add("Remap controller buttons (or hold − for 3 s)"); acts.add(() -> remap(a));
         rows.add("Touch controls: look"); acts.add(() -> touchLook(a));

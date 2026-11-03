@@ -267,10 +267,12 @@ static int g_started;
 static void window_rate(ANativeWindow *w) {
     if (!w) return;
     const char *e = getenv("DM_FPS_TARGET"); int fps = e ? atoi(e) : 0; float rate = fps >= 60 && fps <= 120 ? (float)fps : 30.0f;
-    typedef int32_t (*set_rate_fn)(ANativeWindow *, float, int8_t);   // libnativewindow, Android 11+: looked up, so a system without it only skips this
-    static set_rate_fn set_rate; if (!set_rate) set_rate = (set_rate_fn)dlsym(RTLD_DEFAULT, "ANativeWindow_setFrameRate");
-    if (!set_rate) { void *h = dlopen("libnativewindow.so", RTLD_NOW); if (h) set_rate = (set_rate_fn)dlsym(h, "ANativeWindow_setFrameRate"); }
-    int r = set_rate ? set_rate(w, rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE) : -1;
+    // libnativewindow: setFrameRateWithChangeStrategy (Android 12+, ALWAYS: the display switches modes even when the switch is not seamless, so a 144 Hz screen goes
+    // to 120 for 30 / 60 fps), else setFrameRate (Android 11); looked up, so a system without them only skips this
+    typedef int32_t (*set_rate_fn)(ANativeWindow *, float, int8_t); typedef int32_t (*set_rate2_fn)(ANativeWindow *, float, int8_t, int8_t);
+    void *h = dlopen("libnativewindow.so", RTLD_NOW);
+    set_rate2_fn r2 = h ? (set_rate2_fn)dlsym(h, "ANativeWindow_setFrameRateWithChangeStrategy") : NULL; set_rate_fn r1 = h ? (set_rate_fn)dlsym(h, "ANativeWindow_setFrameRate") : NULL;
+    int r = r2 ? r2(w, rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE, 1 /* ANATIVEWINDOW_CHANGE_FRAME_RATE_ALWAYS */) : r1 ? r1(w, rate, ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_FIXED_SOURCE) : -1;
     fprintf(stderr, "boot: window frame rate %.0f fps (fixed source)%s\n", rate, r ? " refused by the system" : "");
 }
 // RomFS mods: every <mods>/<mod>/romfs folder (and <mods>/romfs) as a RomFS overlay root, in name order (hle_fs.c rom_overlay_path: the first root that has a file wins);
@@ -337,6 +339,18 @@ static void device_profile(void) {
     char maker[PROP_VALUE_MAX] = "", model[PROP_VALUE_MAX] = ""; __system_property_get("ro.soc.manufacturer", maker); __system_property_get("ro.soc.model", model);
     panvk_defaults(model);
     const char *force = getenv("DM_PROFILE"); const struct prof *p = NULL;
+    // The app measured the phone (GameSettings.java profile: CPU, GPU and memory tiers, the display's modes) and handed the result over as DM_AUTO_*: those are the
+    // defaults, set without overwriting, so the player's own choices (env.txt, read before this) win. The table below stays for a start without them (an older app)
+    const char *ag = getenv("DM_AUTO_GRAPHICS");
+    if (ag && !force) {
+        const char *at = getenv("DM_AUTO_TEX"), *aa = getenv("DM_AUTO_ANISO"), *af = getenv("DM_AUTO_FPS");
+        setenv("DM_GRAPHICS", ag, 0); if (at && !strcmp(at, "half")) setenv("DM_VK_TEX_QUALITY", "half", 0); if (aa) setenv("DM_VK_MAX_ANISO", aa, 0);
+        if (af && atoi(af) >= 60) setenv("DM_FPS_TARGET", af, 0);   // (60 only when the app found a top phone and a display that 60 divides)
+        const char *g = getenv("DM_GRAPHICS"), *tq = getenv("DM_VK_TEX_QUALITY"), *an = getenv("DM_VK_MAX_ANISO"), *ft = getenv("DM_FPS_TARGET"), *w = getenv("DM_AUTO_WHAT"), *hz = getenv("DM_DISPLAY_HZ");
+        fprintf(stderr, "boot: this phone: %s (chip %s %s; display modes %s Hz): graphics %s, anisotropic filtering %sx, textures %s, frame rate %s\n", w ? w : "?", *maker ? maker : "?",
+                *model ? model : "unknown", hz ? hz : "?", g ? g : "default", an ? an : "default", tq ? tq : "full", ft ? ft : "30");
+        return;
+    }
     if (force) { for (unsigned i = 0; i < sizeof g_profiles / sizeof *g_profiles; i++) if (!strcmp(g_profiles[i].name, force)) p = &g_profiles[i]; }
     else p = profile_of(maker, model);
     // Then the phone's memory, for every phone (GameSettings.java auto(), the same rule): the game's textures are the largest use of memory and a phone that runs out
@@ -592,7 +606,7 @@ __attribute__((weak)) void nvn_vk_cache_save(void);
 __attribute__((weak)) void nvn_vk_window_term(void);   // releases the swapchain while the window still exists (nvn_vk.c)   // the pipeline cache file (nvn_vk.c), written when the app goes to the background
 static void on_cmd(struct android_app *app, int32_t cmd) {
     switch (cmd) {
-        case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); window_rate(app->window); host_start(); break;
+        case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); host_start(); window_rate(app->window); break;   // (after host_start: env.txt and the Auto settings decide the rate)
         case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); if (g_started && nvn_vk_window_term) nvn_vk_window_term(); break;
         case APP_CMD_GAINED_FOCUS: immersive(); if (g_started) { dm_focus_set(1); dm_audio_suspend(0); } break;
         case APP_CMD_LOST_FOCUS: if (g_started) { dm_focus_set(2); } break;

@@ -16,6 +16,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
     static boolean viaSetup;   // this process started the game from the setup screen (SetupActivity.startGame)
 
     @Override protected void onCreate(Bundle b) {
+        autoSettings();   // before super.onCreate: NativeActivity starts the engine there
         super.onCreate(b);
         // Android brings the task back after the process ended (recents, the launcher icon) straight into this activity, past the setup screen that translates the
         // shaders the game captured last time: hand over to it before there is a window (the engine starts with the window, android_main.c)
@@ -31,6 +32,17 @@ public final class GameActivity extends NativeActivity implements InputManager.I
     @Override public void onInputDeviceRemoved(int id) { check(); }
     @Override public void onInputDeviceChanged(int id) { check(); }
 
+    // What this phone is (GameSettings.profile: CPU, GPU and memory tiers, the display's refresh rates), handed to the engine as the Auto defaults; the player's
+    // own choices (env.txt) win over them (android_main.c device_profile)
+    private void autoSettings() {
+        try {
+            String[] p = GameSettings.profile(this);
+            android.system.Os.setenv("DM_AUTO_GRAPHICS", p[2], true); android.system.Os.setenv("DM_AUTO_TEX", p[3], true);
+            android.system.Os.setenv("DM_AUTO_ANISO", p[4], true); android.system.Os.setenv("DM_AUTO_FPS", p[5], true); android.system.Os.setenv("DM_AUTO_WHAT", p[1], true);
+            StringBuilder hz = new StringBuilder(); for (float r : GameSettings.refreshRates(this)) hz.append(hz.length() > 0 ? "," : "").append(Math.round(r));
+            android.system.Os.setenv("DM_DISPLAY_HZ", hz.toString(), true);
+        } catch (Exception e) { }
+    }
     private void check() {
         boolean pad = false;
         for (int id : InputDevice.getDeviceIds()) {
