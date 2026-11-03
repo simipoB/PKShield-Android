@@ -23,9 +23,10 @@ romfs_marker	arc/data.trpfd
 zip_store	.trpfs:.trpfd:.bnk:.wem:.pck:.mp4:.metallib
 
 # ---- Memory ----
-# survey: main never sets a heap at start (its memory is its own bss), so a 256 MB heap region; to be confirmed by the heap check at the first boot
-mem_reserve	0x40000000
-mem_alias	0x10000000
+# The NPDM declares 16 MB of system resource (virtual address memory), as Arceus: the game's StandardAllocator reserves its address space in the alias region
+# (nninitStartup → StandardAllocator::Initialize aborted with the survey's 256 MB). Arceus' layout: a 5.5 GB block, 4.9 GB of it alias
+mem_reserve	0x160000000
+mem_alias	0x138000000
 mem_stack	0x10000000
 app_pool	0xCD500000
 # Arceus: the pool bounds what the allocator maps
