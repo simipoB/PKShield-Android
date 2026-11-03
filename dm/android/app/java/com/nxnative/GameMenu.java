@@ -340,8 +340,8 @@ public final class GameMenu {
         note(a, where(a));
     }
     private static String where(Activity a) {
-        return t(a, "Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s 1.3.2).",
-                 a.getPackageName(), GameSettings.game(a)[1]);
+        return t(a, "Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s %s).",
+                 a.getPackageName(), GameSettings.game(a)[1], GameSettings.version(a));
     }
     // the load order: higher wins; each mod's notes, the files it shares, moving it, deleting it
     private static void order(Activity a) {

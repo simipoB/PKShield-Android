@@ -121,7 +121,7 @@ Preparing...	Préparation...
 Press a key…	Appuyez sur un bouton…
 Press the controller button for %s.	Appuyez sur le bouton de la manette pour %s.
 Previously copied selections are ready.	Les sélections copiées auparavant sont prêtes.
-Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s 1.3.2).	Mettez chaque mod dans son propre dossier dans Android/data/%s/files/mods/ — <mod>/romfs pour les fichiers, <mod>/exefs pour les correctifs .pchtxt (ils doivent être faits pour %s 1.3.2).
+Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s %s).	Mettez chaque mod dans son propre dossier dans Android/data/%s/files/mods/ — <mod>/romfs pour les fichiers, <mod>/exefs pour les correctifs .pchtxt (ils doivent être faits pour %s %s).
 Reading the shaders of your mods...	Lecture des shaders de vos mods...
 Ready. The setup log is in Android/data/%s/files/setup_work.	Prêt. Le journal est dans Android/data/%s/files/setup_work.
 Remap controller buttons	Réattribuer les boutons de la manette
@@ -181,6 +181,7 @@ finish	terminer
 free	libre
 hot	chaud
 never fade	ne jamais estomper
+none chosen (.nsp / .xci: base game, update %s, DLC)	rien de choisi (.nsp / .xci : jeu de base, mise à jour %s, DLC)
 off	désactivé
 off (local play on this Wi-Fi)	désactivé (jeu local sur ce Wi-Fi)
 pack the shaders	empaqueter les shaders

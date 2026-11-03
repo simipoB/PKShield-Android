@@ -121,7 +121,7 @@ Preparing...	準備中...
 Press a key…	ボタンを押してください…
 Press the controller button for %s.	%sに割り当てるボタンを押してください。
 Previously copied selections are ready.	以前コピーしたものは使えます。
-Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s 1.3.2).	各ModはAndroid/data/%s/files/mods/内の個別フォルダーへ — ファイルは<mod>/romfs、.pchtxtパッチは<mod>/exefs（%s 1.3.2用であること）。
+Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s %s).	各ModはAndroid/data/%s/files/mods/内の個別フォルダーへ — ファイルは<mod>/romfs、.pchtxtパッチは<mod>/exefs（%s %s用であること）。
 Reading the shaders of your mods...	Modのシェーダーを読み込み中...
 Ready. The setup log is in Android/data/%s/files/setup_work.	完了。ログはAndroid/data/%s/files/setup_workにあります。
 Remap controller buttons	コントローラーのボタン割り当て
@@ -181,6 +181,7 @@ finish	仕上げ
 free	空き
 hot	高温
 never fade	フェードしない
+none chosen (.nsp / .xci: base game, update %s, DLC)	未選択（.nsp / .xci：本体、更新データ%s、DLC）
 off	オフ
 off (local play on this Wi-Fi)	オフ（このWi-Fiでローカル通信）
 pack the shaders	シェーダーをまとめる

@@ -35,6 +35,8 @@ final class GameSettings {
         return games;
     }
     static File root(Context c) { return c.getExternalFilesDir(null); }
+    // the game version the app runs (the profile's build: Sword / Shield 1.3.2, Violet 4.0.0), the fourth column of assets/games
+    static String version(Context c) { String[] g = game(c); return g.length > 3 ? g[3] : "1.3.2"; }
     static String[] game(Context c) {
         String id = "";
         try (BufferedReader r = new BufferedReader(new FileReader(new File(root(c), "current_game")))) { String l = r.readLine(); if (l != null) id = l.trim(); } catch (IOException e) { }

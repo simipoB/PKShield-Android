@@ -83,11 +83,11 @@ T = {
 'Controller buttons reset.': ('Botones del mando restablecidos.', 'Botões do controle redefinidos.', 'Boutons de la manette réinitialisés.', 'コントローラーのボタンをリセットしました。'),
 'Press the controller button for %s.': ('Pulsa el botón del mando para %s.', 'Pressione o botão do controle para %s.', 'Appuyez sur le bouton de la manette pour %s.', '%sに割り当てるボタンを押してください。'),
 # ---- mods
-'Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s 1.3.2).':
-    ('Pon cada mod en su propia carpeta en Android/data/%s/files/mods/ — <mod>/romfs para archivos, <mod>/exefs para parches .pchtxt (deben ser para %s 1.3.2).',
-     'Coloque cada mod na própria pasta em Android/data/%s/files/mods/ — <mod>/romfs para arquivos, <mod>/exefs para patches .pchtxt (devem ser feitos para %s 1.3.2).',
-     'Mettez chaque mod dans son propre dossier dans Android/data/%s/files/mods/ — <mod>/romfs pour les fichiers, <mod>/exefs pour les correctifs .pchtxt (ils doivent être faits pour %s 1.3.2).',
-     '各ModはAndroid/data/%s/files/mods/内の個別フォルダーへ — ファイルは<mod>/romfs、.pchtxtパッチは<mod>/exefs（%s 1.3.2用であること）。'),
+'Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s %s).':
+    ('Pon cada mod en su propia carpeta en Android/data/%s/files/mods/ — <mod>/romfs para archivos, <mod>/exefs para parches .pchtxt (deben ser para %s %s).',
+     'Coloque cada mod na própria pasta em Android/data/%s/files/mods/ — <mod>/romfs para arquivos, <mod>/exefs para patches .pchtxt (devem ser feitos para %s %s).',
+     'Mettez chaque mod dans son propre dossier dans Android/data/%s/files/mods/ — <mod>/romfs pour les fichiers, <mod>/exefs pour les correctifs .pchtxt (ils doivent être faits pour %s %s).',
+     '各ModはAndroid/data/%s/files/mods/内の個別フォルダーへ — ファイルは<mod>/romfs、.pchtxtパッチは<mod>/exefs（%s %s用であること）。'),
 'Mods': ('Mods', 'Mods', 'Mods', 'Mod'),
 'No mods yet.': ('Aún no hay mods.', 'Ainda não há mods.', 'Aucun mod pour l\'instant.', 'Modはまだありません。'),
 'On: applies the next time you start the game.': ('Activado: se aplica la próxima vez que inicies el juego.', 'Ativado: vale a partir da próxima vez que você iniciar o jogo.', 'Activé : s\'applique au prochain lancement du jeu.', 'オン：次にゲームを起動したときに反映されます。'),
@@ -143,6 +143,7 @@ T = {
 # ---- the setup screen
 'Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone.': ('Configura el juego con tu propio volcado. Esta app no incluye archivos del juego ni claves; los tuyos nunca salen del teléfono.', 'Configure o jogo a partir do seu próprio dump. Este app não traz arquivos do jogo nem chaves; os seus nunca saem do celular.', 'Installez le jeu à partir de votre propre dump. Aucun fichier de jeu ni clé n\'est fourni ; les vôtres ne quittent jamais le téléphone.', 'ご自身でダンプしたデータからセットアップします。このアプリにゲームファイルや鍵は含まれず、あなたのデータが端末の外に出ることはありません。'),
 'Game files': ('Archivos del juego', 'Arquivos do jogo', 'Fichiers du jeu', 'ゲームファイル'),
+'none chosen (.nsp / .xci: base game, update %s, DLC)': ('nada elegido (.nsp / .xci: juego base, actualización %s, DLC)', 'nada escolhido (.nsp / .xci: jogo base, atualização %s, DLC)', 'rien de choisi (.nsp / .xci : jeu de base, mise à jour %s, DLC)', '未選択（.nsp / .xci：本体、更新データ%s、DLC）'),
 'Keys': ('Claves', 'Chaves', 'Clés', '鍵'),
 'Use the phone\'s own driver': ('Usar el controlador del teléfono', 'Usar o driver do próprio celular', 'Utiliser le pilote du téléphone', '端末標準のドライバーを使う'),
 'Settings (picture, graphics, textures, controller buttons, touch controls, mods) are in the game: tap the menu button at the top left, or hold − on a controller for 3 seconds for the controller buttons.':
