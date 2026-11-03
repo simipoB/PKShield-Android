@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # Game profiles: dm/games/<base game title ID>/game.tsv (key <TAB> values..., lines starting with # are comments) + the shader tables and dmsh_chain.h in the same folder. The shader tools, the host build, iOS packaging and the NSP script take each game's constants from here.
 # Usage: game.py list (list all profiles); game.py <id> <key> (print that key's value, for shell); game.py header <id> <out.h> (generate the host's game_profile.h);
-#   game.py dir <id> (print the profile folder); game.py link <id> <link> (point a symlink at the profile folder: make cannot take paths with spaces)
+#   game.py dir <id> (print the profile folder); game.py dirs <id> (and the folders of tables_from); game.py link <id> <link> (point a symlink at the profile folder: make cannot take paths with spaces)
+#   tables_from <id>: tables (and dmsh_chain.h) this profile lacks come from that profile's folder
 #   From Python: import game; g = game.load() (takes DM_GAME; there is no default game: unset is an error that lists the profiles); game.by_title(title ID); g.get / g.words / g.int / g.builds() / g.table(file name)
 # DM_GAMES_DIR (folders separated by ':') adds profile folders outside the repository, searched after dm/games: the NSP script writes a provisional profile for a game without one into
 #   <NSP folder>/<id>_build/profile/<id>/ and points DM_GAMES_DIR at <id>_build/profile, so the shader tools, the host build and build_ipa.sh all find it.
 #   DM_GAMES_FIRST=1 searches DM_GAMES_DIR before dm/games (the NSP script's --provisional: a provisional profile for a game that has one in dm/games, to test the guesses)
-import os, re, sys
+import os, re, sys, unicodedata
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -31,7 +32,14 @@ class Game:
 
     def words(self, key, default=None): return self.get(key, default).split()
     def int(self, key): return int(self.get(key), 0)
-    def table(self, name): return self.dir / name
+    def table(self, name):   # the profile's own file, else the one of the profile named by tables_from (Pokémon Sword uses Shield's shader tables: the two share their shaders)
+        own = self.dir / name
+        base = self.get('tables_from', '')
+        return own if own.exists() or not base else load(base).table(name)
+
+    def dirs(self):
+        base = self.get('tables_from', '')
+        return [self.dir] + (load(base).dirs() if base else [])
 
     @property
     def title_id(self): return int(self.get('title_id'), 16)
@@ -83,6 +91,11 @@ def all_games():
 
 def by_title(tid):
     return next((g for g in all_games() if g.title_id == tid), None)
+
+
+def file_stem(g):   # the name in ASCII letters and digits, for files the app writes to Download (Pokémon Shield → PokemonShield)
+    n = unicodedata.normalize('NFKD', g.get('name')).encode('ascii', 'ignore').decode()
+    return re.sub(r'[^A-Za-z0-9]', '', n)
 
 
 def header(g):
@@ -143,6 +156,7 @@ def header(g):
          '#pragma once',
          f'#define DM_GAME_ID {q(g.id)}',
          f'#define DM_GAME_NAME {q(g.get("name"))}',
+         f'#define DM_GAME_FILE_STEM {q(file_stem(g))}',
          f'#define DM_GAME_PROGRAM_ID 0x{int(g.get("program_id"), 16):016X}ull',
          f'#define DM_GAME_MODULES {{{", ".join(map(q, mods))}}}',
          f'#define DM_GAME_NMOD {len(mods)}',
@@ -198,6 +212,8 @@ if __name__ == '__main__':
             tmp = out.with_name(out.name + '.tmp'); tmp.write_text(text); tmp.replace(out)
     elif len(a) == 2 and a[0] == 'dir':
         print(load(a[1]).dir)
+    elif len(a) == 2 and a[0] == 'dirs':   # the profile folder, then the folders it takes tables from (tables_from): the host build's include path for dmsh_chain.h
+        print(' '.join(str(d) for d in load(a[1]).dirs()))
     elif len(a) == 3 and a[0] == 'link':   # link → the profile folder (replaced when it points elsewhere)
         d, ln = load(a[1]).dir, Path(a[2]); ln.parent.mkdir(parents=True, exist_ok=True)
         if not (ln.is_symlink() and Path(os.readlink(ln)) == d):

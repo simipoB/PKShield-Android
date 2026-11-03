@@ -7,7 +7,7 @@ import tempfile
 
 BUILDER = os.path.abspath(os.path.join(os.path.dirname(__file__), "../android/tools/build_apk.py"))
 BUILD = runpy.run_path(BUILDER, run_name="build_apk_test")
-validate_extractor, shader_chain = BUILD["validate_extractor"], BUILD["shader_chain"]
+validate_extractor, shader_chain, _game = BUILD["validate_extractor"], BUILD["shader_chain"], BUILD["_game"]
 CHAIN_TOOL = os.path.abspath(os.path.join(os.path.dirname(__file__), "../gfx/tools/dmsh_chain.py"))
 
 
@@ -29,9 +29,13 @@ def main():
             raise AssertionError("APK builder accepted the known-broken extractor")
 
     # the launcher compares the packaged chain with the one setup writes to the ready file: if they differ, every start would ask for setup again
-    computed = subprocess.run([sys.executable, CHAIN_TOOL], capture_output=True, text=True, check=True,
-                              env=dict(os.environ, DM_GAME="01008DB008C2C000")).stdout.strip()
-    assert shader_chain() == computed, f"dmsh_chain.h holds {shader_chain()}, setup makes {computed}: run dmsh_chain.py --header"
+    # for each game: Pokémon Sword takes Shield's tables (tables_from), so its chain is Shield's too
+    for gid in ("01008DB008C2C000", "0100ABF008968000"):
+        g = _game.load(gid)
+        computed = subprocess.run([sys.executable, CHAIN_TOOL], capture_output=True, text=True, check=True,
+                                  env=dict(os.environ, DM_GAME=gid)).stdout.strip()
+        assert shader_chain(g) == computed, f"{gid}: dmsh_chain.h holds {shader_chain(g)}, setup makes {computed}: run dmsh_chain.py --header"
+    assert _game.file_stem(_game.load("0100ABF008968000")) == "PokemonSword" and _game.file_stem(_game.load("01008DB008C2C000")) == "PokemonShield"
 
 
 if __name__ == "__main__":

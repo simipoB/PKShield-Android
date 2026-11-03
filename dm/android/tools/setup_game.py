@@ -11,13 +11,14 @@
 #          (nvn_vk.c mtl_shader_seen: <key>.ctl / <key>.code), into the same shader set, and pack it again; the game picks them up at its next start
 # Usage: setup_game.py --keys <dir with prod.keys [title.keys]> --base <.nsp|.xci> [--update <.nsp>] [--dlc <.nsp> ...] --out <game dir> --work <scratch dir>
 #                      --bin <dir with nx_extract, dmsh_xlate, spirv-cross> [--ext-font <nintendo_ext.ttf>] [--std-font <ttf>]
-# Environment: DM_GAME (the profile; default 01008DB008C2C000), J (jobs)
+# Environment: DM_GAME (the profile: the app's game, SetupActivity passes it; default 01008DB008C2C000, Pokémon Shield), J (jobs)
 import argparse, glob, hashlib, os, shutil, signal, struct, subprocess, sys, threading, time, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__)); DM = os.path.normpath(os.path.join(HERE, '../..'))
 GAME = os.environ.setdefault('DM_GAME', '01008DB008C2C000')
 sys.path.insert(0, os.path.join(DM, 'games')); import game as _game
 PROFILE = _game.load()
+NAME = PROFILE.get('name')
 
 def write_runtime_shader_map(found_map, profile_map, output):
     """Use shader locations found in this dump, retaining profile slots for runtime-captured shaders."""
@@ -97,16 +98,17 @@ def main():
     except OSError as e: log.write(f'free-space check failed: {e}\n')
     run([tool('nx_extract'), keys, files[0], '-', ex, '--aoc-dir', aoc] + [x for f in files[1:] for x in ('--more', f)])
     exefs, romfs = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS')
-    if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError('the dump has no main module: is it Pokémon Shield?')
-    # another game (Pokémon Sword most often, #46) said so before the version check, which would otherwise ask for an update the user already chose:
+    if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError(f'the dump has no main module: is it {NAME}?')
+    # another game (the other one of Sword and Shield most often, #46) said so before the version check, which would otherwise ask for an update the user already chose:
     # control.nacp holds the title's application ID at 0x3038 and its English name at 0
     try:
         nacp = open(os.path.join(ex, 'control.nacp'), 'rb').read()
         tid = struct.unpack_from('<Q', nacp, 0x3038)[0]
         name = nacp[:0x200].split(b'\0')[0].decode('utf-8', 'replace')
-        if tid and tid != int(GAME, 16) and 'shield' not in name.lower():
-            name = name or 'another game'
-            raise RuntimeError(f'your files are {name} ({tid:016X}), not Pokémon Shield ({GAME}): this app runs Pokémon Shield only for now (Pokémon Sword support is planned)')
+        if tid and tid != PROFILE.title_id:   # each app sets up its own game: the other one of Sword and Shield is its own app
+            other = _game.by_title(tid)
+            name = (other.get('name') if other else name) or 'another game'
+            raise RuntimeError(f'your files are {name} ({tid:016X}), not {NAME} ({PROFILE.title_id:016X})' + (f': {name} has its own app' if other else ''))
     except (OSError, struct.error): pass
     # the game's version, checked now rather than as a failure ten minutes later in the shader steps: the code (main's build ID) must be one the profile knows
     with open(os.path.join(exefs, 'main'), 'rb') as f: build_id = f.read(0x50)[0x40:0x50].hex()
@@ -115,7 +117,7 @@ def main():
         have = ''
         try: have = open(os.path.join(ex, 'control.nacp'), 'rb').read()[0x3060:0x3070].split(b'\0')[0].decode()
         except OSError: pass
-        raise RuntimeError(f'your files hold Pokémon Shield {have or "of an unknown version"}, and this app needs update {want}: '
+        raise RuntimeError(f'your files hold {NAME} {have or "of an unknown version"}, and this app needs update {want}: '
                            f'choose the {want} update too (a separate update file, or a dump that includes it)')
 
     step(2)

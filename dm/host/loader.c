@@ -452,14 +452,25 @@ static int pchtxt_apply(module_t *m, uint64_t lim, int64_t p0, int64_t p1, const
     if (applied) LOG("%s: %d patch(es) from %s", m->name, applied, path);
     return applied;
 }
-static int pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
-    const char *d = getenv("DM_MODS_DIR"); if (!d || !*d || !m->build_id[0]) return 0;
-    struct dirent **ents = NULL; int n = scandir(d, &ents, NULL, alphasort), total = 0, files = 0;
-    if (n < 0) { if (errno != ENOENT) LOG("[RED] %s: mods folder %s unreadable (errno %d)", m->name, d, errno); return 0; }
-    for (int i = 0; i < n; i++) { const char *nm = ents[i]->d_name; size_t l = strlen(nm);
-        if (l > 7 && !strcasecmp(nm + l - 7, ".pchtxt")) { char path[1200]; snprintf(path, sizeof path, "%s/%s", d, nm); files++; total += pchtxt_apply(m, lim, p0, p1, path); }
+// the .pchtxt files of one folder, in name order; depth 1 also looks into each mod folder as the Switch emulators lay them out (<mod>/exefs/*.pchtxt, or <mod>/*.pchtxt);
+// a mod folder named with a leading "-" or "." is switched off
+static int pchtxt_scan(module_t *m, uint64_t lim, int64_t p0, int64_t p1, const char *d, int depth, int *files) {
+    struct dirent **ents = NULL; int n = scandir(d, &ents, NULL, alphasort), total = 0;
+    if (n < 0) { if (errno != ENOENT && depth) LOG("[RED] %s: mods folder %s unreadable (errno %d)", m->name, d, errno); return 0; }
+    for (int i = 0; i < n; i++) { const char *nm = ents[i]->d_name; size_t l = strlen(nm); char path[1200]; snprintf(path, sizeof path, "%s/%s", d, nm);
+        struct stat st;
+        if (l > 7 && !strcasecmp(nm + l - 7, ".pchtxt")) { (*files)++; total += pchtxt_apply(m, lim, p0, p1, path); }
+        else if (depth > 0 && nm[0] != '.' && nm[0] != '-' && strcasecmp(nm, "romfs") && !stat(path, &st) && S_ISDIR(st.st_mode)) {
+            char ex[1300]; snprintf(ex, sizeof ex, "%s/exefs", path);
+            total += pchtxt_scan(m, lim, p0, p1, ex, 0, files) + pchtxt_scan(m, lim, p0, p1, path, 0, files);
+        }
         free(ents[i]); }
     free(ents);
+    return total;
+}
+static int pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
+    const char *d = getenv("DM_MODS_DIR"); if (!d || !*d || !m->build_id[0]) return 0;
+    int files = 0, total = pchtxt_scan(m, lim, p0, p1, d, 1, &files);
     if (files) LOG("%s: mods folder %s: %d .pchtxt file(s), %d patch(es) applied to this module", m->name, d, files, total);
     return total;
 }

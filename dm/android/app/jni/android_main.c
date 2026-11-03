@@ -35,6 +35,7 @@
 #include "dm_input.h"
 #include "front.h"
 #include "game_profile.h"
+#include "nvn_ovl.h"   // dm_aspect_mode (the in-game menu's picture setting)
 
 int dm_main(int argc, char **argv);   // dm/host/main.c built with -Dmain=dm_main
 void dm_focus_set(int st);
@@ -92,6 +93,29 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 }
 void front_save_failed(int err) { ALOG("save not written (errno %d)", err); }
 
+// The in-game settings (app/java/com/nxnative/GameMenu.java, an Android dialog over the game): the touch controls' menu button (touch_ui.c), or holding − on a controller
+// for 3 s (on_input). what: 0 = the menu, 1 = the controller buttons. Called from the input thread; the Java call runs on a thread of its own and returns at once
+static void *open_menu_main(void *p) {
+    int what = (int)(intptr_t)p; JavaVM *vm = g_app->activity->vm; JNIEnv *e;
+    if ((*vm)->AttachCurrentThread(vm, &e, NULL)) return NULL;
+    jobject act = g_app->activity->clazz; jclass ac = (*e)->GetObjectClass(e, act);
+    jobject cl = (*e)->CallObjectMethod(e, act, (*e)->GetMethodID(e, ac, "getClassLoader", "()Ljava/lang/ClassLoader;"));
+    jclass clc = (*e)->FindClass(e, "java/lang/ClassLoader");
+    jclass gm = (jclass)(*e)->CallObjectMethod(e, cl, (*e)->GetMethodID(e, clc, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;"), (*e)->NewStringUTF(e, "com.nxnative.GameMenu"));
+    if ((*e)->ExceptionCheck(e) || !gm) { (*e)->ExceptionClear(e); fprintf(stderr, "[RED] menu: GameMenu class missing\n"); }
+    else { (*e)->CallStaticVoidMethod(e, gm, (*e)->GetStaticMethodID(e, gm, "show", "(Landroid/app/Activity;I)V"), act, (jint)what);
+           if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionDescribe(e); (*e)->ExceptionClear(e); } }
+    (*vm)->DetachCurrentThread(vm);
+    return NULL;
+}
+void front_open_menu(int what) {
+    static _Atomic long long last_ms; struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); long long t = ts.tv_sec * 1000LL + ts.tv_nsec / 1000000;
+    if (t - atomic_load(&last_ms) < 500) return;   // one dialog per press
+    atomic_store(&last_ms, t);
+    pthread_t th; if (!pthread_create(&th, NULL, open_menu_main, (void *)(intptr_t)what)) pthread_detach(th);
+    fprintf(stderr, "menu: opened (%s)\n", what ? "controller buttons" : "settings");
+}
+
 // ---------- Input: controllers (key and motion events of gamepads / joysticks) and touch ----------
 // Every controller keeps its own state and the game sees them merged into one: buttons of all of them, each stick axis from whichever controller moves it most. Android lists a
 // pair of Joy-Cons as two devices (left: left stick, D-pad buttons, L / ZL / −; right: right stick, A B X Y, R / ZR / +), so held one in each hand they play as one controller
@@ -115,7 +139,12 @@ static void pads_merge(void) {
 // (the settings screen's remapping, PadMapping.java) then moves single buttons: A B X Y L R ZL ZR LS RS PLUS MINUS UP DOWN LEFT RIGHT
 enum { KC_MAX = 512 };
 static uint64_t g_kc_map[KC_MAX];
+// the in-game menu's changes to DM_PAD_LAYOUT / DM_PAD_MAPPING (nativeSetting), read here instead of the environment once set; the input thread rebuilds the table
+static pthread_mutex_t g_padset_mu = PTHREAD_MUTEX_INITIALIZER; static char g_padset_layout[16], g_padset_map[512]; static int g_padset_live; static _Atomic int g_padset_dirty;
 static void pad_map_init(void) {
+    memset(g_kc_map, 0, sizeof g_kc_map);
+    char lay_live[16], map_live[512]; int live;
+    pthread_mutex_lock(&g_padset_mu); live = g_padset_live; strcpy(lay_live, g_padset_layout); strcpy(map_live, g_padset_map); pthread_mutex_unlock(&g_padset_mu);
     static const struct { const char *name; uint64_t bit; int32_t pos, lab; } B[] = {
         { "A", DM_BTN_A, AKEYCODE_BUTTON_B, AKEYCODE_BUTTON_A }, { "B", DM_BTN_B, AKEYCODE_BUTTON_A, AKEYCODE_BUTTON_B },
         { "X", DM_BTN_X, AKEYCODE_BUTTON_Y, AKEYCODE_BUTTON_X }, { "Y", DM_BTN_Y, AKEYCODE_BUTTON_X, AKEYCODE_BUTTON_Y },
@@ -126,9 +155,9 @@ static void pad_map_init(void) {
         { "UP", DM_BTN_UP, AKEYCODE_DPAD_UP, AKEYCODE_DPAD_UP }, { "DOWN", DM_BTN_DOWN, AKEYCODE_DPAD_DOWN, AKEYCODE_DPAD_DOWN },
         { "LEFT", DM_BTN_LEFT, AKEYCODE_DPAD_LEFT, AKEYCODE_DPAD_LEFT }, { "RIGHT", DM_BTN_RIGHT, AKEYCODE_DPAD_RIGHT, AKEYCODE_DPAD_RIGHT },
     };
-    const char *lay = getenv("DM_PAD_LAYOUT"); int labels = lay && !strcmp(lay, "labels");
+    const char *lay = live ? lay_live : getenv("DM_PAD_LAYOUT"); int labels = lay && !strcmp(lay, "labels");
     for (unsigned i = 0; i < sizeof B / sizeof *B; i++) g_kc_map[labels ? B[i].lab : B[i].pos] |= B[i].bit;
-    const char *m = getenv("DM_PAD_MAPPING"); int moved = 0;
+    const char *m = live ? map_live : getenv("DM_PAD_MAPPING"); int moved = 0;
     while (m && *m) {
         char name[8]; int kc; int n = 0;
         if (sscanf(m, " %7[A-Za-z]:%d%n", name, &kc, &n) == 2 && kc > 0 && kc < KC_MAX)
@@ -140,7 +169,7 @@ static void pad_map_init(void) {
     fprintf(stderr, "boot: controller buttons by %s%s\n", labels ? "label" : "position", moved ? ", some remapped (DM_PAD_MAPPING)" : "");
 }
 static uint64_t key_bit(int32_t kc) {
-    static int init; if (!init) { init = 1; pad_map_init(); }   // (the input thread only)
+    static int init; if (!init || atomic_exchange(&g_padset_dirty, 0)) { init = 1; pad_map_init(); }   // (the input thread only)
     return kc > 0 && kc < KC_MAX ? g_kc_map[kc] : 0;
 }
 static int32_t axis(float v) { if (fabsf(v) < 0.12f) return 0; float s = (fabsf(v) - 0.12f) / 0.88f; if (s > 1) s = 1; return (int32_t)(copysignf(s, v) * DM_STICK_MAX); }
@@ -151,6 +180,32 @@ void touch_ui_hide(void);
 void touch_ui_pad(int connected);
 #include <jni.h>
 JNIEXPORT void JNICALL Java_com_nxnative_GameActivity_nativePadConnected(JNIEnv *env, jclass c, jboolean on) { (void)env; (void)c; touch_ui_pad(on); }   // GameActivity.java
+void touch_ui_setting(const char *key, const char *value);
+void touch_ui_edit(void);
+// GameMenu.java: a setting changed while playing (it also writes env.txt for the next start). The ones the game can take at once go to their owners here, never through
+// setenv (other threads read the environment meanwhile); the rest wait for the next start. Returns whether it took effect now
+JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env, jclass c, jstring jk, jstring jv) {
+    (void)c; const char *k = (*env)->GetStringUTFChars(env, jk, NULL), *v0 = (*env)->GetStringUTFChars(env, jv, NULL); const char *v = *v0 ? v0 : NULL; int now = 1;
+    if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE")) touch_ui_setting(k, v);
+    else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
+    else if (!strcmp(k, "DM_PAD_LAYOUT") || !strcmp(k, "DM_PAD_MAPPING")) {
+        pthread_mutex_lock(&g_padset_mu);
+        if (!g_padset_live) { const char *l = getenv("DM_PAD_LAYOUT"), *m = getenv("DM_PAD_MAPPING"); snprintf(g_padset_layout, sizeof g_padset_layout, "%s", l ? l : ""); snprintf(g_padset_map, sizeof g_padset_map, "%s", m ? m : ""); g_padset_live = 1; }
+        if (!strcmp(k, "DM_PAD_LAYOUT")) snprintf(g_padset_layout, sizeof g_padset_layout, "%s", v ? v : ""); else snprintf(g_padset_map, sizeof g_padset_map, "%s", v ? v : "");
+        pthread_mutex_unlock(&g_padset_mu); atomic_store(&g_padset_dirty, 1);
+    } else now = 0;
+    fprintf(stderr, "menu: %s=%s (%s)\n", k, v ? v : "(default)", now ? "now" : "from the next start");
+    (*env)->ReleaseStringUTFChars(env, jk, k); (*env)->ReleaseStringUTFChars(env, jv, v0);
+    return now ? JNI_TRUE : JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_com_nxnative_GameMenu_nativeEditTouch(JNIEnv *env, jclass c) { (void)env; (void)c; touch_ui_edit(); }   // "Move the touch controls"
+// Holding − on a controller for 3 s opens the controller buttons (front_open_menu(1)): a press starts a timer thread that checks the same press is still held
+static _Atomic int g_minus_seq, g_minus_held;
+static void *minus_hold_main(void *p) {
+    int seq = (int)(intptr_t)p; usleep(3000000);
+    if (atomic_load(&g_minus_held) && atomic_load(&g_minus_seq) == seq) front_open_menu(1);
+    return NULL;
+}
 static uint64_t g_touch_btn; static int32_t g_touch_s[4];
 static void touch_update(AInputEvent *e) {
     float w = (float)ANativeWindow_getWidth(g_app->window), h = (float)ANativeWindow_getHeight(g_app->window);
@@ -165,6 +220,11 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
         if (!b) return 0;
         int k = pad_slot(AInputEvent_getDeviceId(e));
         if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_DOWN) g_pads[k].btn |= b; else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) g_pads[k].btn &= ~b;
+        if (b & DM_BTN_MINUS) {   // − held 3 s: the controller buttons (minus_hold_main)
+            if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_DOWN && AKeyEvent_getRepeatCount(e) == 0) { int seq = atomic_fetch_add(&g_minus_seq, 1) + 1; atomic_store(&g_minus_held, 1);
+                pthread_t th; if (!pthread_create(&th, NULL, minus_hold_main, (void *)(intptr_t)seq)) pthread_detach(th); }
+            else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) atomic_store(&g_minus_held, 0);
+        }
         touch_ui_hide(); pads_merge(); return 1;
     }
     if (type == AINPUT_EVENT_TYPE_MOTION && (src & (AINPUT_SOURCE_JOYSTICK | AINPUT_SOURCE_GAMEPAD))) {
@@ -186,6 +246,21 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
 
 // ---------- Host start ----------
 static int g_started;
+// RomFS mods: every <mods>/<mod>/romfs folder (and <mods>/romfs) as a RomFS overlay root, in name order (hle_fs.c rom_overlay_path: the first root that has a file wins);
+// a mod's exefs/*.pchtxt code patches are found by the loader (loader.c pchtxt_dir). A mod folder named with a leading "-" or "." is switched off
+static void mods_romfs(const char *mods) {
+    if (getenv("DM_ROMFS_OVERLAY")) return;   // env.txt chose
+    struct dirent **ents = NULL; int n = scandir(mods, &ents, NULL, alphasort); if (n < 0) return;
+    static char roots[8192]; size_t len = 0; int count = 0; struct stat st; char d[1200];
+    snprintf(d, sizeof d, "%s/romfs", mods); if (!stat(d, &st) && S_ISDIR(st.st_mode)) { len += snprintf(roots + len, sizeof roots - len, "%s", d); count++; }
+    for (int i = 0; i < n; i++) { const char *nm = ents[i]->d_name;
+        if (nm[0] != '.' && nm[0] != '-' && strcmp(nm, "romfs")) { snprintf(d, sizeof d, "%s/%s/romfs", mods, nm);
+            if (!stat(d, &st) && S_ISDIR(st.st_mode) && !strchr(d, ':') && len + strlen(d) + 2 < sizeof roots) { len += snprintf(roots + len, sizeof roots - len, "%s%s", len ? ":" : "", d); count++;
+                fprintf(stderr, "boot: mod %s: RomFS files\n", nm); } }
+        free(ents[i]); }
+    free(ents);
+    if (count) { setenv("DM_ROMFS_OVERLAY", roots, 1); fprintf(stderr, "boot: %d RomFS mod folder(s)\n", count); }
+}
 static void env_file(const char *path) {   // KEY=VALUE lines, # comments; set only when not already set
     FILE *f = fopen(path, "r"); char ln[512]; if (!f) return;
     while (fgets(ln, sizeof ln, f)) { char *p = ln; while (*p == ' ' || *p == '\t') p++; if (*p == '#' || !*p) continue; char *eq = strchr(p, '='); if (!eq || eq == p) continue;
@@ -227,11 +302,20 @@ static void device_profile(void) {
     const char *force = getenv("DM_PROFILE"); const struct prof *p = NULL;
     if (force) { for (unsigned i = 0; i < sizeof g_profiles / sizeof *g_profiles; i++) if (!strcmp(g_profiles[i].name, force)) p = &g_profiles[i]; }
     else p = profile_of(maker, model);
-    if (!p) { fprintf(stderr, "boot: device profile none (chip %s %s)\n", *maker ? maker : "?", *model ? model : "unknown"); return; }
-    if (!p->graphics) { fprintf(stderr, "boot: device profile %s, %s (chip %s %s): the defaults, nothing changed\n", p->name, p->what, *maker ? maker : "?", *model ? model : "unknown"); return; }
-    setenv("DM_GRAPHICS", p->graphics, 0); setenv("DM_VK_MAX_ANISO", p->aniso, 0); setenv("DM_VK_TEX_QUALITY", p->tex, 0);
-    fprintf(stderr, "boot: device profile %s, %s (chip %s %s%s): graphics %s, anisotropic filtering %sx, textures %s\n", p->name, p->what, *maker ? maker : "?", *model ? model : "unknown",
-            force ? ", DM_PROFILE" : "", getenv("DM_GRAPHICS"), getenv("DM_VK_MAX_ANISO"), getenv("DM_VK_TEX_QUALITY"));
+    // Then the phone's memory, for every phone (GameSettings.java auto(), the same rule): the game's textures are the largest use of memory and a phone that runs out
+    // ends the game. Under 8 GB: half textures whatever the chip; under 6 GB also handheld mode. 12 GB or more: full textures unless the chip is a weak one (sd6, low)
+    long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGESIZE); double gb = pages > 0 && psz > 0 ? (double)pages * psz / 1e9 : 0;
+    const char *graphics = p ? p->graphics : NULL, *tex = p ? p->tex : NULL, *aniso = p ? p->aniso : NULL;   // NULL: the defaults (TV mode, 8x, full)
+    int weak = p && (!strcmp(p->name, "sd6") || !strcmp(p->name, "low"));
+    if (gb > 0 && gb < 7.5) tex = "half";
+    else if (gb >= 11.5 && !weak) tex = NULL;
+    if (gb > 0 && gb < 5.5) graphics = "low";
+    if (graphics) setenv("DM_GRAPHICS", graphics, 0);
+    if (aniso) setenv("DM_VK_MAX_ANISO", aniso, 0);
+    if (tex) setenv("DM_VK_TEX_QUALITY", tex, 0);
+    const char *g = getenv("DM_GRAPHICS"), *tq = getenv("DM_VK_TEX_QUALITY"), *an = getenv("DM_VK_MAX_ANISO");
+    fprintf(stderr, "boot: device profile %s, %s (chip %s %s%s, %.1f GB memory): graphics %s, anisotropic filtering %sx, textures %s\n", p ? p->name : "none", p ? p->what : "chip not in the table",
+            *maker ? maker : "?", *model ? model : "unknown", force ? ", DM_PROFILE" : "", gb, g ? g : "default", an ? an : "default", tq ? tq : "full");
 }
 static pid_t g_game_tid;   // the game's main thread (performance hints below)
 static void *host_thread(void *a) {
@@ -244,7 +328,7 @@ static void *host_thread(void *a) {
     return NULL;
 }
 // The log where the player can reach it: Android/data is out of reach of the phone's Files app on recent Android versions, Download is not. At each start the previous
-// run's log (the one that ended in a crash, if one did) goes to Download/PokemonShield-log-previous.txt; while playing, Download/PokemonShield-log.txt is refreshed every
+// run's log (the one that ended in a crash, if one did) goes to Download/<game>-log-previous.txt (PokemonShield-…); while playing, Download/<game>-log.txt is refreshed every
 // 5 seconds, with a memory line (a run the system ends for memory leaves no crash report, only memory that kept rising)
 #define DL "/storage/emulated/0/Download"
 static void copy_file(const char *a, const char *b) {
@@ -290,7 +374,7 @@ static void *log_mirror(void *p) {
         graphics_auto();
         if (n % 6 == 0) fprintf(stderr, "[mem] app %ld MB resident (%ld MB swapped), phone %ld MB available of %ld MB; heat %s\n", kb_of("/proc/self/status", "VmRSS:") / 1024,
                                 kb_of("/proc/self/status", "VmSwap:") / 1024, kb_of("/proc/meminfo", "MemAvailable:") / 1024, kb_of("/proc/meminfo", "MemTotal:") / 1024, thermal_text(th, sizeof th));
-        copy_file(src, DL "/PokemonShield-log.txt");
+        copy_file(src, DL "/" DM_GAME_FILE_STEM "-log.txt");
     }
     return NULL;
 }
@@ -353,7 +437,7 @@ static void host_start(void) {
     char p[1200], q[1200];
     snprintf(p, sizeof p, "%s/log.txt", g_files); snprintf(q, sizeof q, "%s/log.prev.txt", g_files); rename(p, q);
     if (freopen(p, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
-    copy_file(q, DL "/PokemonShield-log-previous.txt");
+    copy_file(q, DL "/" DM_GAME_FILE_STEM "-log-previous.txt");
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
     { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);
@@ -373,6 +457,7 @@ static void host_start(void) {
     // pipelines: every one the game makes is recorded here and built ahead at the next start, the list shipped with the game too, and the driver's compiled code kept
     SETP("DM_MODS_DIR", "mods");   // IPSwitch .pchtxt code mods, applied when their build ID matches (loader.c); env.txt may point elsewhere
     snprintf(p, sizeof p, "%s/mods", g_files); mkdir(p, 0770);   // made by the app itself, so it can read what is put there (a folder another user made, adb's for one, it cannot)
+    mods_romfs(p);
     SETP("DM_VK_PSO_RECORD", "vk_pipelines.bin"); SETP("DM_VK_PCACHE", "vk_pipeline_cache.bin"); SETG("DM_VK_PSO_SEED", "vk_pipelines_seed.bin");
     snprintf(q, sizeof q, "%s/shaders.pak", g_game); if (!stat(q, &st)) setenv("DM_SPV_PAK", q, 0);   // the packed shader set, else vk/b-<chain>/
     { snprintf(p, sizeof p, "%s/aoc", g_game); struct stat as; if (!stat(p, &as)) setenv("DM_AOC_DIR", p, 0); }   // the DLC the player owns (Shield: the Expansion Pass keys; its content is in the update)

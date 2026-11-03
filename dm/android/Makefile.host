@@ -14,9 +14,10 @@ HOST = ../host
 GFXD = ../gfx
 OUT = out/host-$(GAME)-$(GFX)
 GAME_DIR = ../games/$(GAME)
+GAME_DIRS := $(shell python3 ../games/game.py dirs $(GAME))   # and the profile it takes tables from (tables_from: dmsh_chain.h)
 GAME_H = $(OUT)/gen/game_profile.h
 CFLAGS = -O2 -g -fPIC -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format -fno-omit-frame-pointer -include compat/darwin.h -Icompat \
-         -I$(HOST) -I$(GFXD)/nvn -I$(GFXD)/nvn/include -I../third_party/vulkan-headers/include -I$(OUT)/gen -I$(GAME_DIR) -I../third_party/libvpx -I../third_party/stb_vorbis
+         -I$(HOST) -I$(GFXD)/nvn -I$(GFXD)/nvn/include -I../third_party/vulkan-headers/include -I$(OUT)/gen $(addprefix -I,$(GAME_DIRS)) -I../third_party/libvpx -I../third_party/stb_vorbis
 # Darwin-only files: the Mac front end, the Metal / Vulkan-on-Metal backends, VideoToolbox, the memory sampler (memstat.m)
 SRC = $(filter-out $(HOST)/hle_movie_avc.c $(GFXD)/nvn/nvn_vk.c,$(wildcard $(HOST)/*.c)) $(filter-out $(GFXD)/nvn/nvn_vk.c,$(wildcard $(GFXD)/*.c $(GFXD)/nvn/*.c $(GFXD)/tex/*.c)) $(if $(filter vulkan,$(GFX)),$(GFXD)/nvn/nvn_vk.c)
 LOCAL = compat/compat.c compat/apkfs.c compat/aaudio_unit.c compat/audio_converter.c host/movie_avc_android.c host/front_null.c $(if $(filter null,$(GFX)),host/null_gfx.c)

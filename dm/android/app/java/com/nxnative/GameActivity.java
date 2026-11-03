@@ -25,6 +25,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         check();
     }
     @Override protected void onResume() { super.onResume(); check(); }
+    @Override protected void onActivityResult(int req, int res, Intent data) { if (!GameMenu.onResult(this, req, res, data)) super.onActivityResult(req, res, data); }   // the in-game menu's file pickers
     @Override protected void onDestroy() { if (im != null) im.unregisterInputDeviceListener(this); super.onDestroy(); }
     @Override public void onInputDeviceAdded(int id) { check(); }
     @Override public void onInputDeviceRemoved(int id) { check(); }

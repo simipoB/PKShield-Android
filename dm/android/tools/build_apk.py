@@ -5,14 +5,16 @@
 #                  libspirv_cross.so (spirv_cross/), libpython3.14.so + libpython_exe.so (CPython for Android and its launcher), libcapstone.so, liblz4.so
 #   assets: python.zip (CPython's standard library, trimmed), dm.zip (the setup scripts, the game profile, the Python stand-ins for lz4 and capstone), shader_chain (the engine's shader translation chain)
 # Usage: build_apk.py --libs <dir with the .so files> --pylib <CPython for Android's lib/python3.14> --capstone-py <the capstone Python package> --out <app.apk>
-#        [--ks <keystore> (default dm/android/probe/out/debug.keystore; made when missing)] [--bt <build-tools dir>] [--jar <android.jar>] [--name "Pokémon Shield"]
+#        [--ks <keystore> (default dm/android/probe/out/debug.keystore; made when missing)] [--bt <build-tools dir>] [--jar <android.jar>]
+#        [--game <title ID> (default 01008DB008C2C000, Pokémon Shield; 0100ABF008968000 Pokémon Sword: libnxnative.so built for that game)] [--name <the profile's name>] [--package <com.nxnative.pokemon<game>>]
 import argparse, hashlib, io, os, shutil, struct, subprocess, sys, tempfile, zipfile, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__)); ANDROID = os.path.dirname(HERE); DM = os.path.dirname(ANDROID)
 LIBS = ['libnxnative.so', 'libnx_extract.so', 'libdmsh_xlate.so', 'libspirv_cross.so', 'libpython3.14.so', 'libpython_exe.so', 'libcapstone.so', 'liblz4.so', 'libssl_python.so', 'libcrypto_python.so']
 OPTIONAL = ['libadrenotools.so', 'libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so']   # libadrenotools: custom Adreno drivers (Turnip); without them the phone's own driver only
 PY_SKIP = ('test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'pydoc_data', 'lib2to3', 'venv', 'sqlite3', '__pycache__', 'unittest', 'wsgiref', 'xmlrpc', 'curses', 'dbm')
-DM_PARTS = ['games/game.py', 'games/01008DB008C2C000', 'tools/patch_nso.py', 'gfx/tools', 'ios/tools/ios_metal.py', 'android/tools']
+DM_PARTS = ['games/game.py', 'tools/patch_nso.py', 'gfx/tools', 'ios/tools/ios_metal.py', 'android/tools']   # and every game profile (setup names the other game when given its dump)
+sys.path.insert(0, os.path.join(DM, 'games')); import game as _game
 
 def png(size):   # the app's icon, drawn here (no game artwork ships): a red and white ball on dark blue
     px = []
@@ -38,10 +40,11 @@ def zipdir(z, src, arc, skip=()):
             if f.endswith(('.pyc', '.dll', '.dylib')): continue
             p = os.path.join(d, f); z.write(p, os.path.join(arc, os.path.relpath(p, src)).replace(os.sep, '/'))
 
-def shader_chain():   # the translation chain the engine is compiled for (DMSH_CHAIN in the game's dmsh_chain.h, nvn_vk.c)
-    for ln in open(os.path.join(DM, 'games/01008DB008C2C000/dmsh_chain.h'), encoding='utf-8'):
+def shader_chain(g):   # the translation chain the engine is compiled for (DMSH_CHAIN in the game's dmsh_chain.h, nvn_vk.c)
+    h = g.table('dmsh_chain.h')
+    for ln in open(h, encoding='utf-8'):
         if ln.startswith('#define DMSH_CHAIN '): return ln.split('"')[1]
-    sys.exit('[RED] no DMSH_CHAIN in dm/games/01008DB008C2C000/dmsh_chain.h')
+    sys.exit(f'[RED] no DMSH_CHAIN in {h}')
 
 def validate_extractor(path):
     with open(path, 'rb') as f: data = f.read()
@@ -53,10 +56,12 @@ def validate_extractor(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--libs', required=True); ap.add_argument('--pylib', required=True); ap.add_argument('--capstone-py', required=True); ap.add_argument('--out', required=True)
-    ap.add_argument('--ks', default=os.path.join(ANDROID, 'probe/out/debug.keystore')); ap.add_argument('--bt'); ap.add_argument('--jar'); ap.add_argument('--name', default='Pokémon Shield')
-    ap.add_argument('--package', default='com.nxnative.pokemonshield'); ap.add_argument('--version', type=int, default=12)
+    ap.add_argument('--ks', default=os.path.join(ANDROID, 'probe/out/debug.keystore')); ap.add_argument('--bt'); ap.add_argument('--jar'); ap.add_argument('--name')
+    ap.add_argument('--game', default='01008DB008C2C000'); ap.add_argument('--package'); ap.add_argument('--version', type=int, default=12)
     ap.add_argument('--debuggable', action='store_true', help='test builds: adb run-as can reach the private storage of the app')
     a = ap.parse_args()
+    g = _game.load(a.game); a.name = a.name or g.get('name')
+    a.package = a.package or 'com.nxnative.' + _game.file_stem(g).lower()   # com.nxnative.pokemonshield, com.nxnative.pokemonsword: the two install side by side
     exe = '.exe' if os.name == 'nt' else ''; bat = '.bat' if os.name == 'nt' else ''
     bt = a.bt or os.path.expanduser('~/nxnative-work/tools/android-15'); jar = a.jar or os.path.expanduser('~/nxnative-work/tools/android-35/android.jar')
     missing = [l for l in LIBS if not os.path.isfile(os.path.join(a.libs, l))]
@@ -64,8 +69,11 @@ def main():
     validate_extractor(os.path.join(a.libs, 'libnx_extract.so'))
     # the engine must be built for the chain setup makes (v0.36 shipped an engine built before a translation change: every fresh shader pack was refused, a blue screen)
     with open(os.path.join(a.libs, 'libnxnative.so'), 'rb') as f:
-        if shader_chain().encode() not in f.read():
-            sys.exit('[RED] libnxnative.so was not built for shader chain ' + shader_chain() + ' (dmsh_chain.h): rebuild it (delete it and run win_build_lib.py)')
+        so = f.read()
+        if shader_chain(g).encode() not in so:
+            sys.exit('[RED] libnxnative.so was not built for shader chain ' + shader_chain(g) + ' (dmsh_chain.h): rebuild it (delete it and run win_build_lib.py)')
+        if (_game.file_stem(g) + '-log.txt').encode() not in so:   # the engine is built per game (game_profile.h: its program ID, versions, log file names)
+            sys.exit(f'[RED] libnxnative.so was not built for {g.get("name")} ({g.id}): run win_build_lib.py {g.id}')
     w = tempfile.mkdtemp(prefix='apk_')
     # resources: the icon; the manifest: the setup screen launches, the native activity plays
     for dpi, sz in (('xxxhdpi', 192), ('xxhdpi', 144), ('xhdpi', 96)):
@@ -109,7 +117,7 @@ def main():
         z.writestr('assets/python.zip', b.getvalue(), compress_type=zipfile.ZIP_STORED)
         b = io.BytesIO()
         with zipfile.ZipFile(b, 'w', zipfile.ZIP_DEFLATED) as dz:
-            for part in DM_PARTS:
+            for part in DM_PARTS + ['games/' + p.id for p in _game.all_games()]:
                 p = os.path.join(DM, part)
                 if os.path.isdir(p): zipdir(dz, p, part)
                 else: dz.write(p, part)
@@ -119,7 +127,8 @@ def main():
                 p = os.path.join(ANDROID, 'app/assets', f)
                 if os.path.isfile(p): dz.write(p, 'android/app/assets/' + f)
         z.writestr('assets/dm.zip', b.getvalue(), compress_type=zipfile.ZIP_STORED)
-        z.writestr('assets/shader_chain', shader_chain() + '\n')   # the launcher sends players back to setup when their shader pack was made for another chain
+        z.writestr('assets/shader_chain', shader_chain(g) + '\n')   # the launcher sends players back to setup when their shader pack was made for another chain
+        z.writestr('assets/game', f'{g.id}\t{g.get("name")}\t{_game.file_stem(g)}\n')   # the game this app is for (SetupActivity: its name on screen; DM_GAME for setup)
     if not os.path.isfile(a.ks):
         os.makedirs(os.path.dirname(a.ks), exist_ok=True)
         run('keytool', '-genkeypair', '-keystore', a.ks, '-storepass', 'android', '-keypass', 'android', '-alias', 'debug', '-keyalg', 'RSA', '-keysize', '2048', '-validity', '10000', '-dname', 'CN=nxnative debug')

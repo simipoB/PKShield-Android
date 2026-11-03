@@ -9,10 +9,11 @@ CC = [TC + "/clang.exe", "--target=aarch64-linux-android33"]
 HOST, GFXD = "../host", "../gfx"
 OUT = f"out/host-{GAME}-vulkan"
 GAME_DIR = f"../games/{GAME}"
+GAME_DIRS = subprocess.run([sys.executable, "../games/game.py", "dirs", GAME], capture_output=True, text=True, check=True).stdout.split()   # and tables_from (dmsh_chain.h)
 GLUE = NDK + "/sources/android/native_app_glue"
 CFLAGS = ("-O2 -g -fPIC -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-format -fno-omit-frame-pointer "
           "-include compat/darwin.h -Icompat").split() + [f"-I{d}" for d in (HOST, GFXD + "/nvn", GFXD + "/nvn/include", "../third_party/vulkan-headers/include",
-          OUT + "/gen", GAME_DIR, "../third_party/libvpx", "../third_party/stb_vorbis")]
+          OUT + "/gen", *GAME_DIRS, "../third_party/libvpx", "../third_party/stb_vorbis")]
 
 def run(cmd):
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -23,7 +24,7 @@ def run(cmd):
 _HDR = None
 def newer(src, dst):   # also when any header changed (no dependency files here): dmsh_chain.h, game_profile.h and the rest
     global _HDR
-    if _HDR is None: _HDR = max((os.path.getmtime(h) for d in (HOST, GFXD, GAME_DIR, OUT + '/gen', '.') for h in glob.glob(d + '/**/*.h', recursive=True)), default=0)
+    if _HDR is None: _HDR = max((os.path.getmtime(h) for d in (HOST, GFXD, *GAME_DIRS, OUT + '/gen', '.') for h in glob.glob(d + '/**/*.h', recursive=True)), default=0)
     return not os.path.exists(dst) or max(os.path.getmtime(src), _HDR) > os.path.getmtime(dst)
 
 os.makedirs(OUT + "/gen", exist_ok=True)

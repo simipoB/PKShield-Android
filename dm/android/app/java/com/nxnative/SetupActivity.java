@@ -61,6 +61,8 @@ public final class SetupActivity extends Activity {
     private static volatile boolean running;
 
     private File gameDir() { return getExternalFilesDir(null); }
+    private String[] game() { return GameSettings.game(this); }
+    private String gameName() { return game()[1]; }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
     private boolean setUp() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists(); }
     // set up for this app version: the shader pack's translation chain (the ready file) is the one the engine was built for (assets/shader_chain, build_apk.py);
@@ -80,21 +82,22 @@ public final class SetupActivity extends Activity {
         if (ready() && !asked && !running) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 48, 48, 48); root.setGravity(Gravity.CENTER_HORIZONTAL);
         logo = new ImageView(this); logo.setVisibility(android.view.View.GONE); root.addView(logo, new LinearLayout.LayoutParams(320, 320));
-        TextView title = new TextView(this); title.setText("Pokémon Shield"); title.setTextSize(28); root.addView(title);
+        TextView title = new TextView(this); title.setText(gameName()); title.setTextSize(28); root.addView(title);
         TextView note = new TextView(this); note.setText("Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone."); note.setPadding(0, 16, 0, 32); root.addView(note);
         gameText = row(root, "Game files", "Choose", v -> pick(PICK_GAME, true));
         keysText = row(root, "Keys", "Choose", v -> pick(PICK_KEYS, true));
         // the Vulkan driver: the phone's own, or an Adreno driver package (a zip with meta.json and the library, e.g. Mesa Turnip) opened through libadrenotools
         driverText = row(root, "Graphics driver", "Choose", v -> pick(PICK_DRIVER, false));
         button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); refresh(); });
-        settings(root);
+        TextView sn = new TextView(this); sn.setText("Settings (picture, graphics, textures, controller buttons, touch controls, mods) are in the game: tap the menu button at the top left, or hold − on a controller for 3 seconds for the controller buttons.");
+        sn.setPadding(0, 24, 0, 24); root.addView(sn);
         setup = button(root, "Set up the game", v -> startSetup());
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(600); root.addView(bar);
         status = new TextView(this); status.setPadding(0, 16, 0, 16); root.addView(status);
         play = button(root, "Play", v -> startGame()); play.setEnabled(ready());
         saveExport = button(root, "Export save data", v -> chooseSaveExport());
         saveImport = button(root, "Import edited save data", v -> chooseSaveImport());
-        shortcut = button(root, "Add Pokémon Shield to the home screen", v -> pinShortcut());
+        shortcut = button(root, "Add " + gameName() + " to the home screen", v -> pinShortcut());
         ScrollView sv = new ScrollView(this); sv.addView(root); setContentView(sv);
         refresh(); gameIcon();
         if (ready() && !asked) startCaptures();
@@ -107,135 +110,8 @@ public final class SetupActivity extends Activity {
     }
     private Button button(LinearLayout root, String text, android.view.View.OnClickListener l) { Button bt = new Button(this); bt.setText(text); bt.setOnClickListener(l); root.addView(bt); return bt; }
 
-    // Settings, read by the game at its next start (env.txt): graphics (the console mode the game renders for) and the touch controls' look
-    private void settings(LinearLayout root) {
-        TextView h = new TextView(this); h.setText("Settings"); h.setTextSize(20); h.setPadding(0, 32, 0, 8); root.addView(h);
-        TextView gl = new TextView(this); gl.setText("Graphics"); root.addView(gl);
-        android.widget.RadioGroup rg = new android.widget.RadioGroup(this);
-        String[] prof = profile(); String rec = prof == null || prof[2].equals("high") ? "High" : prof[2].equals("auto") ? "Auto" : "Low";
-        String[][] modes = { { "", "Recommended for this phone (" + (prof != null ? prof[1] + ": " : "") + rec + ")" },
-                             { "high", "High: TV mode, 1080p, full effects" }, { "low", "Low: handheld mode, 720p, lighter (for weaker phones)" },
-                             { "auto", "Auto: High, switching to Low while the phone is hot" } };
-        String cur = envGet("DM_GRAPHICS");
-        for (int k = 0; k < modes.length; k++) {
-            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(1000 + k); b.setText(modes[k][1]); rg.addView(b);
-            if (modes[k][0].equals(cur)) b.setChecked(true);
-        }
-        rg.setOnCheckedChangeListener((g, id) -> envSet("DM_GRAPHICS", modes[id - 1000][0]));
-        root.addView(rg);
-        TextView tl = new TextView(this); tl.setText("Textures"); tl.setPadding(0, 16, 0, 0); root.addView(tl);
-        android.widget.RadioGroup tg = new android.widget.RadioGroup(this);
-        String[][] tq = { { "", "Recommended for this phone (" + (prof != null && prof[3].equals("half") ? "Half" : "Full") + ")" },
-                          { "full", "Full: the game's textures as they are" }, { "half", "Half: large textures at half size, less memory and GPU work (for weaker phones)" } };
-        String tcur = envGet("DM_VK_TEX_QUALITY");
-        for (int k = 0; k < tq.length; k++) {
-            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(2000 + k); b.setText(tq[k][1]); tg.addView(b);
-            if (tq[k][0].equals(tcur)) b.setChecked(true);
-        }
-        tg.setOnCheckedChangeListener((g, id) -> envSet("DM_VK_TEX_QUALITY", tq[id - 2000][0]));
-        root.addView(tg);
-        TextView al = new TextView(this); al.setText("Picture"); al.setPadding(0, 16, 0, 0); root.addView(al);
-        android.widget.RadioGroup ag = new android.widget.RadioGroup(this);
-        String[][] am = { { "", "16:9, as the game is made" }, { "20:9", "20:9: for a 20:9 mod in the app's mods folder (without one, the picture is only stretched)" } };
-        String acur = envGet("DM_ASPECT");
-        for (int k = 0; k < am.length; k++) {
-            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(3000 + k); b.setText(am[k][1]); ag.addView(b);
-            if (am[k][0].equals(acur)) b.setChecked(true);
-        }
-        ag.setOnCheckedChangeListener((g, id) -> envSet("DM_ASPECT", am[id - 3000][0]));
-        root.addView(ag);
-        TextView fl = new TextView(this); fl.setText("Frame rate"); fl.setPadding(0, 16, 0, 0); root.addView(fl);
-        android.widget.RadioGroup fg = new android.widget.RadioGroup(this);
-        String[][] fm = { { "", "30 fps, as the game is made" }, { "60", "60 fps (experimental: some animations may run oddly, and most phones cannot hold it)" } };
-        String fcur = envGet("DM_FPS_TARGET");
-        for (int k = 0; k < fm.length; k++) {
-            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(5000 + k); b.setText(fm[k][1]); fg.addView(b);
-            if (fm[k][0].equals(fcur)) b.setChecked(true);
-        }
-        fg.setOnCheckedChangeListener((g, id) -> envSet("DM_FPS_TARGET", fm[id - 5000][0]));
-        root.addView(fg);
-        TextView pl = new TextView(this); pl.setText("Controller buttons"); pl.setPadding(0, 16, 0, 0); root.addView(pl);
-        android.widget.RadioGroup pg = new android.widget.RadioGroup(this);
-        String[][] pm = { { "", "By position, as on a Switch pad (the bottom button is B)" }, { "labels", "By label (the button marked A is A)" } };
-        String pcur = envGet("DM_PAD_LAYOUT");
-        for (int k = 0; k < pm.length; k++) {
-            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(4000 + k); b.setText(pm[k][1]); pg.addView(b);
-            if (pm[k][0].equals(pcur)) b.setChecked(true);
-        }
-        pg.setOnCheckedChangeListener((g, id) -> envSet("DM_PAD_LAYOUT", pm[id - 4000][0]));
-        root.addView(pg);
-        button(root, "Remap controller buttons", v -> remapButtons());
-        slider(root, "Touch controls opacity", "DM_TOUCH_OPACITY", 20, 100, 100, v -> v + " %");
-        slider(root, "Touch controls fade after", "DM_TOUCH_FADE", 0, 10, 3, v -> v == 0 ? "never fade" : v + " s without a touch");
-    }
-    // Remapping (PadMapping.java, DM_PAD_MAPPING): each Switch button with the key it is on; choosing one waits for a press on the controller, Reset clears the remapping
-    private void remapButtons() {
-        java.util.Map<String, Integer> map = PadMapping.parse(envGet("DM_PAD_MAPPING"));
-        String[] rows = new String[PadMapping.BUTTONS.length];
-        for (int i = 0; i < rows.length; i++) { Integer kc = map.get(PadMapping.BUTTONS[i][0]); rows[i] = PadMapping.BUTTONS[i][1] + ": " + (kc != null ? PadMapping.keyName(kc) : "default"); }
-        new android.app.AlertDialog.Builder(this).setTitle("Remap controller buttons")
-            .setItems(rows, (d, which) -> captureKey(map, which))
-            .setNeutralButton("Reset all", (d, w) -> { envSet("DM_PAD_MAPPING", ""); status.setText("Controller buttons reset."); })
-            .setNegativeButton("Done", null).show();
-    }
-    private void captureKey(java.util.Map<String, Integer> map, int which) {
-        String[] btn = PadMapping.BUTTONS[which];
-        android.app.AlertDialog d = new android.app.AlertDialog.Builder(this).setTitle(btn[1]).setMessage("Press the controller button for " + btn[1] + ".")
-            .setNegativeButton("Cancel", (x, w) -> remapButtons()).create();
-        d.setOnKeyListener((x, kc, e) -> {
-            if (e.getAction() != android.view.KeyEvent.ACTION_DOWN || !PadMapping.isPadKey(e)) return false;
-            map.values().removeIf(v -> v == kc);   // a key drives one Switch button
-            map.put(btn[0], kc); envSet("DM_PAD_MAPPING", PadMapping.serialize(map));
-            d.dismiss(); remapButtons(); return true;
-        });
-        d.show();
-    }
-    private void slider(LinearLayout root, String label, String key, int min, int max, int def, java.util.function.IntFunction<String> fmt) {
-        TextView t = new TextView(this); t.setPadding(0, 16, 0, 0); root.addView(t);
-        android.widget.SeekBar sb = new android.widget.SeekBar(this); sb.setMax(max - min);
-        int v; try { v = Integer.parseInt(envGet(key)); } catch (NumberFormatException e) { v = def; }
-        v = Math.max(min, Math.min(max, v)); sb.setProgress(v - min); t.setText(label + ": " + fmt.apply(v));
-        sb.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
-            public void onProgressChanged(android.widget.SeekBar b, int p, boolean user) { t.setText(label + ": " + fmt.apply(p + min)); if (user) envSet(key, String.valueOf(p + min)); }
-            public void onStartTrackingTouch(android.widget.SeekBar b) { }
-            public void onStopTrackingTouch(android.widget.SeekBar b) { }
-        });
-        root.addView(sb);
-    }
-    // env.txt in the game folder: KEY=VALUE lines the native side reads at start (android_main.c env_file)
-    private File envFile() { return new File(gameDir(), "env.txt"); }
-    // The device profile the game uses (android_main.c profile_of, kept the same): { name, description, recommended graphics, recommended textures }, or null (no profile)
-    static String[] profile() {
-        String m = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MODEL : "", mk = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MANUFACTURER : "";
-        if (m == null) m = ""; if (mk == null) mk = ""; m = m.toLowerCase(java.util.Locale.ROOT); String n;
-        if (m.matches("sm\\d.*") || m.matches("sdm\\d.*")) { int v = lead(m.substring(m.charAt(1) == 'd' ? 3 : 2));
-            n = v >= 8000 && v < 9000 ? "sd8" : v >= 7300 && v < 8000 ? "sd7" : (v >= 4000 && v < 7300) || (v > 0 && v < 1000) ? "sd6" : null; }
-        else if (m.matches("mt\\d.*")) { int v = lead(m.substring(2)); n = v == 6983 || v == 6985 || v == 6989 || v == 6991 || v == 6993 ? "high" : v >= 6889 && v <= 6899 ? "mid" : "low"; }
-        else if (m.startsWith("s5e") || m.contains("exynos")) { boolean s5e = m.startsWith("s5e"); String d = s5e ? m.substring(3) : m.replaceAll("^\\D*", ""); int v = lead(d);
-            n = (s5e && v >= 9900 && v < 10000) || (!s5e && v >= 2000 && v < 3000) ? "high" : "low"; }
-        else if (m.contains("tensor") || (mk.toLowerCase(java.util.Locale.ROOT).startsWith("google") && !m.isEmpty())) n = "mid";
-        else n = null;
-        if (n == null) return null;
-        switch (n) {
-            case "sd8": return new String[] { n, "Snapdragon 8 series", "high", "full" };   // (the game leaves these phones as they were)
-            case "sd7": return new String[] { n, "Snapdragon 7 series", "auto", "full" };
-            case "sd6": return new String[] { n, "Snapdragon 6 / 4 series", "low", "half" };
-            case "high": return new String[] { n, "Dimensity 9000 / Exynos 2000 series", "auto", "full" };
-            case "mid": return new String[] { n, "Dimensity 8000 series / Google Tensor", "low", "half" };
-            default: return new String[] { n, "MediaTek / Exynos, lighter settings", "low", "half" };
-        }
-    }
-    private static int lead(String d) { int v = 0; for (int i = 0; i < d.length() && i < 4 && Character.isDigit(d.charAt(i)); i++) v = v * 10 + (d.charAt(i) - '0'); return v; }
-    private String envGet(String key) {
-        try (BufferedReader r = new BufferedReader(new FileReader(envFile()))) { String l; while ((l = r.readLine()) != null) if (l.startsWith(key + "=")) return l.substring(key.length() + 1); } catch (IOException e) { }
-        return "";
-    }
-    private void envSet(String key, String value) {
-        List<String> lines = new ArrayList<>();
-        try (BufferedReader r = new BufferedReader(new FileReader(envFile()))) { String l; while ((l = r.readLine()) != null) if (!l.startsWith(key + "=")) lines.add(l); } catch (IOException e) { }
-        if (!value.isEmpty()) lines.add(key + "=" + value.replace("\n", " "));
-        try (FileWriter w = new FileWriter(envFile())) { for (String l : lines) w.write(l + "\n"); } catch (IOException e) { }
-    }
+    private String envGet(String key) { return GameSettings.get(this, key); }
+    private void envSet(String key, String value) { GameSettings.set(this, key, value); }
     // a driver package into the app's private storage (libadrenotools loads drivers only from there): its meta.json names the library
     private void installDriver(Uri u, String name) {
         File dir = new File(getFilesDir(), "drivers/" + name.replaceAll("[^A-Za-z0-9._-]", "_").replaceAll("\\.zip$", "")); String lib = null;
@@ -392,7 +268,7 @@ public final class SetupActivity extends Activity {
 
     private void chooseSaveExport() {
         Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("application/zip"); i.putExtra(Intent.EXTRA_TITLE, "PokemonShield-save.zip");
+        i.setType("application/zip"); i.putExtra(Intent.EXTRA_TITLE, game()[2] + "-save.zip");
         startActivityForResult(i, PICK_SAVE_EXPORT);
     }
     private void chooseSaveImport() {
@@ -514,7 +390,7 @@ public final class SetupActivity extends Activity {
                 cmd.add("--out"); cmd.add(gameDir().getPath()); cmd.add("--work"); cmd.add(work.getPath()); cmd.add("--bin"); cmd.add(bin.getPath());
                 File ext = new File(dm, "android/app/assets/nintendo_ext.ttf"); if (ext.exists() && !args.contains("--captures")) { cmd.add("--ext-font"); cmd.add(ext.getPath()); }
                 ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
-                pb.environment().put("PYTHONHOME", py.getPath()); pb.environment().put("PYTHONPATH", new File(dm, "android/pyshim").getPath());
+                pb.environment().put("PYTHONHOME", py.getPath()); pb.environment().put("DM_GAME", game()[0]); pb.environment().put("PYTHONPATH", new File(dm, "android/pyshim").getPath());
                 // bin first: the .NET unpacker dlopens libssl.so.3 / libcrypto.so.3, which binDir() links to the OpenSSL 3 that ships with CPython for Android
                 pb.environment().put("LD_LIBRARY_PATH", bin.getPath() + ":" + lib); pb.environment().put("LIBCAPSTONE_PATH", lib); pb.environment().put("NX_NATIVE_LIB_DIR", lib);
                 pb.environment().put("DOTNET_OPENSSL_VERSION_OVERRIDE", "3"); pb.environment().put("DOTNET_SYSTEM_GLOBALIZATION_INVARIANT", "1");
@@ -538,7 +414,7 @@ public final class SetupActivity extends Activity {
     // lighter one (handheld mode), whose memory the low-memory killer guards closely (a scan worker was killed at 8, #43)
     private int setupWorkers() {
         android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); ((ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
-        int j = Runtime.getRuntime().availableProcessors(); j = Math.min(j, (int) (mi.totalMem / (1536L << 20))); String[] p = profile(); if (p != null && p[2].equals("low")) j = Math.min(j, 4);
+        int j = Runtime.getRuntime().availableProcessors(); j = Math.min(j, (int) (mi.totalMem / (1536L << 20))); String[] p = GameSettings.profile(this); if (p != null && p[2].equals("low")) j = Math.min(j, 4);
         return Math.max(2, j);
     }
     private File iconFile() { return new File(gameDir(), "icon.jpg"); }
@@ -546,7 +422,7 @@ public final class SetupActivity extends Activity {
     @SuppressWarnings("deprecation")
     private Bitmap gameIcon() {
         Bitmap b = iconFile().exists() ? BitmapFactory.decodeFile(iconFile().getPath()) : null; if (b == null) return null;
-        setTaskDescription(new ActivityManager.TaskDescription("Pokémon Shield", b));
+        setTaskDescription(new ActivityManager.TaskDescription(gameName(), b));
         if (logo != null) { logo.setImageBitmap(b); logo.setVisibility(android.view.View.VISIBLE); }
         return b;
     }
@@ -562,10 +438,10 @@ public final class SetupActivity extends Activity {
     private void pinShortcut() {
         Bitmap b = gameIcon(); ShortcutManager sm = getSystemService(ShortcutManager.class); if (b == null || sm == null) return;
         Intent go = new Intent(this, SetupActivity.class).setAction(Intent.ACTION_MAIN);
-        ShortcutInfo si = new ShortcutInfo.Builder(this, "game").setShortLabel("Pokémon Shield").setLongLabel("Play Pokémon Shield").setIcon(Icon.createWithBitmap(b)).setIntent(go).build();
+        ShortcutInfo si = new ShortcutInfo.Builder(this, "game").setShortLabel(gameName()).setLongLabel("Play " + gameName()).setIcon(Icon.createWithBitmap(b)).setIntent(go).build();
         try { sm.addDynamicShortcuts(Arrays.asList(si)); } catch (Exception e) { }
-        for (ShortcutInfo p : sm.getPinnedShortcuts()) if (p.getId().equals("game")) { sm.updateShortcuts(Arrays.asList(si)); status.setText("The Pokémon Shield shortcut is on the home screen."); return; }
-        if (sm.isRequestPinShortcutSupported()) sm.requestPinShortcut(si, null); else status.setText("This launcher cannot add shortcuts: long-press the app's icon for Pokémon Shield.");
+        for (ShortcutInfo p : sm.getPinnedShortcuts()) if (p.getId().equals("game")) { sm.updateShortcuts(Arrays.asList(si)); status.setText("The " + gameName() + " shortcut is on the home screen."); return; }
+        if (sm.isRequestPinShortcutSupported()) sm.requestPinShortcut(si, null); else status.setText("This launcher cannot add shortcuts: long-press the app's icon for " + gameName() + ".");
     }
     // the executables the setup runs, under the names the scripts call them by (links into the app's native library folder, where Android allows execution);
     // also OpenSSL 3 under the names the .NET unpacker dlopens (libssl.so.3 / libcrypto.so.3), so it does not pick up the system's BoringSSL
