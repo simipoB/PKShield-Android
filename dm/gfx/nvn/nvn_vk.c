@@ -245,7 +245,7 @@ void mtl_init(void) {
     if (getenv("DM_VK_NO_BC") && atoi(getenv("DM_VK_NO_BC"))) f2.features.textureCompressionBC = VK_FALSE;
     nvn_fmt_vk_bc(f2.features.textureCompressionBC);
     // DM_VK_BC_TRANSCODE=etc2: BC1–BC5 re-encoded as ETC2 / EAC on upload instead (etc_encode.h): the same size as BC in memory, not 4–8 times it as plain texels
-    { const char *tc = getenv("DM_VK_BC_TRANSCODE"); nvn_fmt_vk_etc(!f2.features.textureCompressionBC && f2.features.textureCompressionETC2 && tc && !strcmp(tc, "etc2")); }
+    { const char *tc = getenv("DM_VK_BC_TRANSCODE"); nvn_fmt_vk_etc(!f2.features.textureCompressionBC && f2.features.textureCompressionETC2 && tc && !strcmp(tc, "etc2"), f2.features.textureCompressionASTC_LDR); }
     float prio = 1;
     VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_qf, .queueCount = 1, .pQueuePriorities = &prio };
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = ndext, .ppEnabledExtensionNames = dext };
@@ -1076,8 +1076,8 @@ static VkImageView view_get(vtex *t, VkImageViewType vt, VkFormat fmt, uint32_t 
 static int tex_upload(vtex *x, const tex_t *t) {
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); if (!bpb) return -1;
     // BC on a GPU without it: the blocks are deswizzled into scratch and decoded into staging as plain texels (bc_decode.c)
-    int bck = nvn_fmt_vk_decode(t->d.format), etk = nvn_fmt_vk_transcode(t->d.format), obpb = etk ? bc_transcode_block_bytes(etk) : bck ? bc_texel_bytes(bck) : bpb,
-        obw = bck && !etk ? 1 : bw, obh = bck && !etk ? 1 : bh; uint8_t *scratch = NULL;   // (transcoded: ETC2 / EAC blocks, 4x4 like BC)
+    int bck = nvn_fmt_vk_decode(t->d.format), etk = nvn_fmt_vk_transcode(t->d.format), obpb = etk ? bc_transcode_bytes(etk) : bck ? bc_texel_bytes(bck) : bpb,
+        obw = bck && !(etk && bc_transcode_blocks(etk)) ? 1 : bw, obh = bck && !(etk && bc_transcode_blocks(etk)) ? 1 : bh; uint8_t *scratch = NULL;   // (transcoded: ETC2 / EAC blocks, 4x4 like BC)
     unsigned layers = x->is3d ? 1 : x->layers;
     VkDeviceSize total = 0;
     for (unsigned l = 0; l < x->levels; l++) { uint32_t w = x->w >> l ? x->w >> l : 1, h = x->h >> l ? x->h >> l : 1, z = x->is3d ? (x->d >> l ? x->d >> l : 1) : 1;
@@ -1098,7 +1098,7 @@ static int tex_upload(vtex *x, const tex_t *t) {
             if (linear) {   // LINEAR: rows at the texture's stride (one level, one layer)
                 size_t stride = t->d.stride ? t->d.stride : pitch; for (size_t r = 0; r < rows; r++) memcpy(dst + r * pitch, t->mem + r * stride, pitch);
             } else if (nvn_deswizzle(&t->d, l + (unsigned)x->drop, y, t->mem, dst, pitch)) { RED_ONCE(5, "deswizzle failed format %#x target %d", t->d.format, t->d.target); break; }
-            if (bck) for (uint32_t s = 0; s < z; s++) (etk ? bc_transcode_image : bc_decode_image)(bck, scratch + s * pitch * rows, pitch, (int)w, (int)h, sp + off + s * opitch * orows, opitch);
+            if (bck) for (uint32_t s = 0; s < z; s++) (etk ? bc_transcode_image : bc_decode_image_mt)(bck, scratch + s * pitch * rows, pitch, (int)w, (int)h, sp + off + s * opitch * orows, opitch);
             rg[nrg++] = (VkBufferImageCopy){ .bufferOffset = so + off, .bufferRowLength = (uint32_t)(opitch / obpb * obw), .bufferImageHeight = (uint32_t)(orows * obh),
                 .imageSubresource = { x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : x->aspect, l, x->is3d ? 0 : y, 1 }, .imageExtent = { w, h, z } };
             off += opitch * orows * z;
@@ -2381,11 +2381,11 @@ static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
     int bck = nvn_fmt_vk_decode(c->tex->d.format);
     if (bck && to_buffer) { RED_ONCE(98, "a BC texture decoded on upload copied back to a buffer: skipped (format %#x)", c->tex->d.format); return; }
     if (bck) {   // BC blocks the game copies in: decoded now (the CPU has written them) into the submission's arena, then copied as plain texels
-        const uint8_t *src = (const uint8_t *)(uintptr_t)c->src; int etk = nvn_fmt_vk_transcode(c->tex->d.format), tb = etk ? bc_transcode_block_bytes(bck) : bc_texel_bytes(bck);
-        size_t orow = etk ? (size_t)((c->r.width + 3) / 4) * tb : (size_t)c->r.width * tb, oimg = orow * (etk ? (size_t)((c->r.height + 3) / 4) : (size_t)c->r.height);
+        const uint8_t *src = (const uint8_t *)(uintptr_t)c->src; int etk = nvn_fmt_vk_transcode(c->tex->d.format), tb = etk ? bc_transcode_bytes(bck) : bc_texel_bytes(bck), blk = etk && bc_transcode_blocks(bck);
+        size_t orow = blk ? (size_t)((c->r.width + 3) / 4) * tb : (size_t)c->r.width * tb, oimg = orow * (blk ? (size_t)((c->r.height + 3) / 4) : (size_t)c->r.height);
         VkBuffer sb; VkDeviceSize so; uint8_t *sp = arena_alloc(g_sub, oimg * nz ? oimg * nz : 16, &sb, &so);
-        for (int s = 0; s < nz; s++) (etk ? bc_transcode_image : bc_decode_image)(bck, src + s * img, row, c->r.width, c->r.height, sp + s * oimg, orow);
-        b = sb; o = so; row = orow; img = oimg; bpb = tb; if (!etk) bw = bh = 1;
+        for (int s = 0; s < nz; s++) (etk ? bc_transcode_image : bc_decode_image_mt)(bck, src + s * img, row, c->r.width, c->r.height, sp + s * oimg, orow);
+        b = sb; o = so; row = orow; img = oimg; bpb = tb; if (!blk) bw = bh = 1;
     }
     outside_pass();
     VkBufferImageCopy r = { .bufferOffset = o, .bufferRowLength = (uint32_t)(row / bpb * bw), .bufferImageHeight = (uint32_t)(img / row * bh),
