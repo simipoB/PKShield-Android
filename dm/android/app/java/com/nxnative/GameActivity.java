@@ -30,8 +30,10 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         check();
         liveShaders();
     }
-    // Shaders the game saves while it runs (a mod's new effect, nvn_vk.c mtl_shader_seen): translated now in the background, two workers at low priority, into the
-    // folder the engine watches (setup_game.py --captures --live, nvn_vk.c live_check), so they draw a few seconds later instead of after a restart
+    // Shaders the game saves while it runs (a mod's new effect, nvn_vk.c mtl_shader_seen): translated now in the background into the folder the engine watches
+    // (setup_game.py --captures --live, nvn_vk.c live_check), so they draw a few seconds later instead of after a restart. Kept out of the game's way on every phone, nothing
+    // to set: the small cores only, the lowest priority, killed before the game when memory runs short (setup_game.py live_yield); one worker under 8 GB, two above;
+    // none while the phone is hot, low on battery off the charger, or short of free memory (then the shader waits for the next start, as before)
     private volatile boolean liveOn = true;
     private void liveShaders() {
         File dir = GameSettings.dir(this), live = new File(dir, "live"), cap = new File(dir, "nvn_capture"); java.util.Set<String> tried = new java.util.HashSet<>();
@@ -39,9 +41,10 @@ public final class GameActivity extends NativeActivity implements InputManager.I
             while (liveOn) {
                 try { Thread.sleep(10000); } catch (InterruptedException e) { return; }
                 java.util.List<String> todo = SetupActivity.pendingCaptures(dir); todo.removeAll(tried); if (todo.isEmpty()) continue;
+                if (!liveRoom()) continue;
                 tried.addAll(todo);   // (once a run: a failure is left to the setup screen's next start)
                 try {
-                    Process p = SetupActivity.startTool(this, java.util.Arrays.asList("--captures", cap.getPath(), "--live", live.getPath()), 2); if (p == null) return;
+                    Process p = SetupActivity.startTool(this, java.util.Arrays.asList("--captures", cap.getPath(), "--live", live.getPath()), GameSettings.memoryGb(this) < 7.5 ? 1 : 2); if (p == null) return;
                     try (java.io.InputStream in = p.getInputStream()) { byte[] b = new byte[4096]; while (in.read(b) >= 0) { } }
                     if (p.waitFor() == 0) try (java.io.FileWriter w = new java.io.FileWriter(new File(dir, "captures_done"), true)) { for (String n : todo) w.write(n + "\n"); }
                 } catch (Exception e) { }
@@ -51,6 +54,14 @@ public final class GameActivity extends NativeActivity implements InputManager.I
     }
     @Override protected void onResume() { super.onResume(); check(); }
     @Override protected void onActivityResult(int req, int res, Intent data) { if (!GameMenu.onResult(this, req, res, data)) super.onActivityResult(req, res, data); }   // the in-game menu's file pickers
+    private boolean liveRoom() {
+        android.os.PowerManager pm = getSystemService(android.os.PowerManager.class);
+        if (pm != null && pm.getCurrentThermalStatus() >= android.os.PowerManager.THERMAL_STATUS_MODERATE) return false;
+        android.os.BatteryManager bm = getSystemService(android.os.BatteryManager.class);
+        if (bm != null && !bm.isCharging() && bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) < 20) return false;
+        android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); getSystemService(android.app.ActivityManager.class).getMemoryInfo(mi);
+        return !mi.lowMemory && mi.availMem - mi.threshold > (700L << 20);   // (room for a translator above Android's own low-memory line)
+    }
     @Override protected void onDestroy() { liveOn = false; if (im != null) im.unregisterInputDeviceListener(this); super.onDestroy(); }
     @Override public void onInputDeviceAdded(int id) { check(); }
     @Override public void onInputDeviceRemoved(int id) { check(); }

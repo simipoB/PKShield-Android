@@ -81,9 +81,7 @@ def main():
     if a.mod_shaders is not None: return mod_shaders(a)
     if a.games and not a.root: ap.error('--games needs --root')
     if a.captures:
-        if a.live:   # (beside the game: it keeps the CPU)
-            try: os.nice(10)
-            except OSError: pass
+        if a.live: live_yield()
         return captures(a)
     if not (a.keys and a.base): ap.error('--keys and --base are needed (or --captures)')
     os.makedirs(a.work, exist_ok=True); os.makedirs(a.out, exist_ok=True)
@@ -329,6 +327,23 @@ def mod_shaders(a):
     log.write(f'mod shaders: {len(ok)} of {len(keys)} translated and added to the pack\n')
     shutil.rmtree(mw, ignore_errors=True)
     print('DONE', flush=True)
+
+def live_yield():
+    # beside the running game (inherited by every tool started from here): the lowest priority, the phone's small cores only (the game keeps the fast ones), and
+    # first in line for Android's low-memory killer (oom_score_adj 1000), so a phone short of memory ends this translation, not the game; the shader then waits for the next start
+    try: os.nice(10)
+    except OSError: pass
+    try:
+        with open('/proc/self/oom_score_adj', 'w') as f: f.write('1000')
+    except OSError: pass
+    top = {}
+    for c in range(os.cpu_count() or 0):
+        try: top[c] = int(open(f'/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq').read())
+        except (OSError, ValueError): pass
+    small = {c for c, f in top.items() if f == min(top.values())} if len(set(top.values())) > 1 else set()
+    if small:
+        try: os.sched_setaffinity(0, small)
+        except (OSError, AttributeError): pass
 
 def live_publish(live, vk, rows):
     # the game is running: its shaders go where the engine looks while it runs (nvn_vk.c live_check), files first, then their map rows, then the generation the engine
