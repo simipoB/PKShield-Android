@@ -58,7 +58,19 @@ public final class GameActivity extends NativeActivity implements InputManager.I
     private void handheld() {
         String h = GameSettings.handheld(); if (h == null || !GameSettings.get(this, "DM_HANDHELD_TOLD").isEmpty()) return;
         GameSettings.set(this, "DM_HANDHELD_TOLD", "1");
-        android.widget.Toast.makeText(this, T.t(this, "%s: its built-in controls are used. Hold − and + together for 1 s for the menu.", h), android.widget.Toast.LENGTH_LONG).show();
+        hint(T.t(this, "%s: its built-in controls are used. Hold − and + together for 1 s for the menu.", h));
+    }
+    // a one-line hint at the top of the screen for a few seconds: not a pop-up (it takes no touch and no focus), the game keeps running and keeps its input
+    private void hint(String s) {
+        android.view.View root = getWindow().getDecorView();
+        root.postDelayed(() -> {
+            android.widget.TextView t = new android.widget.TextView(this); t.setText(s); t.setTextColor(0xFFFFFFFF); t.setTextSize(13);
+            android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable(); g.setColor(0xCC121419); g.setCornerRadius(40); t.setBackground(g);
+            int p = Math.round(12 * getResources().getDisplayMetrics().density); t.setPadding(p * 2, p, p * 2, p);
+            android.widget.PopupWindow w = new android.widget.PopupWindow(t, -2, -2, false); w.setTouchable(false);
+            try { w.showAtLocation(root, android.view.Gravity.TOP | android.view.Gravity.CENTER_HORIZONTAL, 0, p * 2); } catch (RuntimeException e) { return; }
+            root.postDelayed(() -> { try { w.dismiss(); } catch (RuntimeException e) { } }, 5000);
+        }, 3000);
     }
     // ---------- the performance overlay (☰ → Performance overlay): fps, temperature, GPU, free memory, battery, once a second at the top left ----------
     private android.widget.PopupWindow perf; private android.os.Handler perfH; private long perfFrames = -1, perfT;
@@ -112,6 +124,8 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         t.setPriority(Thread.MIN_PRIORITY); t.setDaemon(true); t.start();
     }
     @Override protected void onResume() { super.onResume(); check(); }
+    // am start ... --es menu <page>: the settings panel (testing over adb; 1 = the controller buttons)
+    @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); String m = i.getStringExtra("menu"); if (m != null) GameMenu.show(this, m.equals("1") ? 1 : 0); }
     @Override protected void onActivityResult(int req, int res, Intent data) { if (!GameMenu.onResult(this, req, res, data)) super.onActivityResult(req, res, data); }   // the in-game menu's file pickers
     private boolean liveRoom() {
         android.os.PowerManager pm = getSystemService(android.os.PowerManager.class);

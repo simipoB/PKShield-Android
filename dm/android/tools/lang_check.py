@@ -6,7 +6,8 @@ HERE = os.path.dirname(os.path.abspath(__file__)); APP = os.path.join(HERE, '..'
 LIT = r'"((?:[^"\\]|\\.)*)"'
 CALL = re.compile(r'(?:\bT\.t\((?:this|a|c|ctx), |\bt\(a, |\brow\(a, rows, acts, )' + LIT)
 TERN = re.compile(r'[?:] ' + LIT)   # the other branch of a choice inside a t(...) call: t(a, x ? "A" : "B")
-STEPS = ['unpack the game', 'rewrite the code', 'find the shaders', 'translate the shaders', 'pack the shaders', 'finish',   # setup_game.py STEP lines (SetupActivity.step)
+STEPS = ['Display', 'Performance', 'Controls', 'Online', 'System', 'Saves',   # the settings panel's tabs (GameMenu.TABS, looked up by name)
+         'unpack the game', 'rewrite the code', 'find the shaders', 'translate the shaders', 'pack the shaders', 'finish',   # setup_game.py STEP lines (SetupActivity.step)
          'read the captured shaders', 'translate %s shaders', "find the mods' shaders"]
 def unq(s): return s.replace('\\"', '"').replace('\\n', '\n').replace('\\\\', '\\')
 def keys():

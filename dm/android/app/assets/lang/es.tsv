@@ -13,20 +13,27 @@ Adaptive: High, Low while the phone is hot	Adaptable: Alto, Bajo mientras el tel
 Add %s to the home screen	Añadir %s a la pantalla de inicio
 Adding %d shader(s) the game made last time...	Añadiendo %d shader(s) que el juego creó la última vez...
 Allow access to all files so the app can read your dump where it is (it is several GB; nothing is copied).	Permite el acceso a todos los archivos para que la app lea tu volcado donde está (son varios GB; no se copia nada).
+Applies next start	Se aplica al reiniciar
+Auto	Auto
 Auto (the phone's language)	Auto (el idioma del teléfono)
 Auto: compact on GPUs without BC (Mali, Xclipse, PowerVR), converted once and kept	Auto: compactas en GPU sin BC (Mali, Xclipse, PowerVR), convertidas una vez y guardadas
 Auto: this phone gets %s	Auto: este teléfono usa %s
 Auto: this phone gets %s (%s)	Auto: este teléfono usa %s (%s)
+Auto: this phone gets %s fps	Auto: este teléfono usa %s fps
 Auto: this phone gets %s fps (%s)	Auto: este teléfono usa %s fps (%s)
 Back	Atrás
 Back to the game	Volver al juego
+By label	Por etiqueta
 By label (the button marked A is A)	Por etiqueta (el botón marcado A es A)
+By position	Por posición
 By position, as on a Switch pad	Por posición, como en un mando de Switch
 Cancel	Cancelar
 Choose the save ZIP you edited or exported.	Elige el ZIP de guardado que editaste o exportaste.
+Controller	Mando
 Controller buttons	Botones del mando
 Controller buttons reset.	Botones del mando restablecidos.
 Controllers only	Solo mandos
+Controls	Controles
 Copying %d selected file(s) into app storage...	Copiando %d archivo(s) seleccionado(s) al almacenamiento de la app...
 Copying %d selected game file(s) into app storage; large files need extra free space...	Copiando %d archivo(s) del juego al almacenamiento de la app; los archivos grandes necesitan espacio libre extra...
 Could not add the new shaders (%s); the game still plays without them.	No se pudieron añadir los nuevos shaders (%s); el juego funciona sin ellos.
@@ -39,6 +46,7 @@ Delete	Eliminar
 Delete this mod	Eliminar este mod
 Delete this mod from the phone?	¿Eliminar este mod del teléfono?
 Deleted: applies the next time you start the game.	Eliminado: se aplica la próxima vez que inicies el juego.
+Display	Pantalla
 Done	Listo
 Drag a control to move it, pinch to resize, double-tap to hide. Hold − for 2 s to save (hold + to reset).	Arrastra un control para moverlo, pellizca para cambiar su tamaño, toca dos veces para ocultarlo. Mantén − 2 s para guardar (mantén + para restablecer).
 Edit notes	Editar notas
@@ -47,9 +55,11 @@ Export save data	Exportar partida guardada
 Exported %d save file(s).	Se exportaron %d archivo(s) de guardado.
 Exporting save data...	Exportando partida...
 Fade after	Desvanecer tras
+Fill	Llenar
 Fill the screen (stretched)	Llenar la pantalla (estirado)
 Frame rate	Fotogramas por segundo
 Full	Completas
+Full decode	Decodificación completa
 Full decode: more memory, no conversion (Snapdragon is not affected either way)	Decodificación completa: más memoria, sin conversión (no afecta a Snapdragon)
 Full: the game's textures as they are	Completas: las texturas del juego tal cual
 GPU	GPU
@@ -78,9 +88,11 @@ Local play is back on this Wi-Fi from the next start.	El juego local vuelve a es
 Low	Bajo
 Low: handheld mode, 720p, lighter	Bajo: modo portátil, 720p, más ligero
 Mali driver (PanVK) options	Opciones del controlador Mali (PanVK)
+Memory	Memoria
 Mod "%s" installed (%d files). It is used from the next start.	Mod "%s" instalado (%d archivos). Se usa desde el próximo inicio.
 Mods	Mods
 Mods (%d)	Mods (%d)
+Mods change from the next start.	Los mods cambian desde el próximo inicio.
 Move down	Bajar
 Move the touch controls	Mover los controles táctiles
 Move up	Subir
@@ -89,18 +101,24 @@ No notes.	Sin notas.
 Notes	Notas
 Off	Desactivado
 Off: applies the next time you start the game.	Desactivado: se aplica la próxima vez que inicies el juego.
+On	Sí
 On: applies the next time you start the game.	Activado: se aplica la próxima vez que inicies el juego.
 On: fps, temperature, GPU, memory, battery	Activado: fps, temperatura, GPU, memoria, batería
 On: the controller's motor, else the phone's	Activada: el motor del mando, si no el del teléfono
+Online	En línea
 Online room	Sala en línea
 Opacity	Opacidad
+Or hold − for 3 s on a controller. Hold − and + together for 1 s to open this menu.	O mantén − 3 s en un mando. Mantén − y + a la vez 1 s para abrir este menú.
 Order and notes	Orden y notas
+Overlay	Superposición
+Performance	Rendimiento
 Performance overlay	Indicador de rendimiento
 Picture	Imagen
 Play	Jugar
 Play the game's local link battles, trades and Max Raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off.	Juega los combates, intercambios e Incursiones Dinamax de conexión local con amigos en cualquier lugar: todos introducen el mismo servidor y código de sala. Aloja tu propio servidor (dm/server en el proyecto: Railway o cualquier PC). Los mods deben estar desactivados.
 Please wait for the current setup or file copy to finish.	Espera a que termine la configuración o la copia actual.
 Preparing...	Preparando...
+Press a key…	Pulsa un botón…
 Press the controller button for %s.	Pulsa el botón del mando para %s.
 Previously copied selections are ready.	Las selecciones copiadas antes están listas.
 Put each mod in its own folder in Android/data/%s/files/mods/ — <mod>/romfs for files, <mod>/exefs for .pchtxt code patches (they must be made for %s 1.3.2).	Pon cada mod en su propia carpeta en Android/data/%s/files/mods/ — <mod>/romfs para archivos, <mod>/exefs para parches .pchtxt (deben ser para %s 1.3.2).
@@ -111,12 +129,15 @@ Remap controller buttons (or hold − for 3 s)	Reasignar botones del mando (o ma
 Replaces %d of the same files as %s: that mod's are used (it is higher).	Reemplaza %d de los mismos archivos que %s: se usan los de ese mod (está más arriba).
 Replaces %d of the same files as %s: this mod's are used (it is higher).	Reemplaza %d de los mismos archivos que %s: se usan los de este mod (está más arriba).
 Reset all	Restablecer todo
+Room: %s	Sala: %s
 Rumble	Vibración
 SGSR	SGSR
 Save	Guardar
 Save in the game first: the export is the last save the game wrote.	Guarda primero en el juego: se exporta la última partida que guardó el juego.
 Saved: applies the next time you start the game.	Guardado: se aplica la próxima vez que inicies el juego.
 Saved: close the game and start it again, then use the game's local link options.	Guardado: cierra el juego, vuelve a iniciarlo y usa las opciones de conexión local del juego.
+Saves	Partidas
+Screen	Pantalla
 Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone.	Configura el juego con tu propio volcado. Esta app no incluye archivos del juego ni claves; los tuyos nunca salen del teléfono.
 Set up the game	Configurar el juego
 Settings (picture, graphics, textures, controller buttons, touch controls, mods) are in the game: tap the menu button at the top left, or hold − on a controller for 3 seconds for the controller buttons.	Los ajustes (imagen, gráficos, texturas, botones del mando, controles táctiles, mods) están en el juego: toca el botón de menú arriba, o mantén − en un mando 3 segundos para los botones.
@@ -124,18 +145,24 @@ Setup failed: %s	La configuración falló: %s
 Setup is still running in the background. Wait a few minutes, then close and reopen the app to see whether it has finished.	La configuración sigue en segundo plano. Espera unos minutos y luego cierra y vuelve a abrir la app para ver si terminó.
 Sharp	Nítido
 Sharp: the picture upscaled with sharpening (lighter settings keep their detail)	Nítido: la imagen escalada con nitidez (los ajustes más ligeros conservan el detalle)
+Smooth	Suave
 Smooth: a plain stretch	Suave: estiramiento simple
 Snapdragon Game Super Resolution (Qualcomm's upscaler)	Snapdragon Game Super Resolution (el escalador de Qualcomm)
+Speed	Velocidad
+System	Sistema
+Tap a button, then press the controller key you want for it.	Toca un botón y luego pulsa el botón del mando que quieras para él.
 Texture format	Formato de texturas
 Textures	Texturas
 The %s shortcut is on the home screen.	El acceso directo de %s está en la pantalla de inicio.
 The file picker did not return a file. Try the phone's Files app and select a file from Downloads or Documents.	El selector no devolvió un archivo. Prueba con la app Archivos del teléfono y elige un archivo de Descargas o Documentos.
 The file picker returned no selected file. Try the phone's Files app and select a file from Downloads or Documents.	El selector no devolvió ningún archivo. Prueba con la app Archivos del teléfono y elige un archivo de Descargas o Documentos.
 The game closed while starting its graphics	El juego se cerró al iniciar sus gráficos
+The new driver is used from the next start.	El nuevo controlador se usa desde el próximo inicio.
 The phone's own driver	El controlador del teléfono
 The phone's own driver: from the next start.	El controlador del teléfono: desde el próximo inicio.
 This app version translates the game's shaders differently: choose your files and press Set up the game again (the save data is kept).	Esta versión de la app traduce los shaders de otra forma: elige tus archivos y pulsa Configurar el juego de nuevo (se conserva la partida).
 This launcher cannot add shortcuts: long-press the app's icon for %s.	Este launcher no puede añadir accesos directos: mantén pulsado el icono de la app para %s.
+This phone: %s	Este teléfono: %s
 This takes a long time on a phone: keep this screen open, ideally plugged in.	En un teléfono tarda bastante: deja esta pantalla abierta, mejor con el cargador.
 Touch controls	Controles táctiles
 Touch controls: look	Controles táctiles: aspecto
@@ -145,6 +172,7 @@ Upscaling	Escalado
 Use the phone's own driver	Usar el controlador del teléfono
 Wait for the current setup to finish.	Espera a que termine la configuración actual.
 Where do mods go?	¿Dónde van los mods?
+Your current save is kept as a backup.	Tu partida actual se guarda como copia de seguridad.
 Your files are %s: setting it up...	Tus archivos son %s: configurando...
 default	predeterminado
 find the mods' shaders	buscar los shaders de los mods
