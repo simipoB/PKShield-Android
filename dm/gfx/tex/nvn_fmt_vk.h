@@ -9,6 +9,9 @@ void nvn_fmt_vk_depth24(int has_x8d24, int has_d24s8);
 // (RGBA8 / sRGB, R8, RG8, RGBA16F), and nvn_fmt_vk_decode says which bc_decode.h kind a format decodes as (0 = sampled as it is)
 void nvn_fmt_vk_bc(int has_bc);
 int nvn_fmt_vk_decode(int nvn_format);
+// with nvn_fmt_vk_etc(1) (and no BC), BC1–BC5 unsigned become ETC2 RGBA8 / EAC R11 / RG11 instead (etc_encode.h); nvn_fmt_vk_transcode gives the kind when it does
+void nvn_fmt_vk_etc(int on);
+int nvn_fmt_vk_transcode(int nvn_format);
 int nvn_fmt_to_vk(int nvn_format, uint32_t *vk_format, uint8_t swz[4]);
 // NVN vertex attribute format → Vulkan vertex format (0 = none); *ct gets its component class (0 float / normalized / scaled, 1 uint, 2 sint)
 uint32_t nvn_vfmt_to_vk(int nvn_format, int *ct);

@@ -1,6 +1,7 @@
 // NVNformat → Vulkan, entry by entry in NVN enum order, mirroring nvn_fmt_mtl.c (which documents each substitution); the packed 16-bit formats take the Vulkan format with the
 // same bit layout as the Metal one there. Unlisted formats (0 and out of range) return 0.
 #include "nvn_fmt_vk.h"
+#include "etc_encode.h"
 
 enum {   // VkFormat values (vulkan_core.h)
     R4G4B4A4 = 2, B5G6R5 = 5, B5G5R5A1 = 6, A1R5G5B5 = 8, R8U = 9, R8S = 10, R8US = 11, R8SS = 12, R8UI = 13, R8I = 14,
@@ -17,14 +18,17 @@ enum {   // VkFormat values (vulkan_core.h)
 };
 static int g_x8d24, g_d24s8;   // the device's 24-bit depth formats work as depth targets (nvn_fmt_vk_depth24)
 void nvn_fmt_vk_depth24(int has_x8d24, int has_d24s8) { g_x8d24 = has_x8d24; g_d24s8 = has_d24s8; }
-static int g_bc = 1;
+static int g_bc = 1, g_etc;
 void nvn_fmt_vk_bc(int has_bc) { g_bc = has_bc; }
+void nvn_fmt_vk_etc(int on) { g_etc = on; }
 // BC Vulkan format (131–146) → decode kind (bc_decode.h) and the format it decodes into
 static int bc_kind(uint32_t vk) {
     static const int8_t k[16] = { 1, 1, 1, 1, 2, 2, 3, 3, 4, -4, 5, -5, 6, -6, 7, 7 };
     return vk >= 131 && vk <= 146 ? k[vk - 131] : 0;
 }
 static uint32_t bc_plain(uint32_t vk) {
+    uint32_t etc = g_etc ? bc_transcode_vk(bc_kind(vk), vk == 132 || vk == 134 || vk == 136 || vk == 138) : 0;   // (sRGB BC1 / BC2 / BC3)
+    if (etc) return etc;
     switch (bc_kind(vk)) {
     case 4: return 9; case -4: return 10; case 5: return 16; case -5: return 17; case 6: case -6: return 97;   // R8 / R8 snorm / RG8 / RG8 snorm / RGBA16F
     default: return vk == 132 || vk == 134 || vk == 136 || vk == 138 || vk == 146 ? 43 : 37;                   // RGBA8 sRGB / UNORM
@@ -74,6 +78,7 @@ int nvn_fmt_vk_decode(int f) {
     if (g_bc || f < 0x41 || f > 0x50 || f >= (int)(sizeof T / sizeof *T)) return 0;
     return T[f].kind ? bc_kind(T[f].vk) : 0;
 }
+int nvn_fmt_vk_transcode(int f) { int k = nvn_fmt_vk_decode(f); return g_etc && k > 0 && bc_transcode_vk(k, 0) ? k : 0; }
 int nvn_fmt_to_vk(int f, uint32_t *vk, uint8_t swz[4]) {
     ent e = {0, 0, 0, 0};
     if (f >= 0x79 && f <= 0x94) { int k = (f - 0x79) % 14; e = (ent){(uint16_t)(ASTC0 + 2 * k + (f >= 0x87)), 1, 0, 0}; }
