@@ -3,6 +3,7 @@
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include <dlfcn.h>
+#include <stdatomic.h>
 #include <time.h>
 
 typedef struct { const char *name; void *fn; } hle_ent;
@@ -86,6 +87,20 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs) {
             case G_CNTPCT: case G_CNTVCT: {
                 uint64_t t = guest_ns() * 12 / 625;    // 19.2 MHz system counter; original instruction mrs xN, cntpct_el0, arg = N
                 regs[g->arg] = t;
+                // DM_TICK_TRACE=1 (diagnosis): the timer reads counted by call site, the three busiest logged every 2 s: a thread spinning on the clock (a wait
+                // that makes no SVC) shows where it is
+                static int trace = -1; if (trace < 0) trace = getenv("DM_TICK_TRACE") != NULL;
+                if (trace) {
+                    static _Atomic uint32_t cnt[1u << GATE_BITS]; static _Atomic uint64_t next; atomic_fetch_add_explicit(&cnt[i], 1, memory_order_relaxed);
+                    uint64_t now = guest_ns(), nx = atomic_load(&next);
+                    if (now >= nx && atomic_compare_exchange_strong(&next, &nx, now + 2000000000ull)) {
+                        unsigned top[3] = {0}; uint32_t topn[3] = {0};
+                        for (unsigned k = 0; k < (1u << GATE_BITS); k++) { uint32_t c = atomic_exchange_explicit(&cnt[k], 0, memory_order_relaxed); if (!c) continue;
+                            for (int j = 0; j < 3; j++) if (c > topn[j]) { for (int m = 2; m > j; m--) { topn[m] = topn[m - 1]; top[m] = top[m - 1]; } topn[j] = c; top[j] = k; break; } }
+                        for (int j = 0; j < 3 && topn[j]; j++) { module_t *mm = module_of((void *)g_gate[top[j]].orig);
+                            LOG("[tick] %u timer reads in 2 s at %s+%#llx", topn[j], mm ? mm->name : "?", mm ? (unsigned long long)(g_gate[top[j]].orig - (uint64_t)mm->base) : (unsigned long long)g_gate[top[j]].orig); }
+                    }
+                }
                 return t;
             }
             case G_OBS: if (g_obs_fn[g->arg]) g_obs_fn[g->arg](regs); return 0;   // Registers are read-only; the x0–x8 that dm_gate writes back are the original values
