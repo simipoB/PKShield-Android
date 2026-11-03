@@ -8,6 +8,7 @@
 // Job file: "DMOJ", u32 count, then per record u32 compressed length, u32 raw length and the compressed bytes. Output: "DMOR", u32 count, then per record u32 decoded length
 // (0 = failed) and the decoded bytes.
 #include "hle.h"
+#include <errno.h>
 #include <unistd.h>
 
 // OodleLZ_Decompress is found in main by the name its profiler scope passes: the one function whose code takes the address of the NUL-terminated string "OodleLZ_Decompress" (adrp + add),
@@ -90,14 +91,17 @@ void dm_oodle_job_maybe(void) {
 }
 
 static int read_all(int fd, void *p, size_t n) {
-    for (uint8_t *q = p; n; ) { ssize_t k = read(fd, q, n); if (k <= 0) return 0; q += k; n -= (size_t)k; }
+    for (uint8_t *q = p; n; ) { ssize_t k = read(fd, q, n); if (k < 0 && errno == EINTR) continue; if (k <= 0) return 0; q += k; n -= (size_t)k; }   // (a pipe or socket waits: the host's signals interrupt it)
     return 1;
 }
 static void write_all(int fd, const void *p, size_t n) {
-    for (const uint8_t *q = p; n; ) { ssize_t k = write(fd, q, n); if (k <= 0) die("DM_OODLE_SERVE: answer write failed"); q += k; n -= (size_t)k; }
+    for (const uint8_t *q = p; n; ) { ssize_t k = write(fd, q, n); if (k < 0 && errno == EINTR) continue; if (k <= 0) die("DM_OODLE_SERVE: answer write failed"); q += k; n -= (size_t)k; }
 }
 void dm_oodle_serve_maybe(void) {
     if (!getenv("DM_OODLE_SERVE")) return;
+    // DM_OODLE_SERVE=<magic> other than 1 (shader_split.py DM_OODLE_FILTER, e.g. BNSH): a decoded file without that magic is answered with ~0 and no bytes, so a scan through a pipe
+    // (the setup on a phone, an emulator over adb) moves only the files that hold shaders, not the whole 20-odd GB a Trinity game unpacks to
+    const char *filt = getenv("DM_OODLE_SERVE"); if (!strcmp(filt, "1")) filt = NULL;
     oodle_fn fn = NULL; uint64_t off = 0;
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { off = oodle_find(&g_mod[i]); fn = (oodle_fn)(void *)(g_mod[i].base + off); }
     if (!fn) die("DM_OODLE_SERVE: no main module");
@@ -114,6 +118,7 @@ void dm_oodle_serve_maybe(void) {
         if (!read_all(0, comp, hdr[0])) die("DM_OODLE_SERVE: request cut short");
         int64_t got = fn(comp, (int64_t)hdr[0], raw, (int64_t)hdr[1], 1, 0, 0, NULL, 0, NULL, NULL, scratch, (int64_t)scratch_n, 3);   // fuzz safe, no CRC check, silent, unthreaded
         uint64_t out = got == (int64_t)hdr[1] ? (uint64_t)got : 0;
+        if (out && filt && !memmem(raw, out, filt, strlen(filt))) { uint64_t skip = ~0ull; write_all(1, &skip, sizeof skip); n++; continue; }   // (no shader in it: not sent back)
         if (!out && hdr[1] && bad++ < 8) LOG("[RED] DM_OODLE_SERVE: request %llu (%llu → %llu bytes) failed (decoder returned %lld)", (unsigned long long)n, (unsigned long long)hdr[0], (unsigned long long)hdr[1], (long long)got);
         write_all(1, &out, sizeof out);
         if (out) write_all(1, raw, out);

@@ -1,0 +1,2 @@
+# kind: evidence  Pokémon Violet shaders: found in the player's own dump at setup (setup_game.py: shader_map.found.tsv); this table lists none of its own
+package	index	stage	dm_ctl_sha16	source
