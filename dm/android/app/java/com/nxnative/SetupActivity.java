@@ -200,7 +200,7 @@ public final class SetupActivity extends Activity {
     private void refresh() {
         if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? "the phone's own Vulkan driver" : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")");
                                   if (maliBox != null) maliBox.setVisibility(MaliDriver.isPanvk(d) ? android.view.View.VISIBLE : android.view.View.GONE); }
-        gameText.setText(games.isEmpty() ? "none chosen (.nsp / .xci: base game, update 1.3.2, DLC)" : String.join("\n", games));
+        gameText.setText(games.isEmpty() ? T.t(this, "none chosen (.nsp / .xci: base game, update %s, DLC)", GameSettings.version(this)) : String.join("\n", games));
         boolean keys = new File(keysDir(), "prod.keys").exists();
         keysText.setText(keys ? "prod.keys" + (new File(keysDir(), "title.keys").exists() ? " + title.keys" : "") + " (kept in the app's private storage)" : "none chosen (prod.keys, and title.keys if needed)");
         setup.setEnabled(!running && keys && !games.isEmpty()); play.setEnabled(!running && ready());
