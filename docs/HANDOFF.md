@@ -11,7 +11,7 @@ State as of 2026-11-04. All testing was on one phone: a Galaxy S25+ (Adreno 830,
 2. **Know the branch rule.** Work on `violet`. Push it to `origin violet` and to `paldea main`. Merge it into Galar's `main` keeping Galar's own `README.md` (`git checkout origin/main -- README.md` before committing the merge).
 3. **Set up the build.** Follow [BUILDING.md](BUILDING.md), then the "Build and run" section below. Build one engine per game pair: `01008DB008C2C000` for Galar, `01008F6008C5E000` for Paldea.
 4. **Get game data.** You need your own dumps and `prod.keys`; none are in the repo. The supported route is the app's own setup on a phone. Ask the owner for file paths: do not scan their Downloads.
-5. **Check the current release.** Galar Native **v0.40** is published (versionCode 40, release key `a5f49b44…`). Releases kept: v0.40, v0.39, v0.38. The next release is v0.41 or later. Never publish until a build has passed on a phone, and only when the owner says so.
+5. **Check the current release.** Galar Native **v0.40** was published, then **pulled** after about 20 minutes: its split submissions made Sword flash white. v0.39 is Latest again; releases kept are v0.39 and v0.38, and the v0.40 tag remains. Some players may have v0.40 (versionCode 40), so the next release must be **v0.41 or later**, release key `a5f49b44…`. Never publish until a build has passed on a phone, and only when the owner says so.
 6. **Learn the measuring tools before changing performance code:**
    - `DM_VK_PROF=1` in `env.txt` logs replay time per draw, other ops, and how long the game waits on the GPU.
    - `DM_VK_GPU_TIME=1` adds GPU time to the "timing up to frame" lines.
@@ -94,6 +94,7 @@ Done in this round:
 - The cause: the game submits a frame and then waits for that very submission (`DM_VK_PROF`: "sync waits by submissions behind the newest: 0"). The replay translated the whole frame before the GPU got any of it, so the game waited for replay plus GPU, one after the other.
 - The fix: `sub_split` in `nvn_vk.c` sends the submission to the GPU every 150 draws while the rest is still replayed. It is on by default; `DM_VK_SPLIT=<draws>` changes the size, `DM_VK_SPLIT=0` turns it off. Sword boots and runs 30 fps with it.
 - Only the plaza was checked. Battles, other towns and long play are not, and neither is any other phone.
+- **It made Sword flash white** (seen by the owner; gone with `DM_VK_SPLIT=0`). The first version cut inside a render pass and opened the pass again. Since `f4f9f1c` the cut waits for the next change of render target instead. **Not tested yet:** check that Sword no longer flashes and that Scarlet outdoors still holds 33 ms. The owner's phone still has `DM_VK_SPLIT=0` in Galar Native's `env.txt` files (both games); remove it for that test.
 
 The notes below are from before this fix.
 
