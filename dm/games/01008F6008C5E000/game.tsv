@@ -65,8 +65,3 @@ android_heavy	on
 # Trinity's open world is heavier than Arceus (about 20 fps docked on the Galaxy S25+): handheld mode, the game's own lower render resolution
 android_op_mode	handheld
 touch_zlzr	on
-# ---- Movies ----
-# The academy video (demo/movie/d020_movie_a.bk2, Bink 2) is decoded on the CPU straight into texture memory with no NVN call: without these the textures stayed GPU-only and empty,
-#   and the video played black under its subtitles (first boot on a Galaxy S25+)
-tex_flush_upload	on
-tex_dirty_upload	on

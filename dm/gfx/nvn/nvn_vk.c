@@ -853,6 +853,7 @@ static void shadow_sync_ordered(sub_t *s) {
     pthread_mutex_unlock(&g_mu);
     { static int said; if (!said++) VLOG("memory pools: mirrors updated by the GPU in submission order (%.1f KB in the first submission, %d ranges in flight left out)", c.bytes / 1024.0, nex); }
 }
+static uint64_t g_vp_c;
 uint64_t mtl_sub_commit(void) {
     sub_t *s = g_sub; if (!s) return g_fence;
     pass_end();
@@ -863,7 +864,8 @@ uint64_t mtl_sub_commit(void) {
     if (s->ucb_open) { barrier_all(s->ucb); VKCHECK(vkEndCommandBuffer(s->ucb)); cbs[n++] = s->ucb; s->ucb_open = 0; }
     cbs[n++] = s->cb;
     g_sub = NULL;
-    return submit_tracked(s, cbs, n);
+    uint64_t vt0 = mono_ns(); uint64_t r = submit_tracked(s, cbs, n); g_vp_c += mono_ns() - vt0;   // (DM_VK_PROF: the queue submission)
+    return r;
 }
 void mtl_drain(void) { mtl_finish(); }
 static void post(post_op o) {
@@ -1205,15 +1207,6 @@ static vtex *tex_res(const tex_t *t) {
     }
     alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = (uint64_t)(uintptr_t)t->pool; ak.off = t->off; ak.d = t->d;
     vtex *shared = nvn_hm_get(&g_alias, &ak);
-    // No exact match: a texture object over the same memory with the same size and format but other flags / levels (Violet renders its 3D scene into a render target and its UI samples
-    //   that memory through a second texture object made without the render-target flags: as a new image it read black, and the academy video and the ID photo came out black)
-    if (!shared) for (uint32_t i = 0; i < g_alias.cap && !shared; i++) {
-        if (!g_alias.vals[i]) continue;
-        alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
-        if (k.pool != ak.pool || k.off != ak.off || k.d.width != t->d.width || k.d.height != t->d.height || k.d.depth != t->d.depth || k.d.format != t->d.format || k.d.target != t->d.target) continue;
-        vtex *c = (vtex *)g_alias.vals[i]; if (!(c->usage & VK_IMAGE_USAGE_SAMPLED_BIT)) continue;
-        shared = c; static int said; if (!said++) VLOG("texture over a render target's memory with other flags (%#x vs %#x, %ux%u format %#x): sharing its image", t->d.flags, k.d.flags, t->d.width, t->d.height, t->d.format);
-    }
     if (shared) { serial_put(t->serial, shared); pthread_mutex_unlock(&g_smu); return shared; }
     vtex *x = tex_new(t, 0);
     if (!x) { pthread_mutex_unlock(&g_smu); return NULL; }
@@ -2276,7 +2269,7 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
 
 // ================= Draws =================
 // DM_VK_PROF: where the replay's CPU time goes per draw (pass + pipeline, dynamic state + vertex streams, descriptors, flush + draw), logged every 300 presents
-static int g_vprof = -1; static uint64_t g_vp_t[4], g_vp_n;
+static int g_vprof = -1; static uint64_t g_vp_t[4], g_vp_n, g_vp_o[5];
 #define VPROF_ON (g_vprof < 0 ? (g_vprof = getenv("DM_VK_PROF") != NULL) : g_vprof)
 static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark);
 static void draw(const p_draw *dw, const p_draw_idx *di) {
@@ -2594,6 +2587,7 @@ void mtl_exec(const uint8_t *p) {
     if (!g_sub) { RED_ONCE(52, "commands replayed outside a submission"); return; }
     for (int guard = 0; guard < (1 << 26); guard++) {
         op_hdr h; memcpy(&h, p, sizeof h); const uint8_t *a = p + 8;
+        uint64_t vt0 = g_vprof > 0 && h.op != OP_CALL && h.op != OP_DRAW && h.op != OP_DRAW_IDX ? mono_ns() : 0;
         switch (h.op) {
             case OP_END: return;
             case OP_BEGIN: break;
@@ -2642,6 +2636,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_BARRIER: case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: break;
             default: state_op(h.op, a); break;
         }
+        if (vt0) { uint64_t d = mono_ns() - vt0; int c = h.op == OP_SET_RT ? 0 : h.op == OP_CLEAR_COLOR || h.op == OP_CLEAR_DS || h.op == OP_CLEAR_TEX ? 1 : h.op == OP_COPY_B2T || h.op == OP_COPY_T2B || h.op == OP_COPY_T2T || h.op == OP_COPY_B2B || h.op == OP_UPDATE_UB || h.op == OP_CLEAR_BUF ? 2 : h.op == OP_DISPATCH ? 3 : 4; g_vp_o[c] += d; }
         p += h.size;
     }
     RED_ONCE(55, "command list did not end");
@@ -3130,7 +3125,8 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     if (VPROF_ON && n % 300 == 0 && g_vp_n) { double f = 300.0 * 1e6;
         VLOG("[prof] replay per frame: %.0f draws; pass + pipeline %.2f ms, dynamic state + vertex %.2f ms, descriptors %.2f ms, flush + draw %.2f ms (%.1f us a draw)", g_vp_n / 300.0,
              g_vp_t[0] / f, g_vp_t[1] / f, g_vp_t[2] / f, g_vp_t[3] / f, (g_vp_t[0] + g_vp_t[1] + g_vp_t[2] + g_vp_t[3]) / 1e3 / (double)g_vp_n);
-        memset(g_vp_t, 0, sizeof g_vp_t); g_vp_n = 0; }
+        VLOG("[prof] other ops per frame: set target %.2f ms, clears %.2f ms, copies %.2f ms, compute %.2f ms, state %.2f ms; commit %.2f ms", g_vp_o[0] / f, g_vp_o[1] / f, g_vp_o[2] / f, g_vp_o[3] / f, g_vp_o[4] / f, g_vp_c / f);
+        memset(g_vp_t, 0, sizeof g_vp_t); memset(g_vp_o, 0, sizeof g_vp_o); g_vp_c = 0; g_vp_n = 0; }
     static uint64_t g_present_exit;   // when the last present returned (after its pacing sleep): from there to this call is the frame's work
     if (g_present_exit && period_s > 0) front_frame_work(mono_ns() - g_present_exit, (uint64_t)(period_s * 1e9));
     static long shots[256]; static int nshot = -1; static const char *shot_path;

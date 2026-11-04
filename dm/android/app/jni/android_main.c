@@ -13,6 +13,7 @@
 #include <android/input.h>
 #include <android_native_app_glue.h>
 #include <pthread.h>
+#include <sched.h>
 #include <jni.h>
 #include <sys/resource.h>
 #include <dlfcn.h>
@@ -503,13 +504,14 @@ static void graphics_auto(void) {
     if (mode == 1 && hot) { mode = 0; dm_set_opmode(0); fprintf(stderr, "graphics auto: the phone is hot (status %d, headroom %.2f): handheld mode (720p)\n", st, hr); }
     else if (mode == 0 && cool >= 12) { mode = 1; dm_set_opmode(1); fprintf(stderr, "graphics auto: cooled down: TV mode (1080p)\n"); }
 }
+static void pin_update(void);
 static void *log_mirror(void *p) {
     (void)p; char src[1200]; snprintf(src, sizeof src, "%s/log.txt", g_files);
     for (int n = 0;; n++) {
         sleep(5);
         char th[64];
         if (!n) { char t0[64]; thermal_text(t0, sizeof t0); }   // looks the thermal functions up
-        graphics_auto();
+        graphics_auto(); pin_update();
         if (n % 6 == 0) fprintf(stderr, "[mem] app %ld MB resident (%ld MB swapped), phone %ld MB available of %ld MB; heat %s\n", kb_of("/proc/self/status", "VmRSS:") / 1024,
                                 kb_of("/proc/self/status", "VmSwap:") / 1024, kb_of("/proc/meminfo", "MemAvailable:") / 1024, kb_of("/proc/meminfo", "MemTotal:") / 1024, thermal_text(th, sizeof th));
         { char d[256]; snprintf(d, sizeof d, DL "/%s-log.txt", g_stem); copy_file(src, d); }
@@ -639,6 +641,24 @@ static void host_start(void) {
     pthread_t t; pthread_create(&t, &at, host_thread, NULL); pthread_detach(t);
     { pthread_t g; if (!pthread_create(&g, NULL, boot_guard_main, NULL)) pthread_detach(g); }
 }
+// ---------- The fastest cores for the threads a frame waits on. Left alone, the scheduler kept Violet's main thread moving over the middle cores of a Galaxy S25+ (2.7 GHz) with
+// its two fastest cores idle at 1 GHz (pinned, the replay's CPU cost fell from 21 to 14 ms a frame). "Fastest" is each core's clock limit right now, looked at again every 5 s
+// (log_mirror): a hot phone can cap its prime cores below the others (1.69 GHz seen against 2.9), and then the threads move. A phone whose cores are all alike is left alone.
+// DM_CPU_PIN=off leaves the scheduler to it
+static pid_t g_pin_tid[2]; static int g_pin_n; static long g_pin_top;
+static void pin_update(void) {
+    const char *e = getenv("DM_CPU_PIN"); if ((e && !strcmp(e, "off")) || !g_pin_n) return;
+    long top = 0, low = 0, f[32]; cpu_set_t set; CPU_ZERO(&set); int n = 0;
+    for (int c = 0; c < 32; c++) { char p[96]; snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq", c); FILE *fp = fopen(p, "r"); f[c] = 0;
+        if (fp) { if (fscanf(fp, "%ld", &f[c]) != 1) f[c] = 0; fclose(fp); } if (f[c] > top) top = f[c]; if (f[c] && (!low || f[c] < low)) low = f[c]; }
+    if (!top) return;
+    if (top == low) { if (!g_pin_top) return; for (int c = 0; c < 32; c++) if (f[c]) { CPU_SET(c, &set); n++; } }   // all alike now: every core
+    else for (int c = 0; c < 32; c++) if (f[c] == top) { CPU_SET(c, &set); n++; }
+    if (top == g_pin_top && !(top == low)) { static cpu_set_t last; if (CPU_EQUAL(&last, &set)) return; last = set; }
+    g_pin_top = top;
+    for (int i = 0; i < g_pin_n; i++) sched_setaffinity(g_pin_tid[i], sizeof set, &set);
+    fprintf(stderr, "[cpu] main threads on %d core%s limited to %.2f GHz\n", n, n == 1 ? "" : "s", top / 1e6);
+}
 // ---------- Performance hints (Android 13+): one session for the game's main thread and the presenting thread, told every frame how long the presenting thread
 // worked against the frame's period (nvn_vk.c mtl_present). That is what brings the fastest cores and higher clocks when the game needs them, and lower ones
 // when it does not (LAS Recomp's Android port: the prime core otherwise stays parked). The presenting thread also gets the most urgent priority an app may set
@@ -659,7 +679,7 @@ void front_frame_work(uint64_t busy_ns, uint64_t target_ns) {
         int32_t t[2]; size_t n = 0; t[n++] = gettid(); if (g_game_tid && g_game_tid != gettid()) t[n++] = g_game_tid;
         g_hint = m && p_hint_create ? p_hint_create(m, t, n, (int64_t)target_ns) : NULL;
         if (!g_hint || !p_hint_report) { g_hint_failed = 1; fprintf(stderr, "[cpu] no performance hint session\n"); return; }
-        g_hint_target = (int64_t)target_ns;
+        g_hint_target = (int64_t)target_ns; for (size_t i = 0; i < n; i++) g_pin_tid[i] = t[i]; g_pin_n = (int)n; pin_update();
         fprintf(stderr, "[cpu] performance hint session: %zu threads, target %.1f ms; presenting thread at priority -10\n", n, target_ns / 1e6);
     }
     if ((int64_t)target_ns != g_hint_target && p_hint_target) p_hint_target(g_hint, g_hint_target = (int64_t)target_ns);
