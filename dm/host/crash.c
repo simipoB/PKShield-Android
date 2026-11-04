@@ -125,10 +125,12 @@ static void crash_gate(int sig) {
     if (none == me) _exit(128 + sig);
     for (;;) pause();
 }
+__attribute__((weak)) int dm_crypto_emu(ucontext_t *uc);   // crypto_emu.c (Linux / Android on ARM64)
 __attribute__((weak)) void dm_crash_note(void);   // android_main.c: "this run crashed" for the next start (boot_state); only write() inside
 static void on_crash(int sig, siginfo_t *si, void *uc_) {
     ucontext_t *uc = uc_;
     if (sig == SIGTRAP && g_trap_hook && g_trap_hook(uc)) return;
+    if (sig == SIGILL && dm_crypto_emu && dm_crypto_emu(uc)) return;   // an ARMv8 crypto instruction the CPU lacks (the emulator's ARM translation): done in software, crypto_emu.c
     if (sig == SIGSEGV || sig == SIGBUS) {
         int is_write = (int)((DM_UC_ESR(uc) >> 6) & 1);   // The WnR bit of ESR
         for (int i = 0; i < g_nfault_hook; i++) if (g_fault_hook[i](si->si_addr, is_write, uc)) return;

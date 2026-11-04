@@ -161,9 +161,22 @@ static void force_init(void) {
         for (unsigned j = i + 1; j < g_nforce; j++)
             if (!strcmp(g_force[i].name, g_force[j].name)) die("duplicate entry in the forced takeover list: %s", g_force[i].name);
 }
+// "soft crypto" takeovers (hle_softcrypto.c) only on a CPU without the ARMv8 Cryptographic Extension (the Android emulator's ARM translation); DM_SOFT_CRYPTO=1 forces them
+#if defined(__linux__) && defined(__aarch64__)
+#include <sys/auxv.h>
+static int soft_crypto(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("DM_SOFT_CRYPTO"); unsigned long hw = getauxval(AT_HWCAP), need = (1ul << 5) | (1ul << 6) | (1ul << 3);   // HWCAP_SHA1 | HWCAP_SHA2 | HWCAP_AES
+                  on = e ? atoi(e) != 0 : (hw & need) != need; if (on) LOG("soft crypto: the CPU lacks SHA1 / SHA2 / AES instructions (hwcap %#lx): nn::crypto's SHA blocks run in C", hw); }
+    return on;
+}
+#else
+static int soft_crypto(void) { const char *e = getenv("DM_SOFT_CRYPTO"); return e && atoi(e); }
+#endif
 static void *force_lookup(const char *name) {
     for (unsigned i = 0; i < g_nforce; i++)
         if (!strcmp(g_force[i].name, name)) {
+            if (!strncmp(g_force[i].why, "soft crypto", 11) && !soft_crypto()) return NULL;   // (the SDK's own hardware code)
             if (!g_force_hits[i]++ && g_flag.imports) LOG("force %s  (%s)", name, g_force[i].why);
             void *hlecount_wrap(const char *, const char *, void *); return hlecount_wrap("FORCE", name, g_force[i].fn);   // A counting stub when DM_HLECOUNT is set
         }
