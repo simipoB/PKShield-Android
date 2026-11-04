@@ -14,7 +14,8 @@
 set -euo pipefail
 REPO=$(cd "$(dirname "$0")/.." && pwd); A=$REPO/dm/android
 WORK=${WORK:-$HOME/psa-build}; mkdir -p "$WORK"; cd "$WORK"
-GAME=01008DB008C2C000; API=31; PYV=3.14.9; CAPV=5.0.7; LZ4V=1.10.0
+GAME=${GAME:-01008DB008C2C000}; API=31;   # GAME=01008F6008C5E000: Paldea Native (Scarlet + Violet); default Galar Native (Sword + Shield)
+ PYV=3.14.9; CAPV=5.0.7; LZ4V=1.10.0
 export NDK=${NDK:-$WORK/android-ndk-r27c} DOTNET=${DOTNET:-$WORK/dotnet/dotnet} DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1 DOTNET_CLI_TELEMETRY_OPTOUT=1
 TC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin; CC="$TC/aarch64-linux-android$API-clang"
 P16="-Wl,-z,max-page-size=16384"   # every native library 16 KB aligned: phones with 16 KB pages load nothing else (Android 15+ also warns about the rest)
@@ -96,6 +97,7 @@ else   # an earlier build's copies in $LIBS would otherwise still go into the AP
     echo "skipped (TURNIP=0)"; fi
 
 step "8/8 the APK"
-python3 "$A/tools/build_apk.py" --libs "$LIBS" --pylib "$PY/prefix/lib/python3.14" --capstone-py "$WORK/capstone-py/capstone" --bt "$BT" --jar "$JAR" \
-    --ks "$WORK/debug.keystore" --out "$WORK/GalarNative.apk"
-echo; echo "done: $WORK/GalarNative.apk (install it, open it, choose your game files and keys)"
+OUT="$WORK/$(python3 "$REPO/dm/games/game.py" $GAME app_name | tr -d ' ').apk"   # GalarNative.apk / PaldeaNative.apk
+python3 "$A/tools/build_apk.py" --game $GAME --libs "$LIBS" --pylib "$PY/prefix/lib/python3.14" --capstone-py "$WORK/capstone-py/capstone" --bt "$BT" --jar "$JAR" \
+    --ks "$WORK/debug.keystore" --out "$OUT"
+echo; echo "done: $OUT (install it, open it, choose your game files and keys)"

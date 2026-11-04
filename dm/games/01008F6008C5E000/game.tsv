@@ -8,6 +8,9 @@ program_id	01008F6008C5E000
 
 # ---- App ----
 # the app's name when it runs this game and the ones that take their tables from it (build_apk.py)
+# where its official releases are, and its icon: the ball's top colour and the ground (build_apk.py)
+app_repo	github.com/simipoB/Paldea-Native-Android
+app_icon	8c4bff 1c1430
 app_name	Paldea Native
 name	Pokémon Violet
 ipa	PokemonViolet.ipa
@@ -55,6 +58,9 @@ shader_nvn_capture	on
 # Arceus (SDK 11) took the shared font as TTF; SDK 13 decodes the BFTTF itself: left at the default until the first boot says otherwise
 
 # ---- Android ----
+# heavier than the Sword / Shield the Auto tiers were set on (Arceus ran about 20 fps docked on a Galaxy S25+, this open world more): Auto picks one tier lower
+# (GameSettings.profile)
+android_heavy	on
 # Trinity's open world is heavier than Arceus (about 20 fps docked on the Galaxy S25+): handheld mode, the game's own lower render resolution
 android_op_mode	handheld
 touch_zlzr	on

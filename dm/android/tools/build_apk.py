@@ -17,14 +17,14 @@ PY_SKIP = ('test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'pydoc_data'
 DM_PARTS = ['games/game.py', 'tools/patch_nso.py', 'gfx/tools', 'ios/tools/ios_metal.py', 'android/tools']   # and every game profile (setup names the other game when given its dump)
 sys.path.insert(0, os.path.join(DM, 'games')); import game as _game
 
-def png(size):   # the app's icon, drawn here (no game artwork ships): a red and white ball on dark blue
+def png(size, top=(220, 40, 50), bg=(24, 32, 64)):   # the app's icon, drawn here (no game artwork ships): a ball, its top half coloured (the profile's app_icon), on a dark ground
     px = []
     for y in range(size):
         row = bytearray([0])
         for x in range(size):
             dx, dy = (x + 0.5) / size - 0.5, (y + 0.5) / size - 0.5; d = (dx * dx + dy * dy) ** 0.5
-            c = (24, 32, 64)
-            if d < 0.40: c = (220, 40, 50) if dy < -0.03 else (245, 245, 245) if dy > 0.03 else (30, 30, 36)
+            c = bg
+            if d < 0.40: c = top if dy < -0.03 else (245, 245, 245) if dy > 0.03 else (30, 30, 36)
             if d < 0.11: c = (30, 30, 36)
             if d < 0.075: c = (250, 250, 250)
             row += bytes(c)
@@ -70,6 +70,7 @@ def main():
     ap.add_argument('--debuggable', action='store_true', help='test builds: adb run-as can reach the private storage of the app')
     a = ap.parse_args()
     g = _game.load(a.game); fam = _game.family(g)   # the games the engine built for g runs (Pokémon Shield: Shield and Sword, one app)
+    ic = g.get('app_icon', 'dc2832 182040').split(); icon = [tuple(int(h[i:i + 2], 16) for i in (0, 2, 4)) for h in ic[:2]]   # app_icon: top colour, ground colour (hex)
     a.name = a.name or (g.get('app_name', 'Galar Native') if len(fam) > 1 else g.get('name'))   # the app's name (the base game's app_name: Galar Native runs Sword and Shield, Paldea Native Scarlet and Violet; each game's own shortcut names it)
     a.package = a.package or 'com.nxnative.' + _game.file_stem(g).lower()   # com.nxnative.pokemonshield: the Shield app's package, so its players update in place
     exe = '.exe' if os.name == 'nt' else ''; bat = '.bat' if os.name == 'nt' else ''
@@ -94,7 +95,7 @@ def main():
     w = tempfile.mkdtemp(prefix='apk_')
     # resources: the icon; the manifest: the setup screen launches, the native activity plays
     for dpi, sz in (('xxxhdpi', 192), ('xxhdpi', 144), ('xhdpi', 96)):
-        os.makedirs(os.path.join(w, 'res', f'mipmap-{dpi}'), exist_ok=True); open(os.path.join(w, 'res', f'mipmap-{dpi}', 'ic_launcher.png'), 'wb').write(png(sz))
+        os.makedirs(os.path.join(w, 'res', f'mipmap-{dpi}'), exist_ok=True); open(os.path.join(w, 'res', f'mipmap-{dpi}', 'ic_launcher.png'), 'wb').write(png(sz, *icon))
     open(os.path.join(w, 'AndroidManifest.xml'), 'w', encoding='utf-8').write(f'''<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="{a.package}" android:versionCode="{a.version}" android:versionName="0.{a.version}">
     <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="35" />
@@ -149,7 +150,8 @@ def main():
                 if os.path.isfile(p): dz.write(p, 'android/app/assets/' + f)
         z.writestr('assets/dm.zip', b.getvalue(), compress_type=zipfile.ZIP_STORED)
         z.writestr('assets/shader_chain', shader_chain(g) + '\n')   # the launcher sends players back to setup when their shader pack was made for another chain
-        z.writestr('assets/games', ''.join(f'{f.id}\t{f.get("name")}\t{_game.file_stem(f)}\t{list(f.builds().values())[-1]["display"]}\n' for f in fam))   # the games this app runs, its own first, with the version they need (GameSettings.games)
+        z.writestr('assets/games', ''.join(f'{f.id}\t{f.get("name")}\t{_game.file_stem(f)}\t{list(f.builds().values())[-1]["display"]}\t{"heavy" if f.get("android_heavy", "off") == "on" else ""}\n' for f in fam))   # the games this app runs, its own first, with the version they need (GameSettings.games)
+        z.writestr('assets/app', f'{a.name}\t{g.get("app_repo", "github.com/simipoB/Galar-Native-Android")}\n')   # the app's name and where its official releases are (SetupActivity)
         for t in sorted(glob.glob(os.path.join(ANDROID, 'app/assets/lang/*.tsv'))): z.write(t, 'assets/lang/' + os.path.basename(t))   # the app's text in other languages (T.java)
     if not os.path.isfile(a.ks):
         os.makedirs(os.path.dirname(a.ks), exist_ok=True)

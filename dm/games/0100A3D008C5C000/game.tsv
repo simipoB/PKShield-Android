@@ -54,6 +54,8 @@ shader_nvn_capture	on
 # Arceus (SDK 11) took the shared font as TTF; SDK 13 decodes the BFTTF itself: left at the default until the first boot says otherwise
 
 # ---- Android ----
+# as Violet: Auto picks one tier lower (GameSettings.profile)
+android_heavy	on
 # Trinity's open world is heavier than Arceus (about 20 fps docked on the Galaxy S25+): handheld mode, the game's own lower render resolution
 android_op_mode	handheld
 touch_zlzr	on

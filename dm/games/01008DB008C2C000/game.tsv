@@ -7,6 +7,9 @@ program_id	01008DB008C2C000
 
 # ---- App ----
 # the app's name when it runs this game and the ones that take their tables from it (build_apk.py)
+# where its official releases are, and its icon: the ball's top colour and the ground (build_apk.py)
+app_repo	github.com/simipoB/Galar-Native-Android
+app_icon	dc2832 182040
 app_name	Galar Native
 name	Pokémon Shield
 ipa	PokemonShield.ipa

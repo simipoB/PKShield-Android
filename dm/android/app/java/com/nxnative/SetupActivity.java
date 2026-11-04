@@ -61,7 +61,7 @@ public final class SetupActivity extends Activity {
     // static: the setup runs in its own thread and outlives this screen; a new screen (Android may still make one, despite configChanges in the manifest, which keeps it
     // across rotation: #42) must not start a second setup next to it
     private static volatile boolean running;
-    private static final String UNOFFICIAL = "Unofficial build: not supported. Official Galar Native releases come only from github.com/simipoB/Galar-Native-Android/releases.";
+    private String unofficial() { String[] app = GameSettings.app(this); return T.t(this, "Unofficial build: not supported. Official %s releases come only from %s/releases.", app[0], app[1]); }
 
     private File gameDir() { return GameSettings.dir(this); }   // the chosen game's folder (GameSettings)
     private String[] game() { return GameSettings.game(this); }
@@ -117,7 +117,7 @@ public final class SetupActivity extends Activity {
         // official release or not (BuildSigner): into env.txt every start, so the game's log says which; an unofficial build is told so before the game starts
         String[] signers = BuildSigner.digests(this); boolean official = BuildSigner.official(signers);
         envSet("DM_BUILD_SIGNER", BuildSigner.label(signers));
-        if (!official) Toast.makeText(this, UNOFFICIAL, Toast.LENGTH_LONG).show();
+        if (!official) Toast.makeText(this, unofficial(), Toast.LENGTH_LONG).show();
         boolean asked = getIntent().getBooleanExtra("setup", false);
         // which game: a game's home screen shortcut names it; from the app's icon, with more than one game set up, this screen lets the player choose (the dual launcher)
         String want = getIntent().getStringExtra("game");
@@ -138,7 +138,7 @@ public final class SetupActivity extends Activity {
             root.addView(gs);
         }
         TextView title = new TextView(this); title.setText(gameName()); title.setTextSize(28); root.addView(title);
-        if (!official) { TextView u = new TextView(this); u.setText(UNOFFICIAL); u.setTextColor(0xffff5252); u.setPadding(0, 16, 0, 0); root.addView(u); }
+        if (!official) { TextView u = new TextView(this); u.setText(unofficial()); u.setTextColor(0xffff5252); u.setPadding(0, 16, 0, 0); root.addView(u); }
         TextView note = new TextView(this); note.setText(T.t(this, "Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone.")); note.setPadding(0, 16, 0, 32); root.addView(note);
         gameText = row(root, T.t(this, "Game files"), "Choose", v -> pick(PICK_GAME, true));
         keysText = row(root, T.t(this, "Keys"), "Choose", v -> pick(PICK_KEYS, true));

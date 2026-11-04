@@ -115,7 +115,7 @@ Performance	Rendimiento
 Performance overlay	Indicador de rendimiento
 Picture	Imagen
 Play	Jugar
-Play the game's local link battles, trades and Max Raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off.	Juega los combates, intercambios e Incursiones Dinamax de conexión local con amigos en cualquier lugar: todos introducen el mismo servidor y código de sala. Aloja tu propio servidor (dm/server en el proyecto: Railway o cualquier PC). Los mods deben estar desactivados.
+Play the game's local link battles, trades and raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off.	Juega los combates, intercambios e incursiones de conexión local con amigos en cualquier lugar: todos introducen el mismo servidor y código de sala. Aloja tu propio servidor (dm/server en el proyecto: Railway o cualquier PC). Los mods deben estar desactivados.
 Please wait for the current setup or file copy to finish.	Espera a que termine la configuración o la copia actual.
 Preparing...	Preparando...
 Press a key…	Pulsa un botón…
@@ -168,6 +168,7 @@ Touch controls	Controles táctiles
 Touch controls: look	Controles táctiles: aspecto
 Turnip options	Opciones de Turnip
 Turnip options (from the next start)	Opciones de Turnip (desde el próximo inicio)
+Unofficial build: not supported. Official %s releases come only from %s/releases.	Compilación no oficial: sin soporte. Las versiones oficiales de %s solo salen de %s/releases.
 Upscaling	Escalado
 Use the phone's own driver	Usar el controlador del teléfono
 Wait for the current setup to finish.	Espera a que termine la configuración actual.
