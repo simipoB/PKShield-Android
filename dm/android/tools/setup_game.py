@@ -181,33 +181,73 @@ def main():
 
     step(4)
     chain = subprocess.run([py, os.path.join(DM, 'gfx/tools/dmsh_chain.py')], capture_output=True, text=True, env=env).stdout.strip()
-    vk = os.path.join(a.work, 'vk', 'b-' + chain); shutil.rmtree(os.path.dirname(vk), ignore_errors=True); os.makedirs(vk)
-    cache = os.path.join(a.work, 'shader_cache'); shutil.rmtree(cache, ignore_errors=True)
-    for d in glob.glob(os.path.join(a.work, 'dmsh_*')): shutil.rmtree(d, ignore_errors=True)   # an interrupted run's scratch dir would count toward the progress
-    stop = threading.Event(); found = os.path.join(a.work, 'shader_map.found.tsv')
-    threading.Thread(target=watch_translation, args=(found, a.work, os.path.join(cache, 'b-' + chain), stop), daemon=True).start()
-    # the translators go through dmsh_gate when the app has it: each beyond the first starts only while the phone has the memory for it (dmsh_gate.c)
-    gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
-    xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=a.work) if gate else dict(XLATE=tool('dmsh_xlate'))
-    log.write(f'translators: {env.get("J", "8")} at most, ' + ('started as memory allows (dmsh_gate)\n' if gate else 'all at once (no dmsh_gate)\n'))
-    try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache],
-        env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, **xenv, DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
-                 DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'),
-                 DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
-                 DMSH_PAIRS=os.path.join(a.work, 'shader_pairs.found.tsv'),
-                 MAIN=os.path.join(exefs, 'main')))
-    finally: stop.set()
-    built = os.path.join(cache, 'b-' + chain)
-    for f in os.listdir(built):
-        if f.endswith('_b.json'): shutil.copyfile(os.path.join(built, f), os.path.join(vk, f))
+    # The other game of the pair already set up with the same translation chain (Scarlet and Violet share every one of their 35,937 shaders; Sword and Shield most of
+    # theirs): its pack is linked (or copied) in, and only the shaders it lacks are translated and merged into it, instead of the hours of translating them all
+    found_keys = {bytes.fromhex(c[3][:16]) for c in (l.rstrip('\n').split('\t') for l in open(os.path.join(a.work, 'shader_map.found.tsv'), encoding='utf-8'))
+                  if len(c) > 3 and len(c[3]) >= 16 and not c[0].startswith('#') and c[0] != 'package'}
+    donor = None
+    for i, g in enumerate(games):
+        d = a.root if i == 0 else os.path.join(a.root, g.upper())
+        dp = os.path.join(d, 'shaders.pak')
+        if os.path.realpath(d) == os.path.realpath(a.out) or not os.path.isfile(dp) or not os.path.isfile(os.path.join(d, 'ready')): continue
+        try: have, pchain = pak_keys(dp)
+        except (OSError, RuntimeError, struct.error): continue
+        if pchain == chain and len(found_keys & have) > len(found_keys) // 2: donor = (dp, have); break
+    if donor:
+        dp, have = donor; missing = sorted(k.hex() for k in found_keys - have)
+        log.write(f'shaders: {len(found_keys) - len(missing)} of {len(found_keys)} taken from {dp}, {len(missing)} to translate\n')
+        print(f'STEP 4/6 translate the shaders (reusing {len(found_keys) - len(missing)} from your other game)', flush=True)
+        target = os.path.join(a.out, 'shaders.pak'); tmp = target + '.part'
+        for f in (tmp, target):
+            if os.path.exists(f): os.remove(f)
+        try: os.link(dp, tmp)   # (no extra space: a later merge into either game writes a new file and leaves the other's alone)
+        except OSError: shutil.copyfile(dp, tmp)
+        if missing:
+            vk = os.path.join(a.work, 'vk', 'b-' + chain); shutil.rmtree(os.path.dirname(vk), ignore_errors=True); os.makedirs(vk)
+            cache = os.path.join(a.work, 'shader_cache'); shutil.rmtree(cache, ignore_errors=True)
+            gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
+            xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=a.work) if gate else dict(XLATE=tool('dmsh_xlate'))
+            run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache, *missing],
+                env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, **xenv, DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
+                         DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'), DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
+                         DMSH_PAIRS=os.path.join(a.work, 'shader_pairs.found.tsv'), MAIN=os.path.join(exefs, 'main')))
+            built = os.path.join(cache, 'b-' + chain)
+            for f in os.listdir(built):
+                if f.endswith('_b.json'): shutil.copyfile(os.path.join(built, f), os.path.join(vk, f))
+            step(5)
+            run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
+            small = os.path.join(a.work, 'shaders.new.pak'); run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, small])
+            pak_merge(tmp, small); os.remove(small)
+        else: step(5)
+        os.replace(tmp, target)
+    else:
+        vk = os.path.join(a.work, 'vk', 'b-' + chain); shutil.rmtree(os.path.dirname(vk), ignore_errors=True); os.makedirs(vk)
+        cache = os.path.join(a.work, 'shader_cache'); shutil.rmtree(cache, ignore_errors=True)
+        for d in glob.glob(os.path.join(a.work, 'dmsh_*')): shutil.rmtree(d, ignore_errors=True)   # an interrupted run's scratch dir would count toward the progress
+        stop = threading.Event(); found = os.path.join(a.work, 'shader_map.found.tsv')
+        threading.Thread(target=watch_translation, args=(found, a.work, os.path.join(cache, 'b-' + chain), stop), daemon=True).start()
+        # the translators go through dmsh_gate when the app has it: each beyond the first starts only while the phone has the memory for it (dmsh_gate.c)
+        gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
+        xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=a.work) if gate else dict(XLATE=tool('dmsh_xlate'))
+        log.write(f'translators: {env.get("J", "8")} at most, ' + ('started as memory allows (dmsh_gate)\n' if gate else 'all at once (no dmsh_gate)\n'))
+        try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache],
+            env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, **xenv, DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
+                     DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'),
+                     DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
+                     DMSH_PAIRS=os.path.join(a.work, 'shader_pairs.found.tsv'),
+                     MAIN=os.path.join(exefs, 'main')))
+        finally: stop.set()
+        built = os.path.join(cache, 'b-' + chain)
+        for f in os.listdir(built):
+            if f.endswith('_b.json'): shutil.copyfile(os.path.join(built, f), os.path.join(vk, f))
 
-    step(5)
-    run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
-    # the pack compressed (zlib per shader, the engine inflates each as it loads it: nvn_vk.c pak_blob): about 3.4 times smaller on the phone (Violet 2.9 GB → 0.85 GB, Sword 2.3 → 0.7)
-    raw = os.path.join(a.work, 'shaders.raw.pak')
-    run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, raw])
-    run([py, os.path.join(DM, 'android/tools/spv_pak.py'), '--compress', raw, os.path.join(a.out, 'shaders.pak')])
-    os.remove(raw)
+        step(5)
+        run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
+        # the pack compressed (zlib per shader, the engine inflates each as it loads it: nvn_vk.c pak_blob): about 3.4 times smaller on the phone (Violet 2.9 GB → 0.85 GB, Sword 2.3 → 0.7)
+        raw = os.path.join(a.work, 'shaders.raw.pak')
+        run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, raw])
+        run([py, os.path.join(DM, 'android/tools/spv_pak.py'), '--compress', raw, os.path.join(a.out, 'shaders.pak')])
+        os.remove(raw)
 
     step(6)
     write_runtime_shader_map(os.path.join(a.work, 'shader_map.found.tsv'),
@@ -306,6 +346,8 @@ def mod_shaders(a):
     smap, facts, pairs = (os.path.join(mw, f) for f in ('map.tsv', 'facts.tsv', 'pairs.tsv'))
     os.makedirs(vk)
     print('STEP 1/3 find the mods\' shaders', flush=True)
+    if PROFILE.get('shader_oodle', 'off') == 'on' and os.path.isfile(tool('dmoodle')):   # (Trinity games: a mod's own packs are Oodle-compressed too)
+        env.update(DM_OODLE_HOST=tool('dmoodle'), DM_OODLE_MODULES=os.path.join(a.out, 'patched'), DM_OODLE_FILTER='BNSH')
     run([py, os.path.join(DM, 'gfx/tools/shader_split.py'), ','.join(roots), ','.join('-' for _ in roots), pkg, smap, facts, pairs])
     new = []
     for ln in open(smap, encoding='utf-8'):
