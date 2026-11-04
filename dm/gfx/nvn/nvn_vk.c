@@ -2586,13 +2586,16 @@ void mtl_exec_rest(const uint64_t *h, int n) { (void)h; (void)n; }
 void mtl_sub_index(const uint64_t *h, int n) { (void)h; (void)n; }
 // DM_VK_SPLIT=<draws> (default 150): a submission goes to the GPU in parts of that many draws, while the rest is still being replayed. A game that submits a frame and waits for it
 //   (Scarlet: 43 ms a frame waiting on the submission it had just made) otherwise waits for the whole replay and then the whole GPU frame, one after the other; on the
-//   console the GPU starts at once. The open pass ends at the cut and opens again loading (its clears were taken when it began)
+//   console the GPU starts at once. The cut waits for the next change of render target, so no pass is split (cutting inside a pass, then opening it again, made
+//   Sword flash white)
+static int g_split_n, g_split_due;
 static void sub_split(void) {
     static int every = -1; if (every < 0) { const char *e = getenv("DM_VK_SPLIT"); every = e ? atoi(e) : 150;   // (on by default: Scarlet outdoors 70 to 33 ms a frame; DM_VK_SPLIT=0 off)
         if (every) VLOG("submissions go to the GPU every %d draws (DM_VK_SPLIT)", every); }
-    static int n; if (!every || ++n < every) return;
-    n = 0; int reopen = P.open; mtl_sub_commit(); mtl_sub_begin(); if (reopen) pass_begin();
+    if (!every || ++g_split_n < every) return;
+    g_split_due = 1;   // cut at the next change of render target, between passes: a pass cut and opened again flashed white in Sword
 }
+static void sub_split_at_target(void) { if (g_split_due) { g_split_due = 0; g_split_n = 0; mtl_sub_commit(); mtl_sub_begin(); } }
 void mtl_exec(const uint8_t *p) {
     if (!g_sub) { RED_ONCE(52, "commands replayed outside a submission"); return; }
     for (int guard = 0; guard < (1 << 26); guard++) {
@@ -2611,6 +2614,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_COPY_B2B: { uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); sub_copy(s, d, n); break; }
             case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); sub_update(a + 16, d, n); break; }
             case OP_SET_RT: g_stat_passes++; if (P.open && R.has_rt && !getenv_nomerge() && rt_same(&R.rt, (const p_set_rt *)a)) { g_stat_rt_same++; break; }
+                sub_split_at_target();
                 pass_flush(); R.rt = *(const p_set_rt *)a; R.has_rt = 1; break;
             case OP_CLEAR_COLOR: {
                 const p_clear_color *c = (const p_clear_color *)a;
