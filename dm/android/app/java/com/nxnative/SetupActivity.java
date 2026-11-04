@@ -203,7 +203,8 @@ public final class SetupActivity extends Activity {
             go.setTypeface(android.graphics.Typeface.DEFAULT_BOLD); go.setPadding(0, (int) (9 * dp), 0, (int) (9 * dp));
             android.graphics.drawable.GradientDrawable gb = new android.graphics.drawable.GradientDrawable(); gb.setCornerRadius(20 * dp); gb.setColor(ok ? accent : 0xFF262A33); go.setBackground(gb);
             card.addView(go, new LinearLayout.LayoutParams(iconS, -2));
-            card.setOnClickListener(v -> { GameSettings.choose(this, id); if (ok) startGame(); else openSetup(); });
+            card.setOnClickListener(v -> { GameSettings.choose(this, id);   // Play goes the way a home screen shortcut goes, not straight to the game: captured shaders are translated into the pack first (pendingWork)
+                if (ok) { Intent it = new Intent(this, SetupActivity.class); it.putExtra("game", id); startActivity(it); finish(); } else openSetup(); });
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.leftMargin = lp.rightMargin = (int) (14 * dp); row.addView(card, lp);
         }
         root.addView(row);

@@ -1224,6 +1224,7 @@ static samp_par *g_sreg; static uint8_t *g_sreg_ok; static VkSampler *g_svk; sta
 static VkSampler *g_svkn; static int g_nsvkn;   // unfiltered twins for integer textures (samp_nearest_by_id)
 static int g_tpool_n;
 void mtl_set_tex_pool_n(int n) { g_tpool_n = n; }
+static int treg_get(int tid, treg_t *out) { if (tid > 0 && tid < g_ntreg && g_treg[tid].ok) { *out = g_treg[tid]; return 1; } return 0; }   // caller holds g_rmu (push_stage)
 void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
     if (tid < 0) return;
     pthread_mutex_lock(&g_rmu);
@@ -1347,15 +1348,14 @@ static VkImageView dummy_view(const spv_res *r, int storage) {
 // Texture ID → view of the kind the shader declares (nvn_mtl.m tex_by_id + tex_fit): the registered view's format / levels / layers, its channel mapping (else the builder's) on top of
 // the format's own; a depth-stencil texture reads depth unless the view asks for stencil. VK_NULL_HANDLE: no fitting view (the slot reads 0)
 static int tex_is_int(int tid) {   // the texture ID's view format is an integer one
-    if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) return 0;
-    treg_t rg = g_treg[tid]; vtex *x = tex_res(&rg.t); if (!x) return 0;
+    treg_t rg; if (!treg_get(tid, &rg)) return 0;
+    vtex *x = tex_res(&rg.t); if (!x) return 0;
     VkFormat f = x->fmt; if (rg.has_v && rg.v.set_format) { uint32_t vf = 0; uint8_t s2[4]; if (nvn_fmt_to_vk(rg.v.format, &vf, s2) && vf) f = (VkFormat)vf; }
     return fmt_int_class(f) != 0;
 }
 static VkImageView tex_view_for(int tid, const spv_res *r, int storage) {
     if (g_tpool_n && tid >= g_tpool_n) return VK_NULL_HANDLE;
-    if (tid <= 0 || tid >= g_ntreg || !g_treg[tid].ok) { if (tid > 0) RED_ONCE(11, "texture ID %d not registered", tid); return VK_NULL_HANDLE; }
-    treg_t rg = g_treg[tid];
+    treg_t rg; if (!treg_get(tid, &rg)) { if (tid > 0) RED_ONCE(11, "texture ID %d not registered", tid); return VK_NULL_HANDLE; }
     vtex *x = tex_res(&rg.t); if (!x || !x->img) return VK_NULL_HANDLE;
     VkFormat f = x->fmt; uint8_t fsw[4]; memcpy(fsw, x->fswz, 4);
     if (rg.has_v && rg.v.set_format) { uint32_t vf = 0; uint8_t s2[4]; if (nvn_fmt_to_vk(rg.v.format, &vf, s2) && vf) { f = (VkFormat)vf; memcpy(fsw, s2, 4); } }
@@ -2248,7 +2248,7 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
                 else if (h->skind == S_UBO) sid = (int)(ubo_word(st, h->sreg, h->soff) >> 20);
                 else if (h->skind == S_ID) sid = h->sreg;
                 VkImageView v = tid ? tex_view_for(tid, r, storage) : VK_NULL_HANDLE;
-                if (TD_TRACE) VLOG("[trace]   %s %s tid %d ser=%llu%s", storage ? "image" : "texture", r->name, tid, tid > 0 && tid < g_ntreg && g_treg[tid].ok ? (unsigned long long)g_treg[tid].t.serial : 0ull, v ? "" : " (no view: dummy)");
+                if (TD_TRACE) VLOG("[trace]   %s %s tid %d ser=%llu%s", storage ? "image" : "texture", r->name, tid, 0ull, v ? "" : " (no view: dummy)");
                 if (!v) v = dummy_view(r, storage);
                 VkSampler smp = storage ? VK_NULL_HANDLE : (tid && tex_is_int(tid) ? samp_nearest_by_id(sid) : samp_by_id(sid)); if (!storage && !smp) smp = g_dummy_samp;
                 ii[nw] = (VkDescriptorImageInfo){ smp, v, VK_IMAGE_LAYOUT_GENERAL }; w[nw].pImageInfo = &ii[nw]; nw++; break;
@@ -2257,7 +2257,7 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
             case SPV_RES_TBUF: case SPV_RES_IBUF: {
                 int tid = h->reg < NTEX ? (int)(S.tex[st][h->reg] & 0xfffff) : 0; VkBufferView view = VK_NULL_HANDLE;
                 if (r->kind == SPV_RES_IBUF) tid = h->reg < 32 ? (int)(S.img[st][h->reg] & 0xfffff) : 0;
-                if (tid > 0 && tid < g_ntreg && g_treg[tid].ok) { vtex *x = tex_res(&g_treg[tid].t); if (x && x->bview) view = x->bview; }
+                { treg_t rg; if (treg_get(tid, &rg)) { vtex *x = tex_res(&rg.t); if (x && x->bview) view = x->bview; } }
                 bv[nw] = view ? view : g_dummy_tbuf[r->sclass < 3 ? r->sclass : 0]; w[nw].pTexelBufferView = &bv[nw]; nw++; break;
             }
         }
@@ -3120,6 +3120,7 @@ static void mem_report(void) {
 }
 // The front end's frame report (Android: performance hints, android_main.c): the presenting thread's work since its last present against the frame's period
 __attribute__((weak)) void front_frame_work(uint64_t busy_ns, uint64_t target_ns) { (void)busy_ns; (void)target_ns; }   // (no front end report: nothing)
+_Atomic uint64_t g_nvn_game_work_ns;   // hle_nvn.c: the game thread's time per frame (DM_NVN_ASYNC: not the presenting thread's)
 uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     uint64_t n = atomic_fetch_add(&g_present_n, 1) + 1;
     if (VPROF_ON && n % 300 == 0 && g_vp_n) { double f = 300.0 * 1e6;
@@ -3128,7 +3129,7 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
         VLOG("[prof] other ops per frame: set target %.2f ms, clears %.2f ms, copies %.2f ms, compute %.2f ms, state %.2f ms; commit %.2f ms", g_vp_o[0] / f, g_vp_o[1] / f, g_vp_o[2] / f, g_vp_o[3] / f, g_vp_o[4] / f, g_vp_c / f);
         memset(g_vp_t, 0, sizeof g_vp_t); memset(g_vp_o, 0, sizeof g_vp_o); g_vp_c = 0; g_vp_n = 0; }
     static uint64_t g_present_exit;   // when the last present returned (after its pacing sleep): from there to this call is the frame's work
-    if (g_present_exit && period_s > 0) front_frame_work(mono_ns() - g_present_exit, (uint64_t)(period_s * 1e9));
+    if (g_present_exit && period_s > 0) { uint64_t busy = mono_ns() - g_present_exit, gw = atomic_load(&g_nvn_game_work_ns); front_frame_work(busy > gw ? busy : gw, (uint64_t)(period_s * 1e9)); }
     static long shots[256]; static int nshot = -1; static const char *shot_path;
     if (nshot < 0) { nshot = 0; const char *e = getenv("DM_NVN_SHOT"), *c = e ? strchr(e, ':') : NULL;
         if (c) { shot_path = c + 1; for (const char *q = e; q < c && nshot < 256; q = strchr(q, ',') ? strchr(q, ',') + 1 : c) shots[nshot++] = atol(q); } }
