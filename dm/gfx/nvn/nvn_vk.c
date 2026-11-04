@@ -758,12 +758,13 @@ static VkCommandBuffer ucb(void);   // the upload command buffer of the current 
 static void pass_end(void);
 static void state_reset(void);
 static uint64_t g_frame_no;
+static uint64_t g_wait_ring_ns;   // DM_VK_PROF: waits for a free submission slot (the GPU 6 submissions behind)
 void mtl_sub_begin(void) {
     mtl_init();
     if (g_sub) VDIE("submit re-entered");
     g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1);
     sub_t *s = &g_subs[g_sub_next]; g_sub_next = (g_sub_next + 1) % NSUB;
-    if (s->fence) mtl_wait(s->fence, UINT64_MAX);
+    if (s->fence) { uint64_t t0 = mono_ns(); mtl_wait(s->fence, UINT64_MAX); g_wait_ring_ns += mono_ns() - t0; }
     defer_drain();
     VKCHECK(vkResetCommandPool(g_dev, s->pool, 0)); arena_reset(s);
     for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(g_dev, s->dp[i], 0); s->cdp = 0;
@@ -3127,6 +3128,8 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
         VLOG("[prof] replay per frame: %.0f draws; pass + pipeline %.2f ms, dynamic state + vertex %.2f ms, descriptors %.2f ms, flush + draw %.2f ms (%.1f us a draw)", g_vp_n / 300.0,
              g_vp_t[0] / f, g_vp_t[1] / f, g_vp_t[2] / f, g_vp_t[3] / f, (g_vp_t[0] + g_vp_t[1] + g_vp_t[2] + g_vp_t[3]) / 1e3 / (double)g_vp_n);
         VLOG("[prof] other ops per frame: set target %.2f ms, clears %.2f ms, copies %.2f ms, compute %.2f ms, state %.2f ms; commit %.2f ms", g_vp_o[0] / f, g_vp_o[1] / f, g_vp_o[2] / f, g_vp_o[3] / f, g_vp_o[4] / f, g_vp_c / f);
+        { extern _Atomic uint64_t g_wait_sync_ns, g_wait_sync_n; uint64_t ws = atomic_exchange(&g_wait_sync_ns, 0), wn = atomic_exchange(&g_wait_sync_n, 0);
+          VLOG("[prof] waits per frame: sync waits %.2f ms (%.1f a frame), submission slot %.2f ms", ws / f, wn / 300.0, g_wait_ring_ns / f); g_wait_ring_ns = 0; }
         memset(g_vp_t, 0, sizeof g_vp_t); memset(g_vp_o, 0, sizeof g_vp_o); g_vp_c = 0; g_vp_n = 0; }
     static uint64_t g_present_exit;   // when the last present returned (after its pacing sleep): from there to this call is the frame's work
     if (g_present_exit && period_s > 0) { uint64_t busy = mono_ns() - g_present_exit, gw = atomic_load(&g_nvn_game_work_ns); front_frame_work(busy > gw ? busy : gw, (uint64_t)(period_s * 1e9)); }
