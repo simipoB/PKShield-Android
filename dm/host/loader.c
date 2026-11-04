@@ -497,7 +497,8 @@ static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1);
 #include "builtin_mods.h"
 static int bmod_wanted(const char *name) {
     if (!strcmp(name, "dynamic_fps")) { const char *e = getenv("DM_FPS_TARGET"); return e && atoi(e) >= 60; }
-    if (!strcmp(name, "shadows_2k")) { const char *e = getenv("DM_SHADOWS"); return e && !strcasecmp(e, "2k"); }
+    if (!strcmp(name, "shadows_2k")) { const char *e = getenv("DM_SHADOWS"); if (!e || !*e) e = getenv("DM_AUTO_SHADOWS");   // (Auto: 2k on top phones, GameSettings.profile)
+        return e && !strcasecmp(e, "2k"); }
     return 0;
 }
 static int g_bmod_fps;   // the frame rate came from a built-in mod: the Sword / Shield patch below is not this game's

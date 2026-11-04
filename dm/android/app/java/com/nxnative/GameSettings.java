@@ -115,11 +115,12 @@ final class GameSettings {
         String tex = ram == 0 || (gpu == 0 && ram < 2) || (heavy && ram < 2) ? "half" : "full";
         String aniso = gpu == 2 ? "8" : gpu == 1 ? "4" : "2";
         String fps = AUTO_60 && cpu == 2 && gpu == 2 && ram == 2 && displayDivides(c, 60) ? "60" : "30";
-        String scaler = gpu >= 1 ? "sgsr" : "sharp";   // (SGSR's extra passes on a GPU with room for them; the cheaper Sharp on a low one)
+        String scaler = gpu >= 1 ? "sgsr" : "sharp";
+        String shadows = cpu == 2 && gpu == 2 && ram == 2 ? "2k" : "";   // (Scarlet / Violet's 2K shadow maps: top phones only)   // (SGSR's extra passes on a GPU with room for them; the cheaper Sharp on a low one)
         String[] t = { "low", "mid", "top" };
         String what = String.format(java.util.Locale.ROOT, "%s CPU%s, %s GPU, %s memory (%.0f GB), display up to %.0f Hz", t[cpu], khz > 0 ? String.format(java.util.Locale.ROOT, " %.1f GHz", khz / 1e6) : "",
                                     t[gpu], t[ram], Math.ceil(gb), maxRefresh(c));
-        return new String[] { n, what, gfx, tex, aniso, fps, scaler };
+        return new String[] { n, what, gfx, tex, aniso, fps, scaler, shadows };
     }
     // the fastest core's top clock in kHz (cpu*/cpufreq/cpuinfo_max_freq), 0 when unreadable
     static long maxCpuKhz() {
