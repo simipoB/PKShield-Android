@@ -122,11 +122,11 @@ T = {
 'Could not export the save: %s': ('No se pudo exportar la partida: %s', 'Não foi possível exportar o salvamento: %s', 'Impossible d\'exporter la sauvegarde : %s', 'セーブを書き出せませんでした：%s'),
 'Could not import the save: %s': ('No se pudo importar la partida: %s', 'Não foi possível importar o salvamento: %s', 'Impossible d\'importer la sauvegarde : %s', 'セーブを読み込めませんでした：%s'),
 # ---- online room
-'Play the game\'s local link battles, trades and Max Raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off.':
-    ('Juega los combates, intercambios e Incursiones Dinamax de conexión local con amigos en cualquier lugar: todos introducen el mismo servidor y código de sala. Aloja tu propio servidor (dm/server en el proyecto: Railway o cualquier PC). Los mods deben estar desactivados.',
-     'Jogue as batalhas, trocas e Reides Max da conexão local com amigos em qualquer lugar: todos inserem o mesmo servidor e código de sala. Hospede seu próprio servidor (dm/server no projeto: Railway ou qualquer PC). Os mods devem estar desativados.',
-     'Jouez aux combats, échanges et Raids Dynamax en communication locale avec des amis où qu\'ils soient : tout le monde saisit le même serveur et le même code de salon. Hébergez votre propre serveur (dm/server dans le projet : Railway ou n\'importe quel PC). Les mods doivent être désactivés.',
-     'ローカル通信の対戦・交換・マックスレイドバトルをどこにいる友だちとでも：全員が同じルームサーバーとルームコードを入力します。サーバーは自分で用意（プロジェクトのdm/server：RailwayまたはPC）。Modはオフにしてください。'),
+'Play the game\'s local link battles, trades and raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off.':
+    ('Juega los combates, intercambios e incursiones de conexión local con amigos en cualquier lugar: todos introducen el mismo servidor y código de sala. Aloja tu propio servidor (dm/server en el proyecto: Railway o cualquier PC). Los mods deben estar desactivados.',
+     'Jogue as batalhas, trocas e reides da conexão local com amigos em qualquer lugar: todos inserem o mesmo servidor e código de sala. Hospede seu próprio servidor (dm/server no projeto: Railway ou qualquer PC). Os mods devem estar desativados.',
+     'Jouez aux combats, échanges et raids en communication locale avec des amis où qu\'ils soient : tout le monde saisit le même serveur et le même code de salon. Hébergez votre propre serveur (dm/server dans le projet : Railway ou n\'importe quel PC). Les mods doivent être désactivés.',
+     'ローカル通信の対戦・交換・レイドバトルをどこにいる友だちとでも：全員が同じルームサーバーとルームコードを入力します。サーバーは自分で用意（プロジェクトのdm/server：RailwayまたはPC）。Modはオフにしてください。'),
 'server (address:port)': ('servidor (dirección:puerto)', 'servidor (endereço:porta)', 'serveur (adresse:port)', 'サーバー（アドレス:ポート）'),
 'room code': ('código de sala', 'código da sala', 'code du salon', 'ルームコード'),
 'Join': ('Unirse', 'Entrar', 'Rejoindre', '参加'),
@@ -144,6 +144,7 @@ T = {
 'Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone.': ('Configura el juego con tu propio volcado. Esta app no incluye archivos del juego ni claves; los tuyos nunca salen del teléfono.', 'Configure o jogo a partir do seu próprio dump. Este app não traz arquivos do jogo nem chaves; os seus nunca saem do celular.', 'Installez le jeu à partir de votre propre dump. Aucun fichier de jeu ni clé n\'est fourni ; les vôtres ne quittent jamais le téléphone.', 'ご自身でダンプしたデータからセットアップします。このアプリにゲームファイルや鍵は含まれず、あなたのデータが端末の外に出ることはありません。'),
 'Game files': ('Archivos del juego', 'Arquivos do jogo', 'Fichiers du jeu', 'ゲームファイル'),
 'none chosen (.nsp / .xci: base game, update %s, DLC)': ('nada elegido (.nsp / .xci: juego base, actualización %s, DLC)', 'nada escolhido (.nsp / .xci: jogo base, atualização %s, DLC)', 'rien de choisi (.nsp / .xci : jeu de base, mise à jour %s, DLC)', '未選択（.nsp / .xci：本体、更新データ%s、DLC）'),
+'Unofficial build: not supported. Official %s releases come only from %s/releases.': ('Compilación no oficial: sin soporte. Las versiones oficiales de %s solo salen de %s/releases.', 'Build não oficial: sem suporte. As versões oficiais de %s saem só de %s/releases.', 'Version non officielle : non prise en charge. Les versions officielles de %s ne viennent que de %s/releases.', '非公式ビルド：サポート対象外です。%sの公式版は%s/releasesからのみ配布されます。'),
 'Keys': ('Claves', 'Chaves', 'Clés', '鍵'),
 'Use the phone\'s own driver': ('Usar el controlador del teléfono', 'Usar o driver do próprio celular', 'Utiliser le pilote du téléphone', '端末標準のドライバーを使う'),
 'Settings (picture, graphics, textures, controller buttons, touch controls, mods) are in the game: tap the menu button at the top left, or hold − on a controller for 3 seconds for the controller buttons.':

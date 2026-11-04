@@ -115,7 +115,7 @@ Performance	パフォーマンス
 Performance overlay	パフォーマンス表示
 Picture	画面
 Play	プレイ
-Play the game's local link battles, trades and Max Raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off.	ローカル通信の対戦・交換・マックスレイドバトルをどこにいる友だちとでも：全員が同じルームサーバーとルームコードを入力します。サーバーは自分で用意（プロジェクトのdm/server：RailwayまたはPC）。Modはオフにしてください。
+Play the game's local link battles, trades and raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off.	ローカル通信の対戦・交換・レイドバトルをどこにいる友だちとでも：全員が同じルームサーバーとルームコードを入力します。サーバーは自分で用意（プロジェクトのdm/server：RailwayまたはPC）。Modはオフにしてください。
 Please wait for the current setup or file copy to finish.	現在のセットアップまたはコピーが終わるまでお待ちください。
 Preparing...	準備中...
 Press a key…	ボタンを押してください…
@@ -168,6 +168,7 @@ Touch controls	タッチ操作
 Touch controls: look	タッチ操作：見た目
 Turnip options	Turnipのオプション
 Turnip options (from the next start)	Turnipのオプション（次回起動から）
+Unofficial build: not supported. Official %s releases come only from %s/releases.	非公式ビルド：サポート対象外です。%sの公式版は%s/releasesからのみ配布されます。
 Upscaling	アップスケーリング
 Use the phone's own driver	端末標準のドライバーを使う
 Wait for the current setup to finish.	現在のセットアップが終わるまでお待ちください。

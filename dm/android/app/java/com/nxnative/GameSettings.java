@@ -72,6 +72,11 @@ final class GameSettings {
         for (String[] k : known) if (all.contains(k[0])) return k[1];
         return null;
     }
+    // the app's own name and where its official releases are (assets/app, from the base game's profile: Galar Native, Paldea Native)
+    static String[] app(Context c) {
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getAssets().open("app"), "UTF-8"))) { String[] a = r.readLine().split("\t"); if (a.length >= 2) return a; } catch (Exception e) { }
+        return new String[] { "Galar Native", "github.com/simipoB/Galar-Native-Android" };
+    }
     static boolean isShield(Context c) { return "01008DB008C2C000".equalsIgnoreCase(game(c)[0]); }
     // the games the built-in 60 fps patch knows (loader.c FPS_SITES: Pokémon Shield and Sword 1.3.2)
     static boolean has60(Context c) { String id = game(c)[0]; return "01008DB008C2C000".equalsIgnoreCase(id) || "0100ABF008968000".equalsIgnoreCase(id); }
@@ -103,7 +108,9 @@ final class GameSettings {
         if (cpu < 0) cpu = gpu < 0 ? 1 : gpu; if (gpu < 0) gpu = cpu;   // (each stands in for the other when unknown)
         double gb = memoryGb(c); int ram = gb >= 11.5 ? 2 : gb >= 7.5 || gb <= 0 ? 1 : 0;
         String gfx = cpu == 2 && gpu == 2 ? "high" : cpu >= 1 && gpu >= 1 ? "auto" : "low";
-        String tex = ram == 0 || (gpu == 0 && ram < 2) ? "half" : "full";
+        String[] gm = game(c); boolean heavy = gm.length > 4 && gm[4].equals("heavy");   // (Scarlet / Violet: one tier lower than Sword / Shield, the textures half below top memory)
+        if (heavy) gfx = gfx.equals("high") ? "auto" : "low";
+        String tex = ram == 0 || (gpu == 0 && ram < 2) || (heavy && ram < 2) ? "half" : "full";
         String aniso = gpu == 2 ? "8" : gpu == 1 ? "4" : "2";
         String fps = AUTO_60 && cpu == 2 && gpu == 2 && ram == 2 && displayDivides(c, 60) ? "60" : "30";
         String scaler = gpu >= 1 ? "sgsr" : "sharp";   // (SGSR's extra passes on a GPU with room for them; the cheaper Sharp on a low one)

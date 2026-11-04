@@ -392,7 +392,7 @@ public final class GameMenu {
     // same server address and room code. Applies from the next start; mods stay off for local play, as on Wi-Fi
     private static void online(Activity a) {
         heading(a, t(a, "Online room"));
-        note(a, t(a, "Play the game's local link battles, trades and Max Raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off."));
+        note(a, t(a, "Play the game's local link battles, trades and raids with friends anywhere: everyone enters the same room server and room code. Host your own server (dm/server in the project: Railway or any PC). Mods must be off."));
         String room = GameSettings.get(a, "DM_RELAY_ROOM");
         LinearLayout c = card(a); titleRow(a, c, room.isEmpty() ? t(a, "off (local play on this Wi-Fi)") : t(a, "Room: %s", room), RESTART.contains("DM_RELAY_ROOM") ? t(a, "Applies next start") : null);
         EditText srv = field(a, c, t(a, "server (address:port)")); srv.setText(GameSettings.get(a, "DM_RELAY"));
