@@ -107,6 +107,12 @@ CUTS = {
     (0x139468, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x1394fc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+  # Pokémon Violet 4.0.0 sdk (SDK 13.3.13): the same node area cut. The constructor is at sdk+0x37c750 (limit = alias start + 0x3fe00000 at +0x10, the area registered as
+  # occupied at +0xac). With the 1 GB node area, main's 4 GB StandardAllocator block (1 GB aligned) did not fit the 4.875 GB alias region and nninitStartup aborted
+  'bb560bdfa85b4a97786ae2c3b7995df6': [
+    (0x37c760, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x37c7fc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
   # Risk of Rain 2 1.4.1 (v1376256) sdk (SDK 16.2.6, Unity 2021.3): the same node area cut. The constructor is at sdk+0x134768 (limit = alias start + 0x3fe00000 at +0x10, the area registered as
   # occupied at +0xa4). Without it, about 1.7 s after boot Unity's virtual allocator got no address region and wrote through null (addr=0xffffe0, main+0xda1990): only 0.75 GB was mapped,
   # but the 4.375 GB alias region was taken up to +4.26 GB (StandardAllocator's 1 GB-aligned pool block plus the node area)
@@ -132,6 +138,11 @@ CUTS = {
   # its largest block is nninitStartup's own probe of pool − used (3.15 GB, allocated and freed at once), so 4 GB of address space holds it
   'b1f12fd919eae86ab8a978317677e64b': [
     (0x1b3e3e4, '6200c0d2', '2200c0d2', 'StandardAllocator::Initialize(nullptr, size): address space mov x2,#0x300000000 → mov x2,#0x100000000 (12 GB → 4 GB)'),
+  ],
+  # Pokémon Violet 4.0.0 main (the engine Z-A was built on): the same 12 GB StandardAllocator::Initialize(nullptr, 0x300000000, false) in nninitStartup's allocator setup
+  # (main+0x167d510, called from nninitStartup+0x3c); with the host's 4.9 GB alias region it aborted there (sdk StandardAllocator::Initialize+0xd4). 4 GB, as Z-A
+  '709bfd66115298640155fcc4979dba15': [
+    (0x167d54c, '6200c0d2', '2200c0d2', 'StandardAllocator::Initialize(nullptr, size): address space mov x2,#0x300000000 → mov x2,#0x100000000 (12 GB → 4 GB)'),
   ],
   # Pokémon Legends: Arceus 1.1.1 (v262144) sdk (SDK 11): the same node area cut. The constructor is at sdk+0x34e038 (AddressRegionManager::AddressRegionManager, limit = alias start + 0x3fe00000
   # at +0x10, the area registered as occupied at +0x34e0e4)

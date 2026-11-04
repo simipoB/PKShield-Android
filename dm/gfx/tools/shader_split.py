@@ -350,19 +350,23 @@ def trpfs_jobs(files, parts=64):
 _OODLE = None
 def oodle(comp, n):
     """The game's own OodleLZ_Decompress (Trinity's packs are Oodle Mermaid, and Oodle is linked into main): one Mac host per worker process in its tool mode (dm/host/hle_oodle.c, DM_OODLE_SERVE),
-    fed over a pipe. DM_OODLE_HOST = the host, DM_OODLE_MODULES = the rewritten modules it loads (the NSP script sets both for profiles with shader_oodle on)"""
+    fed over a pipe. DM_OODLE_HOST = the host (a command line: an emulator's over adb, the phone's dmoodle), DM_OODLE_MODULES = the rewritten modules it loads (the NSP script sets both
+    for profiles with shader_oodle on). DM_OODLE_FILTER = a magic (BNSH): files without it come back as None, never sent over the pipe (hle_oodle.c); None also when the host answers ~0"""
     global _OODLE
     if _OODLE is None:
         import tempfile
         host, mods = os.environ.get('DM_OODLE_HOST'), os.environ.get('DM_OODLE_MODULES')
         if not host or not mods: red('Oodle-compressed packs: set DM_OODLE_HOST (the Mac host, make -C dm/host GAME=<id> dmhost) and DM_OODLE_MODULES (the rewritten modules) to decode them with the game\'s own decoder')
         err = tempfile.TemporaryFile()
-        _OODLE = (subprocess.Popen([host, mods], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, env=dict(os.environ, DM_OODLE_SERVE='1')), err)
+        import shlex
+        _OODLE = (subprocess.Popen([w.strip('"') for w in shlex.split(host, posix=os.name != 'nt')] + [mods], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err,
+                                   env=dict(os.environ, DM_OODLE_SERVE=os.environ.get('DM_OODLE_FILTER') or '1')), err)
     p, err = _OODLE
     try:
         p.stdin.write(struct.pack('<QQ', len(comp), n)); p.stdin.write(comp); p.stdin.flush()
         got = struct.unpack('<Q', p.stdout.read(8))[0]
     except (BrokenPipeError, struct.error): got = None
+    if got == (1 << 64) - 1: return None   # (DM_OODLE_FILTER: no shader in this file)
     if got != n:
         err.seek(0); red(f'the Oodle decoder in the Mac host failed on a {len(comp)} → {n} byte stream; ---- host output ----\n' + err.read().decode(errors='replace')[-3000:])
     return p.stdout.read(n)
@@ -377,7 +381,9 @@ def trinity_shaders(path, rel, packs, out):
                 c, ln = fb_field(d, t, 1), fb_field(d, t, 3)
                 comp, n = (struct.unpack_from('<b', d, c)[0] if c is not None else 0), (struct.unpack_from('<Q', d, ln)[0] if ln is not None else 0)
                 st, sz = fb_vec(d, t, 4)
-                if comp == 3: data = oodle(d[st:st + sz], n)
+                if comp == 3:
+                    data = oodle(d[st:st + sz], n)
+                    if data is None: continue
                 elif sz == n: data = d[st:st + sz]
                 else: red(f'/{rel}#{name}: file {k} has compression {comp} ({sz} → {n} bytes), which is not known')
                 scan_blob(data, f'/{rel}#{name}#{struct.unpack_from("<Q", d, hs[0] + 8 * k)[0]:016x}', out)
