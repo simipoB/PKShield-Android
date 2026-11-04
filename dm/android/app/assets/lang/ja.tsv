@@ -240,3 +240,4 @@ Shadows	影
 Standard	標準
 Standard: 1024 × 1024, as the game is made	標準: 1024 × 1024 (ゲーム本来の設定)
 Sharp: 2048 × 2048 shadow maps, more GPU work (Fl4sh's 2K Shadows mod)	シャープ: 2048 × 2048 の影、GPU負荷が増えます (Fl4sh氏の2K Shadows Mod)
+60 fps: smoother; drops to 720p when needed to hold 60 (with Graphics on Auto or Adaptive)	60fps: より滑らか。60を保つため必要に応じて720pに下げます (グラフィックが自動または適応のとき)

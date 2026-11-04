@@ -92,9 +92,6 @@ final class GameSettings {
     // memory, or a low GPU without top memory. Filtering 8x / 4x / 2x by the GPU. Frame rate: 60 only when all three are top and the display has a mode 60 divides
     // (60, 120, 180, 240 Hz), else the game's 30; at 60 the host's frame step still falls back to 30 when frames run late (hle_nvn.c vstep_tick).
     // GameActivity hands these to the engine (DM_AUTO_*, android_main.c device_profile); the player's own choices in the menu (env.txt) win over them
-    // Auto picks 60 fps on top phones only once 60 fps is verified on a phone for game speed and animations (it presents at 60 Hz; the speed is not confirmed yet):
-    // until then Auto stays at the game's own 30 and 60 is the player's choice in the menu
-    static final boolean AUTO_60 = false;
     static String[] profile(Context c) {
         String m = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MODEL : "", mk = Build.VERSION.SDK_INT >= 31 ? Build.SOC_MANUFACTURER : "";
         if (m == null) m = ""; if (mk == null) mk = ""; m = m.toLowerCase(java.util.Locale.ROOT); String n;
@@ -114,7 +111,8 @@ final class GameSettings {
         if (heavy) gfx = gfx.equals("high") ? "auto" : "low";
         String tex = ram == 0 || (gpu == 0 && ram < 2) || (heavy && ram < 2) ? "half" : "full";
         String aniso = gpu == 2 ? "8" : gpu == 1 ? "4" : "2";
-        String fps = AUTO_60 && cpu == 2 && gpu == 2 && ram == 2 && displayDivides(c, 60) ? "60" : "30";
+        // 60 on top phones for Sword / Shield (held by the frame-rate guard, android_main.c graphics_auto); Scarlet / Violet stay at 30 unless chosen
+        String fps = !heavy && cpu == 2 && gpu == 2 && ram == 2 && displayDivides(c, 60) ? "60" : "30";
         String scaler = gpu >= 1 ? "sgsr" : "sharp";
         String shadows = cpu == 2 && gpu == 2 && ram == 2 ? "2k" : "";   // (Scarlet / Violet's 2K shadow maps: top phones only)   // (SGSR's extra passes on a GPU with room for them; the cheaper Sharp on a low one)
         String[] t = { "low", "mid", "top" };
