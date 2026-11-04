@@ -555,8 +555,21 @@ NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; stat
 // ZCull data: the host does no ZCull, so there is nothing to save / restore
 NVN(nvnCommandBufferRestoreZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
 NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
+_Atomic uint64_t g_wait_sync_ns, g_wait_sync_n;   // DM_VK_PROF: the game thread's time in sync waits (GPU not done yet)
+static NVNsyncWaitResult sync_wait_(const sync_t *o, uint64_t timeout);
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
-    const sync_t *o = (const sync_t *)s;
+    const sync_t *o = (const sync_t *)s; uint64_t last = mtl_last_fence(), behind = o->fenced && o->fence <= last ? last - o->fence : 99;
+    uint64_t t0 = now_ns(); NVNsyncWaitResult r = sync_wait_(o, timeout); uint64_t d = now_ns() - t0;
+    if (timeout) { atomic_fetch_add(&g_wait_sync_ns, d); atomic_fetch_add(&g_wait_sync_n, 1);
+        // DM_VK_PROF: which submission the game waits for, counted back from the newest (0: the one it just submitted), and how long that took
+        static int prof = -1; if (prof < 0) prof = getenv("DM_VK_PROF") != NULL;
+        if (prof) { static uint64_t n, cnt[4], ns[4]; int k = behind > 2 ? 3 : (int)behind; cnt[k]++; ns[k] += d; static uint64_t inl, inl_ns; if (o->fenced == 2) { inl++; inl_ns += d; }
+            if (++n % 600 == 0) { LOG("[prof] sync waits by submissions behind the newest: 0: %llu (%.1f ms each), 1: %llu (%.1f), 2: %llu (%.1f), more: %llu (%.1f); %d submissions a frame",
+                (unsigned long long)cnt[0], cnt[0] ? ns[0] / 1e6 / cnt[0] : 0, (unsigned long long)cnt[1], cnt[1] ? ns[1] / 1e6 / cnt[1] : 0, (unsigned long long)cnt[2], cnt[2] ? ns[2] / 1e6 / cnt[2] : 0,
+                (unsigned long long)cnt[3], cnt[3] ? ns[3] / 1e6 / cnt[3] : 0, 0); LOG("[prof] of them fenced inside a command list: %llu (%.1f ms each)", (unsigned long long)inl, inl ? inl_ns / 1e6 / inl : 0); inl = inl_ns = 0; memset(cnt, 0, sizeof cnt); memset(ns, 0, sizeof ns); } } }
+    return r;
+}
+static NVNsyncWaitResult sync_wait_(const sync_t *o, uint64_t timeout) {
     if (timeout) rq_drain();   // (a wait with a timeout: what is queued comes first. A poll just reads: not fenced yet is not signalled)
     if (!o->fenced) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
     if (mtl_wait(o->fence, 0)) return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
@@ -1235,7 +1248,13 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     // The previous present of this texture has not yet been processed by the present thread (display cannot keep up, a whole swapchain round behind): wait for it to be returned, then hand it to the game to draw
     uint64_t tk = *idx < 4 ? o->ticket[*idx] : 0;
     if (tk) { uint64_t w0 = now_ns(); mtl_present_wait(tk); g_pq_wait_ns += now_ns() - w0; }
-    if (s) sync_fence_now((sync_t *)s);   // The swapchain texture becomes available once the commits before this point have completed
+    // The image is free once the work up to its own last present is done: with 2 images that is the frame before last, so the game builds the next frame while the GPU
+    //   draws the last one, as on the console. Fenced with everything submitted so far, the game waited on its sync for the whole of the frame it had just submitted
+    //   (Violet on a Galaxy S25+: 24.6 ms of each 43 ms frame, CPU and GPU taking turns). DM_NVN_ACQUIRE_FENCE=all: the old fence
+    { static int all = -1; if (all < 0) { const char *e = getenv("DM_NVN_ACQUIRE_FENCE"); all = e && !strcmp(e, "all"); }
+      if (s && !all && !rq_on() && *idx < 4 && o->pfence[*idx]) { ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = o->pfence[*idx]; }
+      else if (s) sync_fence_now((sync_t *)s); }
+    if (0)   // The swapchain texture becomes available once the commits before this point have completed
     if (!g_fs_start) { g_fs_start = now_ns(); g_fs_wait = pace_ns; }   // the frame starts when the first acquire after a present returns: on a display-link tick when on time
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
 }
@@ -1576,7 +1595,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     { extern _Atomic uint64_t g_nvn_game_work_ns; if (prev_out) atomic_store(&g_nvn_game_work_ns, t0 - prev_out); }
     if (idx >= 0 && idx < o->ntex && idx < 4) {
         if (rq_on()) { rq_item it = { .kind = RQ_PRESENT, .o = o, .idx = idx, .period = present_period(o) / 1e9 }; memcpy(it.crop, o->crop, sizeof it.crop); gfx_leave(); rq_push(it); gfx_enter(); }
-        else o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // enqueue only, return immediately
+        else { o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop); o->pfence[idx] = mtl_last_fence(); }   // enqueue only, return immediately
     }
     gfx_leave();
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);

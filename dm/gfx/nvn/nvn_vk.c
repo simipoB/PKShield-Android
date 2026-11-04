@@ -758,12 +758,13 @@ static VkCommandBuffer ucb(void);   // the upload command buffer of the current 
 static void pass_end(void);
 static void state_reset(void);
 static uint64_t g_frame_no;
+static uint64_t g_wait_ring_ns;   // DM_VK_PROF: waits for a free submission slot (the GPU 6 submissions behind)
 void mtl_sub_begin(void) {
     mtl_init();
     if (g_sub) VDIE("submit re-entered");
     g_sub_thread = pthread_self(); atomic_store(&g_sub_thread_set, 1);
     sub_t *s = &g_subs[g_sub_next]; g_sub_next = (g_sub_next + 1) % NSUB;
-    if (s->fence) mtl_wait(s->fence, UINT64_MAX);
+    if (s->fence) { uint64_t t0 = mono_ns(); mtl_wait(s->fence, UINT64_MAX); g_wait_ring_ns += mono_ns() - t0; }
     defer_drain();
     VKCHECK(vkResetCommandPool(g_dev, s->pool, 0)); arena_reset(s);
     for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(g_dev, s->dp[i], 0); s->cdp = 0;
@@ -2583,6 +2584,15 @@ static int rt_same(const p_set_rt *a, const p_set_rt *b) {
 }
 void mtl_exec_rest(const uint64_t *h, int n) { (void)h; (void)n; }
 void mtl_sub_index(const uint64_t *h, int n) { (void)h; (void)n; }
+// DM_VK_SPLIT=<draws> (default 150): a submission goes to the GPU in parts of that many draws, while the rest is still being replayed. A game that submits a frame and waits for it
+//   (Scarlet: 43 ms a frame waiting on the submission it had just made) otherwise waits for the whole replay and then the whole GPU frame, one after the other; on the
+//   console the GPU starts at once. The open pass ends at the cut and opens again loading (its clears were taken when it began)
+static void sub_split(void) {
+    static int every = -1; if (every < 0) { const char *e = getenv("DM_VK_SPLIT"); every = e ? atoi(e) : 150;   // (on by default: Scarlet outdoors 70 to 33 ms a frame; DM_VK_SPLIT=0 off)
+        if (every) VLOG("submissions go to the GPU every %d draws (DM_VK_SPLIT)", every); }
+    static int n; if (!every || ++n < every) return;
+    n = 0; int reopen = P.open; mtl_sub_commit(); mtl_sub_begin(); if (reopen) pass_begin();
+}
 void mtl_exec(const uint8_t *p) {
     if (!g_sub) { RED_ONCE(52, "commands replayed outside a submission"); return; }
     for (int guard = 0; guard < (1 << 26); guard++) {
@@ -2596,7 +2606,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, a + 8, 4); memcpy(&v, a + 12, 4); post((post_op){1, val, m, v, 0, 0}); break; }
             case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); post((post_op){2, NULL, 0, 0, ad, (uint32_t)t}); break; }
             case OP_RESET_COUNTER: case OP_RENDER_COND: break;
-            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); s->fence = g_fence + 1; s->fenced = 1; break; }
+            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); s->fence = g_fence + 1; s->fenced = 2; break; }   // (2: fenced inside a command list, DM_VK_PROF tells them apart)
             case OP_CLEAR_BUF: { const p_clear_buf *cb = (const p_clear_buf *)a; mtl_sub_fill(cb->addr, cb->size, cb->value); break; }
             case OP_COPY_B2B: { uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); sub_copy(s, d, n); break; }
             case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); sub_update(a + 16, d, n); break; }
@@ -2626,8 +2636,8 @@ void mtl_exec(const uint8_t *p) {
                 if (c->stencil_mask) { R.clear_s = 1; R.cs = (uint32_t)c->stencil; }
                 break;
             }
-            case OP_DRAW: draw((const p_draw *)a, NULL); g_stat_draws++; break;
-            case OP_DRAW_IDX: draw(NULL, (const p_draw_idx *)a); g_stat_draws++; break;
+            case OP_DRAW: draw((const p_draw *)a, NULL); g_stat_draws++; sub_split(); break;
+            case OP_DRAW_IDX: draw(NULL, (const p_draw_idx *)a); g_stat_draws++; sub_split(); break;
             case OP_COPY_B2T: copy_b2t((const p_copy_b2t *)a, 0); break;
             case OP_COPY_T2B: copy_b2t((const p_copy_b2t *)a, 1); break;
             case OP_COPY_T2T: copy_t2t((const p_copy_t2t *)a); break;
@@ -3127,6 +3137,8 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
         VLOG("[prof] replay per frame: %.0f draws; pass + pipeline %.2f ms, dynamic state + vertex %.2f ms, descriptors %.2f ms, flush + draw %.2f ms (%.1f us a draw)", g_vp_n / 300.0,
              g_vp_t[0] / f, g_vp_t[1] / f, g_vp_t[2] / f, g_vp_t[3] / f, (g_vp_t[0] + g_vp_t[1] + g_vp_t[2] + g_vp_t[3]) / 1e3 / (double)g_vp_n);
         VLOG("[prof] other ops per frame: set target %.2f ms, clears %.2f ms, copies %.2f ms, compute %.2f ms, state %.2f ms; commit %.2f ms", g_vp_o[0] / f, g_vp_o[1] / f, g_vp_o[2] / f, g_vp_o[3] / f, g_vp_o[4] / f, g_vp_c / f);
+        { extern _Atomic uint64_t g_wait_sync_ns, g_wait_sync_n; uint64_t ws = atomic_exchange(&g_wait_sync_ns, 0), wn = atomic_exchange(&g_wait_sync_n, 0);
+          VLOG("[prof] waits per frame: sync waits %.2f ms (%.1f a frame), submission slot %.2f ms", ws / f, wn / 300.0, g_wait_ring_ns / f); g_wait_ring_ns = 0; }
         memset(g_vp_t, 0, sizeof g_vp_t); memset(g_vp_o, 0, sizeof g_vp_o); g_vp_c = 0; g_vp_n = 0; }
     static uint64_t g_present_exit;   // when the last present returned (after its pacing sleep): from there to this call is the frame's work
     if (g_present_exit && period_s > 0) { uint64_t busy = mono_ns() - g_present_exit, gw = atomic_load(&g_nvn_game_work_ns); front_frame_work(busy > gw ? busy : gw, (uint64_t)(period_s * 1e9)); }
