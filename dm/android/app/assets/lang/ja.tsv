@@ -235,3 +235,8 @@ Set up anyway?	このままセットアップしますか?
 The damaged parts of your files are kept as they are. The game may crash or show glitches where it uses them. Copying your files again in full is the real fix.	ファイルの壊れた部分はそのまま使われます。その部分を使う場面でゲームが落ちたり表示が乱れたりすることがあります。ファイルをもう一度完全にコピーするのが本当の解決策です。
 the copy of %s stopped early (%s of %s MB): choose it again, ideally from the phone's own storage	%s のコピーが途中で止まりました (%s / %s MB)。もう一度選んでください。できれば端末本体のストレージから選んでください
 %s is incomplete: it holds %s of its %s MB. It was cut short while being copied or downloaded: copy the whole file again.	%s は不完全です (%s / %s MB)。コピーまたはダウンロードの途中で切れています。ファイル全体をもう一度コピーしてください。
+Up to 60 fps: faster where the phone can, game speed stays right (Fl4sh's Dynamic FPS mod)	最大60fps: 端末が出せる場面では滑らかに、ゲーム速度は正しいまま (Fl4sh氏のDynamic FPS Mod)
+Shadows	影
+Standard	標準
+Standard: 1024 × 1024, as the game is made	標準: 1024 × 1024 (ゲーム本来の設定)
+Sharp: 2048 × 2048 shadow maps, more GPU work (Fl4sh's 2K Shadows mod)	シャープ: 2048 × 2048 の影、GPU負荷が増えます (Fl4sh氏の2K Shadows Mod)

@@ -491,9 +491,36 @@ static int pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
 // the game replaces for the gameplay camera; patched, the picture was unchanged. DM_ASPECT=20:9 is the presentation alone, for a 20:9 .pchtxt mod.)
 int dm_step_hz; uint8_t *dm_step_word;   // the high frame rate below: its rate and the game's step word, which hle_nvn.c vstep_tick rewrites every frame
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1);
+// Built-in community mods (builtin_mods.h, from dm/games/*/builtin_mods/*.pchtxt), each behind a setting: Scarlet / Violet 4.0.0's dynamic frame rate (Fl4sh's ASM
+// "Dynamic FPS": up to 60, the game's step from the time each frame really took) with DM_FPS_TARGET=60, their 2048×2048 shadow maps (Fl4sh's "2K Shadows") with
+// DM_SHADOWS=2k. A mod goes in whole or not at all: every site must still hold the game's own bytes and none may be code the rewriter turned into a branch
+#include "builtin_mods.h"
+static int bmod_wanted(const char *name) {
+    if (!strcmp(name, "dynamic_fps")) { const char *e = getenv("DM_FPS_TARGET"); return e && atoi(e) >= 60; }
+    if (!strcmp(name, "shadows_2k")) { const char *e = getenv("DM_SHADOWS"); return e && !strcasecmp(e, "2k"); }
+    return 0;
+}
+static int g_bmod_fps;   // the frame rate came from a built-in mod: the Sword / Shield patch below is not this game's
+static int bmod_apply(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
+    int total = 0;
+    for (unsigned i = 0; i < sizeof BUILTIN_MODS / sizeof *BUILTIN_MODS; i++) {
+        const bmod *b = &BUILTIN_MODS[i]; int hit = 0;
+        for (int k = 0; b->builds[k]; k++) if (!strncasecmp(m->build_id, b->builds[k], 32)) hit = 1;
+        if (!hit || !bmod_wanted(b->name)) continue;
+        int bad = -1;
+        for (int s = 0; s < b->n && bad < 0; s++) { const bmod_site *t = &b->sites[s];
+            if ((uint64_t)t->off + t->len > lim || memcmp(m->base + t->off, t->orig, t->len) || overlaps_rewrite(m, t->off, t->len, p0, p1)) bad = s; }
+        if (bad >= 0) { LOG("[RED] %s: built-in mod %s not applied: +%#x differs from the game's code or was rewritten", m->name, b->name, b->sites[bad].off); continue; }
+        for (int s = 0; s < b->n; s++) memcpy(m->base + b->sites[s].off, b->sites[s].mod, b->sites[s].len);
+        LOG("%s: built-in mod %s applied (%d sites)", m->name, b->name, b->n); total += b->n; if (!strcmp(b->name, "dynamic_fps")) g_bmod_fps = 1;
+    }
+    return total;
+}
 static int builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int modded) {
     (void)modded;
-    return strcmp(m->name, "main") ? 0 : fps_patch(m, lim, p0, p1);
+    if (strcmp(m->name, "main")) return 0;
+    int n = bmod_apply(m, lim, p0, p1);
+    return n + (g_bmod_fps ? 0 : fps_patch(m, lim, p0, p1));
 }
 // Built-in: DM_FPS_TARGET=60..120 (opt-in, the in-game menu; experimental) for Pokémon Shield and Sword 1.3.2's main: the present interval the game asks NVN for, 2 (30 fps),
 // becomes 1 (in the game's present-interval setter: if the interval asked for differs from the window's, MOV W1, W21 then a call through NVN's set-present-interval

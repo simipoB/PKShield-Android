@@ -250,7 +250,10 @@ public final class GameMenu {
         choice(a, "DM_GRAPHICS", t(a, "Graphics"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", g) }, { "high", t(a, "High"), t(a, "High: TV mode, 1080p, full effects") },
             { "low", t(a, "Low"), t(a, "Low: handheld mode, 720p, lighter") }, { "auto", t(a, "Adaptive"), t(a, "Adaptive: High, Low while the phone is hot") } });
         if (GameSettings.has60(a)) choice(a, "DM_FPS_TARGET", t(a, "Frame rate"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s fps", p[5]) },
-            { "30", "30 fps", t(a, "30 fps, as the game is made") }, { "60", "60 fps", t(a, "60 fps (experimental: needs a fast phone)") } });
+            { "30", "30 fps", t(a, "30 fps, as the game is made") }, { "60", "60 fps", GameSettings.paldea(a) ? t(a, "Up to 60 fps: faster where the phone can, game speed stays right (Fl4sh's Dynamic FPS mod)")
+                                                                                               : t(a, "60 fps (experimental: needs a fast phone)") } });
+        if (GameSettings.paldea(a)) choice(a, "DM_SHADOWS", t(a, "Shadows"), new String[][] { { "", t(a, "Standard"), t(a, "Standard: 1024 × 1024, as the game is made") },
+            { "2k", t(a, "Sharp"), t(a, "Sharp: 2048 × 2048 shadow maps, more GPU work (Fl4sh's 2K Shadows mod)") } });
         heading(a, t(a, "Memory"));
         choice(a, "DM_VK_TEX_QUALITY", t(a, "Textures"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", t(a, p[3].equals("half") ? "Half" : "Full")) },
             { "full", t(a, "Full"), t(a, "Full: the game's textures as they are") }, { "half", t(a, "Half"), t(a, "Half: large textures at half size, less memory and GPU work") } });
