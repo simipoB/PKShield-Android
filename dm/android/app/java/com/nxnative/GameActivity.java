@@ -23,10 +23,13 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         // local play (hle_ldn.c) finds other phones by Wi-Fi broadcasts, which many phones drop without a multicast lock
         try { android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
               if (wm != null) { android.net.wifi.WifiManager.MulticastLock ml = wm.createMulticastLock("local play"); ml.setReferenceCounted(false); ml.acquire(); } } catch (Exception e) { }
-        super.onCreate(b); alive = true;
+        super.onCreate(b);
         // Android brings the task back after the process ended (recents, the launcher icon) straight into this activity, past the setup screen that translates the
         // shaders the game captured last time: hand over to it before there is a window (the engine starts with the window, android_main.c)
-        if (!viaSetup && SetupActivity.pendingWork(GameSettings.dir(this))) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
+        //   (alive only after this: set before it, the setup screen took this finishing activity for a running game and sent the player back to it, round and round;
+        //   the game named, so the launcher of two games does not come in between)
+        if (!viaSetup && SetupActivity.pendingWork(GameSettings.dir(this))) { startActivity(new Intent(this, SetupActivity.class).putExtra("game", GameSettings.game(this)[0])); finish(); return; }
+        alive = true;
         im = getSystemService(InputManager.class);
         if (im != null) im.registerInputDeviceListener(this, null);
         check();

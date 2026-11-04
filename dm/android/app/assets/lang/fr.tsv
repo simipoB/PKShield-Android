@@ -195,3 +195,38 @@ translate %s shaders	traduire %s shaders
 translate the shaders	traduire les shaders
 unpack the game	décompresser le jeu
 warm	tiède
+%s is compressed (NSZ): decompress it to .nsp / .xci first, then choose that.	%s est compressé (NSZ) : décompressez-le d'abord en .nsp / .xci, puis choisissez celui-ci.
+%s is not a Switch game file (.nsp or .xci).	%s n'est pas un fichier de jeu Switch (.nsp ou .xci).
+%s is not a game file: choose it under Your keys.	%s n'est pas un fichier de jeu : choisissez-le dans Vos clés.
+%s is not a key file: choose prod.keys (and title.keys).	%s n'est pas un fichier de clés : choisissez prod.keys (et title.keys).
+(kept in the app's private storage)	(conservé dans le stockage privé de l'app)
+Background	Arrière-plan
+Change the driver (only if the game does not start)	Changer de pilote (seulement si le jeu ne démarre pas)
+Choose	Choisir
+Choose game files	Choisir les fichiers du jeu
+Choose keys	Choisir les clés
+Clear	Effacer
+Could not read %s.	Impossible de lire %s.
+Game	Jeu
+Keep playing	Continuer à jouer
+Keep playing: the game and its sound go on in the background	Continuer à jouer : le jeu et son son continuent en arrière-plan
+Leaving the game	En quittant le jeu
+No game files or keys come with this app; yours never leave the phone.	Aucun fichier de jeu ni clé n'est fourni ; les vôtres ne quittent jamais le téléphone.
+Pause	Pause
+Pause: the game stops while it is not on screen	Pause : le jeu s'arrête tant qu'il n'est pas à l'écran
+Ready: tap Play.	Prêt : touchez Jouer.
+Save data	Données de sauvegarde
+Set up	Installer
+Set up again	Réinstaller
+Set up or manage a game	Installer ou gérer un jeu
+Tap Clear and choose your files again.	Touchez Effacer et choisissez à nouveau vos fichiers.
+The base game (.nsp or .xci), the %s update and any DLC. You can choose them all at once.	Le jeu de base (.nsp ou .xci), la mise à jour %s et les DLC. Vous pouvez tous les choisir en même temps.
+The setup log is in Android/data/%s/files/setup_work.	Le journal d'installation se trouve dans Android/data/%s/files/setup_work.
+These files are from different games (%s): set up one game at a time. Tap Clear and choose the files of one game.	Ces fichiers viennent de jeux différents (%s) : installez un jeu à la fois. Touchez Effacer et choisissez les fichiers d'un seul jeu.
+Welcome! To play, set up %s from your own Switch dump. It takes three steps.	Bienvenue ! Pour jouer, installez %s à partir de votre propre dump Switch. Il y a trois étapes.
+Your game files	Vos fichiers de jeu
+Your keys	Vos clés
+none chosen	rien de choisi
+or	ou
+prod.keys from your own Switch (and title.keys if your dump needs it).	prod.keys de votre propre Switch (et title.keys si votre dump en a besoin).
+the phone's own Vulkan driver	le pilote Vulkan du téléphone

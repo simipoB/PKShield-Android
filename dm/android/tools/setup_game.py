@@ -109,7 +109,9 @@ def main():
 
     step(1)
     if os.path.isdir(ex): shutil.rmtree(ex)
-    aoc = os.path.join(a.out, 'aoc'); shutil.rmtree(aoc, ignore_errors=True)
+    # the DLC unpacks into the scratch folder first: which game the files are is only known once they are unpacked, and the chosen game's own DLC (another game's
+    # when the files are the other one of the pair) must stay until this setup replaces it
+    aoc = os.path.join(a.work, 'aoc'); shutil.rmtree(aoc, ignore_errors=True)
     # every chosen file in one run: the unpacker tells base game, update and DLC apart by their contents, not their names or the order they were chosen in
     # (an update named without [UPD], a merged XCI, DLC chosen first all work)
     files = [f for f in [a.base, a.update] + a.dlc if f]
@@ -120,7 +122,13 @@ def main():
     try:
         free = shutil.disk_usage(a.work).free
         log.write(f'free space at extraction start: {free} bytes\n')
-    except OSError as e: log.write(f'free-space check failed: {e}\n')
+    except OSError as e: free = None; log.write(f'free-space check failed: {e}\n')
+    # the unpacked game takes about as much as the files it comes from, plus the shaders: said now, not as a failure halfway through the unpacking
+    try: need = sum(os.path.getsize(f) for f in files) + (1 << 30)
+    except OSError: need = 0
+    if free is not None and need and free < need:
+        raise RuntimeError(f'not enough free storage: the setup needs about {need / (1 << 30):.1f} GB free and the phone has {free / (1 << 30):.1f} GB. '
+                           'Free some space (or delete files you copied into the app), then set up again')
     run([tool('nx_extract'), keys, files[0], '-', ex, '--aoc-dir', aoc] + [x for f in files[1:] for x in ('--more', f)])
     exefs, romfs = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS')
     if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError(f'the dump has no main module: is it {NAME}?')
@@ -142,9 +150,7 @@ def main():
         PROFILE = _game.load(games[hit]); NAME = PROFILE.get('name'); env['DM_GAME'] = os.environ['DM_GAME'] = games[hit]
         out = a.root if hit == 0 else os.path.join(a.root, games[hit].upper())
         if os.path.realpath(out) != os.path.realpath(a.out):
-            os.makedirs(out, exist_ok=True); dst = os.path.join(out, 'aoc'); shutil.rmtree(dst, ignore_errors=True)
-            if os.path.isdir(aoc): shutil.move(aoc, dst)
-            a.out, aoc = out, dst
+            os.makedirs(out, exist_ok=True); a.out = out
         log.write(f'the dump is {NAME} ({tid:016X}): set up in {a.out}\n'); print(f'GAME {games[hit].upper()}', flush=True)
     elif tid and tid != PROFILE.title_id:
         other = _game.by_title(tid)
@@ -159,6 +165,14 @@ def main():
         except OSError: pass
         raise RuntimeError(f'your files hold {NAME} {have or "of an unknown version"}, and this app needs update {want}: '
                            f'choose the {want} update too (a separate update file, or a dump that includes it)')
+
+    # from here the game's folder changes: it is not ready until this setup finishes (a setup stopped halfway left the old ready file, and Play then started a game
+    # with its rewritten code deleted)
+    try: os.remove(os.path.join(a.out, 'ready'))
+    except FileNotFoundError: pass
+    dst = os.path.join(a.out, 'aoc'); shutil.rmtree(dst, ignore_errors=True)
+    if os.path.isdir(aoc): shutil.move(aoc, dst)
+    aoc = dst
 
     step(2)
     pat = os.path.join(a.out, 'patched'); shutil.rmtree(pat, ignore_errors=True); os.makedirs(pat)
@@ -261,7 +275,7 @@ def main():
     rom = os.path.join(a.out, 'RomFS')
     if os.path.realpath(rom) != os.path.realpath(romfs):
         shutil.rmtree(rom, ignore_errors=True); os.replace(romfs, rom)   # same storage: a rename, nothing copied
-    for d in ('shader_pkg', 'cas', 'vk', 'shader_cache', 'extract'): shutil.rmtree(os.path.join(a.work, d), ignore_errors=True)   # only setup.log stays
+    for d in ('shader_pkg', 'cas', 'vk', 'shader_cache', 'extract', 'aoc'): shutil.rmtree(os.path.join(a.work, d), ignore_errors=True)   # only setup.log stays
     # the new pack holds every capture there is, so the launcher's list of captures already added is stale: the next start checks them against the pack again
     try: os.remove(os.path.join(a.out, 'captures_done'))
     except FileNotFoundError: pass
