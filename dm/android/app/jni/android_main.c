@@ -280,11 +280,11 @@ static int g_started;
 // ---------- Crash-aware starts: <files>/boot_state says how far a run got (start → device: the graphics device is up → gone after 30 s of play), and "crashed" when
 // the crash handler ran (crash.c dm_crash_note). A crashed run's stage decides what the next start does:
 //   · crashed before 30 s of play on the phone's own driver, with the device not up or no frames yet: the app offers a driver package for this GPU (notice.txt,
-//     SetupActivity reads it and does not start the game straight away)
+//     SetupActivity reads it and does not start the game straight away); not when the pc was in the game's own code (main / sdk: a driver would not help)
 //   · crashed with mods on: the mods are switched off (each folder renamed with a leading "-", loose .pchtxt files to .pchtxt.off), and the player is told
 // A run Android ends (swiped away, low memory) writes no "crashed": nothing is changed then
 static char g_boot_path[1100]; static int g_boot_fd = -1;
-void dm_crash_note(void) { if (g_boot_fd >= 0) { static const char m[] = "crashed\n"; (void)!write(g_boot_fd, m, sizeof m - 1); } }
+void dm_crash_note(int in_game) { if (g_boot_fd >= 0) { static const char m[] = "crashed\n", g[] = "crashed in the game's code\n"; if (in_game) (void)!write(g_boot_fd, g, sizeof g - 1); else (void)!write(g_boot_fd, m, sizeof m - 1); } }
 const char *nvn_vk_gpu_name(void) __attribute__((weak));
 static void notice(const char *kind, const char *text) {
     char p[1200]; snprintf(p, sizeof p, "%s/notice.txt", g_files); FILE *f = fopen(p, "a"); if (f) { fprintf(f, "%s\t%s\n", kind, text); fclose(f); }
@@ -313,7 +313,7 @@ static void boot_guard(const char *mods) {
         const char *drv = getenv("DM_VK_DRIVER"); int stock = !drv || !*drv;
         fprintf(stderr, "boot: the last run crashed (%s)\n", device ? "after the graphics device came up" : "before the graphics device came up");
         if (had_mods) { int n = mods_off(mods); if (n) { char t[200]; snprintf(t, sizeof t, "The game closed while %d mod%s were on, so they are switched off. Switch them back on in the menu, Mods.", n, n == 1 ? "" : "s"); notice("mods", t); } }
-        else if (stock && !strstr(prev, "playing")) {
+        else if (stock && !strstr(prev, "playing") && !strstr(prev, "in the game's code")) {   // (a crash in the game's own code is the engine's to fix, not the driver's: no driver dialog)
             char gpu[256] = ""; char gp[1200]; snprintf(gp, sizeof gp, "%s/gpu.txt", g_files); FILE *g = fopen(gp, "r"); if (g) { if (!fgets(gpu, sizeof gpu, g)) gpu[0] = 0; fclose(g); }
             char *nl = strchr(gpu, '\n'); if (nl) *nl = 0;
             notice("driver", *gpu ? gpu : "unknown");

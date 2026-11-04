@@ -187,9 +187,19 @@ public final class GameMenu {
         LinearLayout c = card(a); LinearLayout row = titleRow(a, c, title, null);
         int v; try { v = Integer.parseInt(GameSettings.get(a, key)); } catch (NumberFormatException e) { v = def; }
         v = Math.max(min, Math.min(max, v));
-        TextView val = text(a, fmt.apply(v), 14, accent(a), true); row.addView(val);
-        SeekBar sb = new SeekBar(a); sb.setMax(max - min); sb.setProgress(v - min); sb.setPadding(dp(a, 4), dp(a, 12), dp(a, 4), 0);
-        sb.getProgressDrawable().setTint(accent(a)); sb.getThumb().setTint(accent(a));
+        TextView val = text(a, fmt.apply(v), 14, 0xFFF2F2F5, true); row.addView(val);
+        SeekBar sb = new SeekBar(a); sb.setMax(max - min); sb.setProgress(v - min); sb.setPadding(dp(a, 10), dp(a, 14), dp(a, 10), dp(a, 4));
+        // neutral, not the game's accent all over (a purple bar and knob on Paldea were too much): a thin rounded grey track, the filled part near-white, a white knob with a soft ring
+        android.graphics.drawable.GradientDrawable track = new android.graphics.drawable.GradientDrawable(); track.setColor(0x33FFFFFF); track.setCornerRadius(dp(a, 3)); track.setSize(0, dp(a, 4));
+        android.graphics.drawable.GradientDrawable fill = new android.graphics.drawable.GradientDrawable(); fill.setColor(0xFFE6E6EB); fill.setCornerRadius(dp(a, 3)); fill.setSize(0, dp(a, 4));
+        android.graphics.drawable.LayerDrawable bar = new android.graphics.drawable.LayerDrawable(new android.graphics.drawable.Drawable[] { track,
+            new android.graphics.drawable.ClipDrawable(fill, android.view.Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL) });
+        bar.setId(0, android.R.id.background); bar.setId(1, android.R.id.progress);
+        bar.setLayerHeight(0, dp(a, 4)); bar.setLayerHeight(1, dp(a, 4)); bar.setLayerGravity(0, android.view.Gravity.CENTER_VERTICAL); bar.setLayerGravity(1, android.view.Gravity.CENTER_VERTICAL);
+        sb.setProgressDrawable(bar); sb.setMinHeight(dp(a, 4)); sb.setMaxHeight(dp(a, 4));
+        android.graphics.drawable.GradientDrawable knob = new android.graphics.drawable.GradientDrawable(); knob.setShape(android.graphics.drawable.GradientDrawable.OVAL);
+        knob.setColor(0xFFFFFFFF); knob.setStroke(dp(a, 3), 0x40FFFFFF); knob.setSize(dp(a, 20), dp(a, 20));
+        sb.setThumb(knob); sb.setThumbOffset(dp(a, 10)); sb.setSplitTrack(false); sb.setBackground(null);
         sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             public void onProgressChanged(SeekBar b, int p, boolean user) { val.setText(fmt.apply(p + min)); if (user) set(a, key, String.valueOf(p + min)); }
             public void onStartTrackingTouch(SeekBar b) { }

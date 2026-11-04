@@ -126,7 +126,7 @@ static void crash_gate(int sig) {
     for (;;) pause();
 }
 __attribute__((weak)) int dm_crypto_emu(ucontext_t *uc);   // crypto_emu.c (Linux / Android on ARM64)
-__attribute__((weak)) void dm_crash_note(void);   // android_main.c: "this run crashed" for the next start (boot_state); only write() inside
+__attribute__((weak)) void dm_crash_note(int in_game);   // android_main.c: "this run crashed" for the next start (boot_state), and whether the pc was in the game's own code; only write() inside
 static void on_crash(int sig, siginfo_t *si, void *uc_) {
     ucontext_t *uc = uc_;
     if (sig == SIGTRAP && g_trap_hook && g_trap_hook(uc)) return;
@@ -136,7 +136,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         for (int i = 0; i < g_nfault_hook; i++) if (g_fault_hook[i](si->si_addr, is_write, uc)) return;
     }
     crash_gate(sig);
-    if (dm_crash_note) dm_crash_note();
+    if (dm_crash_note) dm_crash_note(module_of((void *)DM_UC_SS(uc).__pc) != NULL);
     // The stderr lock may be held by another thread (stuck or suspended): the fprintf below would hang with it, the time limit's SIGALRM could not end the run, and the log would get nothing.
     // If it still cannot be taken after 1 s, write a single line with write() (pc / lr as module offsets) and exit. When this thread itself holds the lock, ftrylockfile still succeeds (file locks are recursive), unaffected
     for (int i = 0; ftrylockfile(stderr); i++) {

@@ -2969,7 +2969,15 @@ static int scale_draw(VkCommandBuffer cb, vtex *x, int32_t cx, int32_t cy, int32
         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };   // (LOAD: the black the caller cleared stays around the box)
     VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, W.ext }, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca };
     vkCmdBeginRendering(cb, &ri);
-    VkViewport v = { 0, 0, (float)W.ext.width, (float)W.ext.height, 0, 1 }; VkRect2D sc = { { 0, 0 }, W.ext };   // the whole image: the box is in the vertices
+    // the whole image: the box is in the vertices. The vertices are one triangle twice the box's size (scale.vert / sgsr.vert), so the scissor must be the box: with the whole image
+    //   the picture spilled past the box's right edge and the triangle's long edge cut the corner below it diagonally (a 2560x1440 picture on a 3120x1440 Galaxy S25+)
+    VkViewport v = { 0, 0, (float)W.ext.width, (float)W.ext.height, 0, 1 };
+    int32_t sx = box[0], sy = box[1], sw = box[2], shh = box[3];
+    if (W.rot & 1) { int32_t t = sx; sx = sy; sy = t; t = sw; sw = shh; shh = t; }   // a turned swapchain: the box in the turned image (it is centred, so either turn lands the same)
+    if (W.rot == 2) { sx = (int32_t)W.ext.width - sx - sw; sy = (int32_t)W.ext.height - sy - shh; }
+    if (sx < 0) { sw += sx; sx = 0; } if (sy < 0) { shh += sy; sy = 0; }
+    if (sx + sw > (int32_t)W.ext.width) sw = (int32_t)W.ext.width - sx; if (sy + shh > (int32_t)W.ext.height) shh = (int32_t)W.ext.height - sy;
+    VkRect2D sc = { { sx, sy }, { (uint32_t)(sw > 0 ? sw : 0), (uint32_t)(shh > 0 ? shh : 0) } };
     vkCmdSetViewport(cb, 0, 1, &v); vkCmdSetScissor(cb, 0, 1, &sc);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, SC.pipe[which]);
     VkDescriptorImageInfo di = { SC.samp, sv, VK_IMAGE_LAYOUT_GENERAL };

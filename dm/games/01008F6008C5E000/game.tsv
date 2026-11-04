@@ -55,7 +55,8 @@ shader_oodle	on
 shader_nvn_capture	on
 
 # ---- Shared font ----
-# Arceus (SDK 11) took the shared font as TTF; SDK 13 decodes the BFTTF itself: left at the default until the first boot says otherwise
+# The TTF itself, as Arceus (SDK 11): with the BFTTF header the first boot on a Galaxy S25+ found no '?' glyph and crashed on a null pointer (main+0x2151bc0)
+shared_font	ttf
 
 # ---- Android ----
 # heavier than the Sword / Shield the Auto tiers were set on (Arceus ran about 20 fps docked on a Galaxy S25+, this open world more): Auto picks one tier lower
@@ -64,3 +65,8 @@ android_heavy	on
 # Trinity's open world is heavier than Arceus (about 20 fps docked on the Galaxy S25+): handheld mode, the game's own lower render resolution
 android_op_mode	handheld
 touch_zlzr	on
+# ---- Movies ----
+# The academy video (demo/movie/d020_movie_a.bk2, Bink 2) is decoded on the CPU straight into texture memory with no NVN call: without these the textures stayed GPU-only and empty,
+#   and the video played black under its subtitles (first boot on a Galaxy S25+)
+tex_flush_upload	on
+tex_dirty_upload	on
