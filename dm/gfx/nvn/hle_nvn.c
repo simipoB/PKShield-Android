@@ -558,8 +558,15 @@ NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a
 _Atomic uint64_t g_wait_sync_ns, g_wait_sync_n;   // DM_VK_PROF: the game thread's time in sync waits (GPU not done yet)
 static NVNsyncWaitResult sync_wait_(const sync_t *o, uint64_t timeout);
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
-    uint64_t t0 = now_ns(); NVNsyncWaitResult r = sync_wait_((const sync_t *)s, timeout); uint64_t d = now_ns() - t0;
-    if (timeout) { atomic_fetch_add(&g_wait_sync_ns, d); atomic_fetch_add(&g_wait_sync_n, 1); }
+    const sync_t *o = (const sync_t *)s; uint64_t last = mtl_last_fence(), behind = o->fenced && o->fence <= last ? last - o->fence : 99;
+    uint64_t t0 = now_ns(); NVNsyncWaitResult r = sync_wait_(o, timeout); uint64_t d = now_ns() - t0;
+    if (timeout) { atomic_fetch_add(&g_wait_sync_ns, d); atomic_fetch_add(&g_wait_sync_n, 1);
+        // DM_VK_PROF: which submission the game waits for, counted back from the newest (0: the one it just submitted), and how long that took
+        static int prof = -1; if (prof < 0) prof = getenv("DM_VK_PROF") != NULL;
+        if (prof) { static uint64_t n, cnt[4], ns[4]; int k = behind > 2 ? 3 : (int)behind; cnt[k]++; ns[k] += d; static uint64_t inl, inl_ns; if (o->fenced == 2) { inl++; inl_ns += d; }
+            if (++n % 600 == 0) { LOG("[prof] sync waits by submissions behind the newest: 0: %llu (%.1f ms each), 1: %llu (%.1f), 2: %llu (%.1f), more: %llu (%.1f); %d submissions a frame",
+                (unsigned long long)cnt[0], cnt[0] ? ns[0] / 1e6 / cnt[0] : 0, (unsigned long long)cnt[1], cnt[1] ? ns[1] / 1e6 / cnt[1] : 0, (unsigned long long)cnt[2], cnt[2] ? ns[2] / 1e6 / cnt[2] : 0,
+                (unsigned long long)cnt[3], cnt[3] ? ns[3] / 1e6 / cnt[3] : 0, 0); LOG("[prof] of them fenced inside a command list: %llu (%.1f ms each)", (unsigned long long)inl, inl ? inl_ns / 1e6 / inl : 0); inl = inl_ns = 0; memset(cnt, 0, sizeof cnt); memset(ns, 0, sizeof ns); } } }
     return r;
 }
 static NVNsyncWaitResult sync_wait_(const sync_t *o, uint64_t timeout) {

@@ -2584,6 +2584,15 @@ static int rt_same(const p_set_rt *a, const p_set_rt *b) {
 }
 void mtl_exec_rest(const uint64_t *h, int n) { (void)h; (void)n; }
 void mtl_sub_index(const uint64_t *h, int n) { (void)h; (void)n; }
+// DM_VK_SPLIT=<draws> (default 150): a submission goes to the GPU in parts of that many draws, while the rest is still being replayed. A game that submits a frame and waits for it
+//   (Scarlet: 43 ms a frame waiting on the submission it had just made) otherwise waits for the whole replay and then the whole GPU frame, one after the other; on the
+//   console the GPU starts at once. The open pass ends at the cut and opens again loading (its clears were taken when it began)
+static void sub_split(void) {
+    static int every = -1; if (every < 0) { const char *e = getenv("DM_VK_SPLIT"); every = e ? atoi(e) : 150;   // (on by default: Scarlet outdoors 70 to 33 ms a frame; DM_VK_SPLIT=0 off)
+        if (every) VLOG("submissions go to the GPU every %d draws (DM_VK_SPLIT)", every); }
+    static int n; if (!every || ++n < every) return;
+    n = 0; int reopen = P.open; mtl_sub_commit(); mtl_sub_begin(); if (reopen) pass_begin();
+}
 void mtl_exec(const uint8_t *p) {
     if (!g_sub) { RED_ONCE(52, "commands replayed outside a submission"); return; }
     for (int guard = 0; guard < (1 << 26); guard++) {
@@ -2597,7 +2606,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, a + 8, 4); memcpy(&v, a + 12, 4); post((post_op){1, val, m, v, 0, 0}); break; }
             case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); post((post_op){2, NULL, 0, 0, ad, (uint32_t)t}); break; }
             case OP_RESET_COUNTER: case OP_RENDER_COND: break;
-            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); s->fence = g_fence + 1; s->fenced = 1; break; }
+            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); s->fence = g_fence + 1; s->fenced = 2; break; }   // (2: fenced inside a command list, DM_VK_PROF tells them apart)
             case OP_CLEAR_BUF: { const p_clear_buf *cb = (const p_clear_buf *)a; mtl_sub_fill(cb->addr, cb->size, cb->value); break; }
             case OP_COPY_B2B: { uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); sub_copy(s, d, n); break; }
             case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); sub_update(a + 16, d, n); break; }
@@ -2627,8 +2636,8 @@ void mtl_exec(const uint8_t *p) {
                 if (c->stencil_mask) { R.clear_s = 1; R.cs = (uint32_t)c->stencil; }
                 break;
             }
-            case OP_DRAW: draw((const p_draw *)a, NULL); g_stat_draws++; break;
-            case OP_DRAW_IDX: draw(NULL, (const p_draw_idx *)a); g_stat_draws++; break;
+            case OP_DRAW: draw((const p_draw *)a, NULL); g_stat_draws++; sub_split(); break;
+            case OP_DRAW_IDX: draw(NULL, (const p_draw_idx *)a); g_stat_draws++; sub_split(); break;
             case OP_COPY_B2T: copy_b2t((const p_copy_b2t *)a, 0); break;
             case OP_COPY_T2B: copy_b2t((const p_copy_b2t *)a, 1); break;
             case OP_COPY_T2T: copy_t2t((const p_copy_t2t *)a); break;

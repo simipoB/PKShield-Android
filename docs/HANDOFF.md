@@ -66,7 +66,15 @@ Done in this round:
 
 ## Open problems
 
-### 1. Locked 30 fps on Scarlet and Violet (the main one)
+### 1. Locked 30 fps on Scarlet and Violet
+
+**Update 2026-11-04: fixed for the scene measured.** Scarlet outdoors (the academy plaza, the user's own save) went from 66-76 ms to 33.3 ms a frame, p95 34.4-35.6 ms, on a hot phone capped at 1.55-1.69 GHz.
+- The cause: the game submits a frame and then waits for that very submission (`DM_VK_PROF`: "sync waits by submissions behind the newest: 0"). The replay translated the whole frame before the GPU got any of it, so the game waited for replay plus GPU, one after the other.
+- The fix: `sub_split` in `nvn_vk.c` sends the submission to the GPU every 150 draws while the rest is still replayed. It is on by default; `DM_VK_SPLIT=<draws>` changes the size, `DM_VK_SPLIT=0` turns it off. Sword boots and runs 30 fps with it.
+- Only the plaza was checked. Battles, other towns and long play are not, and neither is any other phone.
+
+The notes below are from before this fix.
+
 
 Violet's busy scenes measured 37-41 ms a frame with pinning, about 48 ms before it, with about 484 draws a frame. Each run was on a phone at a different temperature, so treat the before/after as indicative only.
 
