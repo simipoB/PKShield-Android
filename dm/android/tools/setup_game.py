@@ -12,7 +12,7 @@
 # Usage: setup_game.py --keys <dir with prod.keys [title.keys]> --base <.nsp|.xci> [--update <.nsp>] [--dlc <.nsp> ...] --out <game dir> --work <scratch dir>
 #                      --bin <dir with nx_extract, dmsh_xlate, spirv-cross> [--ext-font <nintendo_ext.ttf>] [--std-font <ttf>]
 # Environment: DM_GAME (the profile: the app's game, SetupActivity passes it; default 01008DB008C2C000, Pokémon Shield), J (jobs)
-import argparse, glob, hashlib, os, shutil, signal, struct, subprocess, sys, threading, time, zlib
+import argparse, glob, hashlib, os, re, shutil, signal, struct, subprocess, sys, threading, time, zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__)); DM = os.path.normpath(os.path.join(HERE, '../..'))
 GAME = os.environ.setdefault('DM_GAME', '01008DB008C2C000')
@@ -53,21 +53,38 @@ def watch_translation(found_map, work, built, stop):
         if done != shown: shown = done; print(f'PROGRESS {done}/{total}', flush=True)
 
 def explain_failure(log_path, files):
-    """The unpacker's known failures in words a player can act on (from the end of setup.log); '' when it is none of them"""
+    """The unpacker's known failures in words a player can act on (from the end of setup.log), and whether setting up anyway (--allow-damaged) can get past
+    it; ('', False) when it is none of them"""
     try:
-        with open(log_path, encoding='utf-8', errors='replace') as f: tail = f.read()[-6000:]
-    except OSError: return ''
+        with open(log_path, encoding='utf-8', errors='replace') as f: tail = f.read()[-8000:]
+    except OSError: return '', False
+    run = tail[tail.rfind('$ '):] if '$ ' in tail else tail   # the last run only: an older failure higher up the log is not this one
     names = [os.path.basename(f) for f in files]
-    upd = [n for n in names[1:] if 'dlc' not in n.lower()]   # (setup is given the base game first)
-    if '2002-4604' in tail or 'Hash error' in tail or 'VerificationFailed' in tail:
-        which = f'most likely the update ({upd[0]}), since the base game alone unpacks' if upd else f'{names[0] if names else "the dump"}'
-        return (f'one of your files is damaged: a checksum stored inside it does not match its data (2002-4604), {which}. '
-                'A file cut short or corrupted while being copied or downloaded does this: copy it again from where you dumped it, or dump it again from your Switch, then set up again')
-    if 'KeyNotFound' in tail or 'Unable to decrypt' in tail or 'key' in tail.lower() and 'missing' in tail.lower():
-        return 'a key your dump needs is not in your prod.keys / title.keys: dump the keys again from the same Switch (newer system versions add keys)'
-    if 'No space left' in tail or 'ENOSPC' in tail:
-        return 'the phone ran out of storage while unpacking: free some space and set up again'
-    return ''
+    m = re.search(r'Exception: (.+?) is incomplete: it has (\d+) of its (\d+) bytes \(([\d.]+)%\)', run)
+    if m:
+        return (f'{m.group(1)} is incomplete: it holds {int(m.group(2)) / (1 << 30):.2f} GB of its {int(m.group(3)) / (1 << 30):.2f} GB ({m.group(4)}%). '
+                'It was cut short while being copied or downloaded: copy the whole file again, then set up again'), False
+    m = re.search(r'\[RED\] damaged: (the update|the base game|your game file) fails its hash check', run)
+    if m:
+        who = {'the update': 'your update file', 'the base game': 'your base game file', 'your game file': 'your game file'}[m.group(1)]
+        return (f'{who} is damaged, or the update does not belong to this base game: its data fails the checksum stored inside it (2002-4604). '
+                'Copy it again in full or dump it again from your Switch. "Set up anyway" tries to go on regardless, but the game may then not start'), True
+    m = re.search(r'\[RED\] the NSP is damaged: (\d+) files fail', run)
+    if m:
+        return (f'{m.group(1)} of the game\'s files are damaged in your dump: they fail the checksum stored inside it (2002-4604). Copy your files again in full or dump them '
+                'again from your Switch. "Set up anyway" keeps the damaged files as they are: the game may crash where it uses them'), True
+    if '2002-4604' in run or 'Hash error' in run or 'VerificationFailed' in run or 'LinkedListEmpty' in run:
+        return ('one of your files is damaged: its data does not match the checksum stored inside it. A file cut short or corrupted while being copied or downloaded '
+                'does this: copy it again in full, or dump it again from your Switch, then set up again'), True
+    if 'MissingKeyException' in run or 'KeyNotFound' in run or 'Unable to decrypt' in run or 'key' in run.lower() and 'missing' in run.lower():
+        return 'a key your dump needs is not in your prod.keys / title.keys: dump the keys again from the same Switch (newer system versions add keys)', False
+    if 'No space left' in run or 'ENOSPC' in run:
+        return 'the phone ran out of storage while unpacking: free some space and set up again', False
+    if 'is not an NSP or XCI' in run or 'has a damaged header' in run:
+        return 'one of your files is not a Switch game file (.nsp / .xci), or its header is damaged: choose your dump files again', False
+    if 'no base game program' in run:
+        return 'none of your files is the base game: choose the base game (.nsp / .xci) too, with the update', False
+    return '', False
 
 def main():
     global PROFILE, NAME   # (the dump can name another game of the app: --games)
@@ -75,6 +92,7 @@ def main():
     ap.add_argument('--keys'); ap.add_argument('--base'); ap.add_argument('--captures'); ap.add_argument('--update'); ap.add_argument('--dlc', action='append', default=[])
     ap.add_argument('--out', required=True); ap.add_argument('--work', required=True); ap.add_argument('--bin', required=True)
     ap.add_argument('--ext-font'); ap.add_argument('--std-font'); ap.add_argument('--games'); ap.add_argument('--root')
+    ap.add_argument('--allow-damaged', action='store_true', help='the unpacker writes files that fail their hash check as read (the setup screen: Set up anyway)')
     ap.add_argument('--live', help='with --captures, while the game runs: the translated shaders also go into this folder for the engine to load at once (nvn_vk.c live_check)')
     ap.add_argument('--mod-shaders', help="the RomFS folders of the mods that are on, ':'-separated: their new shaders translated into the pack")
     a = ap.parse_args()
@@ -101,7 +119,9 @@ def main():
                 try: reason = signal.Signals(-r.returncode).name
                 except ValueError: reason = f'signal {-r.returncode}'
                 raise RuntimeError(f'{name} terminated by {reason} ({r.returncode}); see {log.name}')
-            hint = explain_failure(log.name, files) if name == 'nx_extract' else ''   # (files: the chosen dump files, set before the unpacker runs)
+            hint, allow = explain_failure(log.name, files) if name == 'nx_extract' else ('', False)   # (files: the chosen dump files, set before the unpacker runs)
+            if allow and not a.allow_damaged: print('OFFER allow-damaged', flush=True)   # the setup screen offers "Set up anyway"
+            elif allow: hint = 'even set up anyway, your files could not be read: ' + hint.split(':')[0] + '. Copy them again in full or dump them again from your Switch'
             raise RuntimeError(f'{name} failed ({r.returncode}){": " + hint if hint else ""}; see {log.name}')
     keys = os.path.join(a.keys, 'prod.keys')
     if not os.path.isfile(keys): raise RuntimeError(f'no prod.keys in {a.keys}')
@@ -129,7 +149,7 @@ def main():
     if free is not None and need and free < need:
         raise RuntimeError(f'not enough free storage: the setup needs about {need / (1 << 30):.1f} GB free and the phone has {free / (1 << 30):.1f} GB. '
                            'Free some space (or delete files you copied into the app), then set up again')
-    run([tool('nx_extract'), keys, files[0], '-', ex, '--aoc-dir', aoc] + [x for f in files[1:] for x in ('--more', f)])
+    run([tool('nx_extract'), keys, files[0], '-', ex, '--aoc-dir', aoc] + [x for f in files[1:] for x in ('--more', f)] + (['--allow-damaged'] if a.allow_damaged else []))
     exefs, romfs = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS')
     if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError(f'the dump has no main module: is it {NAME}?')
     # another game (the other one of Sword and Shield most often, #46) said so before the version check, which would otherwise ask for an update the user already chose:

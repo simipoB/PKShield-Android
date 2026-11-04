@@ -73,8 +73,23 @@ static class P {
         IStorage romfs = updProg != null ? baseProg.OpenStorageWithPatch(updProg, NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid) : baseProg.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid);
         // the same RomFS without hash checks, for reading damaged files as they are (--allow-damaged)
         g_lenient = () => new RomFsFileSystem(updProg != null ? baseProg.OpenStorageWithPatch(updProg, NcaSectionType.Data, IntegrityCheckLevel.IgnoreOnInvalid) : baseProg.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.IgnoreOnInvalid));
-        if (manifest) Manifest(new RomFsFileSystem(romfs), Path.Combine(outDir, "romfs_manifest.tsv"));
-        else Copy(new RomFsFileSystem(romfs), Path.Combine(outDir, "RomFS"), cmpDir);
+        // the RomFS's own header failing its hash check: which file is at fault (with an update, the base game's RomFS alone is checked too), said in a [RED] damaged
+        //   line setup_game.py turns into words; with --allow-damaged the RomFS is opened without hash checks and every file goes as read
+        IFileSystem romFs;
+        try { romFs = new RomFsFileSystem(romfs); }
+        catch (Exception x) when (Damage(x)) {
+            string who = "your game file";
+            if (updProg != null) {
+                bool baseOk;
+                try { new RomFsFileSystem(baseProg.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid)); baseOk = true; } catch (Exception y) when (Damage(y)) { baseOk = false; }
+                who = baseOk ? "the update" : "the base game";
+            }
+            Console.WriteLine($"[RED] damaged: {who} fails its hash check at the start of the game data ({x.GetType().Name}: {x.Message})");
+            if (!g_allow) { Console.WriteLine($"[RED] the NSP is damaged: {who} cannot be read; copy or download it again, or pass --allow-damaged to write it as read"); return 3; }
+            romFs = g_lenientFs = g_lenient(); g_damaged.Add("(the RomFS header)");
+        }
+        if (manifest) Manifest(romFs, Path.Combine(outDir, "romfs_manifest.tsv"));
+        else Copy(romFs, Path.Combine(outDir, "RomFS"), cmpDir);
             return Damaged();
         } catch (Exception e) {
             Console.Error.WriteLine($"[RED] extraction failed: {e}");
@@ -85,6 +100,8 @@ static class P {
     // Files whose data failed the hash check: listed at the end; exit code 3 unless --allow-damaged
     static readonly List<string> g_damaged = new List<string>(); static bool g_allow; static Func<IFileSystem> g_lenient; static IFileSystem g_lenientFs;
     static bool HashError(HorizonResultException e) => e.ResultValue.Module == 2 && e.ResultValue.Description >= 4600 && e.ResultValue.Description < 4700;   // fs: integrity verification failures (2002-46xx)
+    // data that cannot be what the file says: a failed hash check, or LibHac's cache given a level size read from damaged data (LinkedListEmpty in CachedStorage, #33)
+    static bool Damage(Exception e) => e is HorizonResultException h && HashError(h) || e is InvalidOperationException && e.Message.Contains("LinkedListEmpty");
     static int Damaged() {
         if (g_damaged.Count == 0) return 0;
         foreach (string p in g_damaged) Console.WriteLine($"[RED] hash check failed: {p}");
@@ -127,6 +144,7 @@ static class P {
             if (!xci.HasPartition(XciPartitionType.Secure)) throw new Exception($"no secure partition in {path}");
             pfs = xci.OpenPartition(XciPartitionType.Secure);
         } else {
+            CheckComplete(path, st0);
             var p = new PartitionFileSystem(); p.Initialize(st0).ThrowIfFailure(); pfs = p;
         }
         var ncas = new List<Nca>();
@@ -141,6 +159,17 @@ static class P {
             } else if (e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) ncas.Add(new Nca(ks, st));
         }
         return ncas;
+    }
+    // An NSP cut short (a copy or download that stopped early): its PFS0 header lists every file's offset and size, so the full length is known before anything is read
+    static void CheckComplete(string path, IStorage st) {
+        byte[] h = new byte[0x10]; st.Read(0, h).ThrowIfFailure(); st.GetSize(out long have).ThrowIfFailure();
+        if (h[0] != 'P' || h[1] != 'F' || h[2] != 'S' || h[3] != '0') throw new Exception($"{Path.GetFileName(path)} is not an NSP or XCI");
+        int n = BitConverter.ToInt32(h, 4), str = BitConverter.ToInt32(h, 8);
+        if (n <= 0 || n > 4096 || str < 0 || str > (1 << 20)) throw new Exception($"{Path.GetFileName(path)} has a damaged header");
+        byte[] t = new byte[0x18 * n]; st.Read(0x10, t).ThrowIfFailure();
+        long end = 0; for (int i = 0; i < n; i++) end = Math.Max(end, BitConverter.ToInt64(t, 0x18 * i) + BitConverter.ToInt64(t, 0x18 * i + 8));
+        long want = 0x10 + 0x18L * n + str + end;
+        if (have < want) throw new Exception($"{Path.GetFileName(path)} is incomplete: it has {have} of its {want} bytes ({have * 100.0 / want:F1}%)");
     }
     static bool IsPatch(Nca n) { try { return n.Header.GetFsHeader(1).IsPatchSection(); } catch { return false; } }
     static Version DisplayVersion(Nca c) {
@@ -203,7 +232,7 @@ static class P {
                 cloned++; continue;
             }
             try { Write(f.Get, op, e.Size, buf); }
-            catch (HorizonResultException x) when (HashError(x)) {
+            catch (Exception x) when (Damage(x)) {
                 g_damaged.Add(e.FullPath);
                 if (!g_allow || g_lenient == null) { File.Delete(op); continue; }
                 g_lenientFs ??= g_lenient();
@@ -235,7 +264,7 @@ static class P {
             fs.OpenFile(ref f.Ref, e.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
             long got = 0; int want = (int)Math.Min(h.Length, e.Size);
             try { if (want > 0) f.Get.Read(out got, 0, h.AsSpan(0, want), ReadOption.None).ThrowIfFailure(); }
-            catch (HorizonResultException x) when (HashError(x)) { g_damaged.Add(e.FullPath); got = 0; }   // the survey goes on; the file is listed as damaged
+            catch (Exception x) when (Damage(x)) { g_damaged.Add(e.FullPath); got = 0; }   // the survey goes on; the file is listed as damaged
             o.WriteLine($"{e.FullPath}\t{e.Size}\t{Convert.ToHexString(h, 0, (int)got).ToLowerInvariant()}");
             n++; bytes += e.Size;
         }

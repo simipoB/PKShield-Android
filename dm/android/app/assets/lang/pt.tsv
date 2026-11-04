@@ -230,3 +230,8 @@ none chosen	nada escolhido
 or	ou
 prod.keys from your own Switch (and title.keys if your dump needs it).	prod.keys do seu próprio Switch (e title.keys se o seu dump precisar).
 the phone's own Vulkan driver	o driver Vulkan do próprio celular
+Set up anyway	Configurar mesmo assim
+Set up anyway?	Configurar mesmo assim?
+The damaged parts of your files are kept as they are. The game may crash or show glitches where it uses them. Copying your files again in full is the real fix.	As partes danificadas dos seus arquivos ficam como estão. O jogo pode fechar ou mostrar falhas onde as usar. Copiar seus arquivos de novo por inteiro é a solução real.
+the copy of %s stopped early (%s of %s MB): choose it again, ideally from the phone's own storage	a cópia de %s parou antes do fim (%s de %s MB): escolha-o de novo, de preferência do armazenamento do próprio celular
+%s is incomplete: it holds %s of its %s MB. It was cut short while being copied or downloaded: copy the whole file again.	%s está incompleto: tem %s de seus %s MB. Foi cortado ao ser copiado ou baixado: copie o arquivo inteiro de novo.
