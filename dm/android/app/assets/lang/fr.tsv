@@ -230,3 +230,8 @@ none chosen	rien de choisi
 or	ou
 prod.keys from your own Switch (and title.keys if your dump needs it).	prod.keys de votre propre Switch (et title.keys si votre dump en a besoin).
 the phone's own Vulkan driver	le pilote Vulkan du téléphone
+Set up anyway	Installer quand même
+Set up anyway?	Installer quand même ?
+The damaged parts of your files are kept as they are. The game may crash or show glitches where it uses them. Copying your files again in full is the real fix.	Les parties endommagées de vos fichiers sont gardées telles quelles. Le jeu peut planter ou afficher des défauts là où il les utilise. Recopier vos fichiers en entier est la vraie solution.
+the copy of %s stopped early (%s of %s MB): choose it again, ideally from the phone's own storage	la copie de %s s'est arrêtée trop tôt (%s sur %s Mo) : choisissez-le à nouveau, de préférence depuis le stockage du téléphone
+%s is incomplete: it holds %s of its %s MB. It was cut short while being copied or downloaded: copy the whole file again.	%s est incomplet : il contient %s de ses %s Mo. Il a été coupé pendant la copie ou le téléchargement : recopiez le fichier en entier.

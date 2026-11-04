@@ -136,7 +136,7 @@ public final class SetupActivity extends Activity {
     // The setup screen, in the launcher's look: what a player sees first after installing. Three numbered steps (game files, keys, set up), then Play once the game is
     //   set up; the rest (which game, save data, the home screen shortcut, the graphics driver) under them, the driver folded away until asked for
     private float dp;
-    private LinearLayout more, saveBox; private Button clear;
+    private LinearLayout more, saveBox; private Button clear, anyway; private volatile boolean offerAnyway;
     private void setupScreen(boolean official) {
         dp = getResources().getDisplayMetrics().density;
         if (getActionBar() != null) getActionBar().hide();
@@ -167,11 +167,15 @@ public final class SetupActivity extends Activity {
         pill(c2, T.t(this, "Choose keys"), acc, 0xFFFFFFFF, v -> pick(PICK_KEYS, true));
         LinearLayout c3 = card(root, "3", T.t(this, "Set up"), acc);
         text(c3, T.t(this, "This takes a long time on a phone: keep this screen open, ideally plugged in."), 13, 0xFFA9AFBA, false);
-        setup = pill(c3, first ? T.t(this, "Set up the game") : T.t(this, "Set up again"), acc, 0xFFFFFFFF, v -> startSetup());
+        setup = pill(c3, first ? T.t(this, "Set up the game") : T.t(this, "Set up again"), acc, 0xFFFFFFFF, v -> startSetup(false));
         ((LinearLayout.LayoutParams) setup.getLayoutParams()).topMargin = px(10);
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(600); bar.setProgressTintList(android.content.res.ColorStateList.valueOf(acc));
         c3.addView(bar, new LinearLayout.LayoutParams(-1, -2));
         status = text(c3, "", 14, 0xFFF2F3F5, false); status.setPadding(0, px(8), 0, 0);
+        anyway = pill(c3, T.t(this, "Set up anyway"), 0xFF2A2E37, 0xFFF2F3F5, v -> new android.app.AlertDialog.Builder(this).setTitle(T.t(this, "Set up anyway?"))
+            .setMessage(T.t(this, "The damaged parts of your files are kept as they are. The game may crash or show glitches where it uses them. Copying your files again in full is the real fix."))
+            .setPositiveButton(T.t(this, "Set up anyway"), (d, w) -> startSetup(true)).setNegativeButton(T.t(this, "Cancel"), null).show());
+        ((LinearLayout.LayoutParams) anyway.getLayoutParams()).topMargin = px(8); anyway.setVisibility(android.view.View.GONE);
         play = pill(root, T.t(this, "Play"), acc, 0xFFFFFFFF, v -> startGame()); play.setTextSize(18);
         ((LinearLayout.LayoutParams) play.getLayoutParams()).topMargin = px(16);
         // the rest
@@ -425,14 +429,24 @@ public final class SetupActivity extends Activity {
         String n = name == null ? "" : name.toLowerCase(java.util.Locale.ROOT);
         if (n.endsWith(".nsz") || n.endsWith(".xcz")) return T.t(this, "%s is compressed (NSZ): decompress it to .nsp / .xci first, then choose that.", name);
         if (n.endsWith(".keys") || n.endsWith(".txt")) return T.t(this, "%s is not a game file: choose it under Your keys.", name);
-        byte[] h = new byte[0x104]; int got = 0;
+        byte[] h = new byte[0x10000]; int got = 0;
         try (InputStream in = getContentResolver().openInputStream(u)) {
             if (in == null) return null;   // (the copy or the setup says what is wrong)
             int r; while (got < h.length && (r = in.read(h, got, h.length - got)) > 0) got += r;
         } catch (IOException | SecurityException e) { return null; }
         boolean pfs0 = got >= 4 && h[0] == 'P' && h[1] == 'F' && h[2] == 'S' && h[3] == '0', xci = got >= 0x104 && h[0x100] == 'H' && h[0x101] == 'E' && h[0x102] == 'A' && h[0x103] == 'D';
-        return pfs0 || xci ? null : T.t(this, "%s is not a Switch game file (.nsp or .xci).", name);
+        if (!pfs0 && !xci) return T.t(this, "%s is not a Switch game file (.nsp or .xci).", name);
+        if (pfs0 && got >= 0x10) {   // the files it holds (offset, size) end where the NSP should: shorter, a copy or download stopped early
+            java.nio.ByteBuffer b = java.nio.ByteBuffer.wrap(h, 0, got).order(java.nio.ByteOrder.LITTLE_ENDIAN); int cnt = b.getInt(4), str = b.getInt(8);
+            if (cnt > 0 && 0x10 + 0x18L * cnt <= got && str >= 0) {
+                long end = 0; for (int i = 0; i < cnt; i++) end = Math.max(end, b.getLong(0x10 + 0x18 * i) + b.getLong(0x10 + 0x18 * i + 8));
+                long want = 0x10 + 0x18L * cnt + str + end, have = sizeOf(u);
+                if (have >= 0 && have < want) return T.t(this, "%s is incomplete: it holds %s of its %s MB. It was cut short while being copied or downloaded: copy the whole file again.", name, have >> 20, want >> 20);
+            }
+        }
+        return null;
     }
+    private long sizeOf(Uri u) { String p = pathOf(u); return p != null ? new File(p).length() : documentSize(u); }
     // the title ID in a dump's file name ([0100ABF008968000]), or -1
     private static long titleId(String path) {
         java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\[(0100[0-9A-Fa-f]{12})\\]").matcher(new File(path).getName());
@@ -525,6 +539,8 @@ public final class SetupActivity extends Activity {
                         while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
                     } catch (IOException | SecurityException e) { destination.delete(); throw e; }
                     if (!destination.isFile() || destination.length() == 0) { destination.delete(); throw new IOException("the selected file was empty or could not be copied: " + picked.name); }
+                    if (size >= 0 && destination.length() != size) { long got = destination.length(); destination.delete();
+                        throw new IOException(T.t(this, "the copy of %s stopped early (%s of %s MB): choose it again, ideally from the phone's own storage", picked.name, got >> 20, size >> 20)); }
                     copied.add(destination);
                 }
             } catch (IOException | SecurityException | IllegalArgumentException e) { error = e.getMessage(); }
@@ -632,8 +648,9 @@ public final class SetupActivity extends Activity {
         if (base == null && !dlc.isEmpty()) base = dlc.remove(0);
         List<String> a = new ArrayList<>(); a.add(base); a.add(upd); a.addAll(dlc); return a.toArray(new String[0]);
     }
-    private void startSetup() {
+    private void startSetup(boolean allowDamaged) {
         if (running || games.isEmpty()) return;
+        offerAnyway = false; anyway.setVisibility(android.view.View.GONE);
         String mixed = mixedGames(); if (mixed != null) { status.setText(mixed); return; }
         for (String g : games) if (!new File(g).canRead()) { status.setText(T.t(this, "Could not read %s.", new File(g).getName()) + " " + T.t(this, "Tap Clear and choose your files again.")); return; }
         bar.setMax(600); bar.setProgress(0); status.setText(T.t(this, "Preparing..."));
@@ -641,7 +658,9 @@ public final class SetupActivity extends Activity {
         cmd.add("--keys"); cmd.add(keysDir().getPath()); cmd.add("--base"); cmd.add(g[0]);
         if (g[1] != null) { cmd.add("--update"); cmd.add(g[1]); }
         for (int k = 2; k < g.length; k++) { cmd.add("--dlc"); cmd.add(g[k]); }
+        if (allowDamaged) cmd.add("--allow-damaged");
         runSetup(cmd, err -> {
+            if (err != null && offerAnyway) anyway.setVisibility(android.view.View.VISIBLE);
             bar.setProgress(err == null ? 600 : bar.getProgress());
             status.setText(err == null ? T.t(this, "Ready: tap Play.") : T.t(this, "Setup failed: %s", err) + "\n" + T.t(this, "The setup log is in Android/data/%s/files/setup_work.", getPackageName()));
             if (err == null) {
@@ -731,6 +750,7 @@ public final class SetupActivity extends Activity {
                         runOnUiThread(() -> { bar.setProgress((n - 1) * 100 + pct); status.setText(step(s) + "... " + pct + "%\n" + T.t(this, "This takes a long time on a phone: keep this screen open, ideally plugged in.")); }); }
                     else if (l.startsWith("GAME ")) { String id = l.substring(5).trim(); GameSettings.choose(this, id);
                         runOnUiThread(() -> status.setText(T.t(this, "Your files are %s: setting it up...", GameSettings.game(this)[1]))); }
+                    else if (l.startsWith("OFFER allow-damaged")) offerAnyway = true;
                     else if (l.startsWith("FAILED")) err = l.substring(6).trim(); } catch (RuntimeException e) { } }
                 if (p.waitFor() != 0 && err == null) err = "setup stopped (" + p.exitValue() + ")";
             } catch (Exception e) { err = e.toString(); if (p != null) p.destroy(); }
