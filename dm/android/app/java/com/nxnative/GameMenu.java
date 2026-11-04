@@ -251,7 +251,7 @@ public final class GameMenu {
             { "low", t(a, "Low"), t(a, "Low: handheld mode, 720p, lighter") }, { "auto", t(a, "Adaptive"), t(a, "Adaptive: High, Low while the phone is hot") } });
         if (GameSettings.has60(a)) choice(a, "DM_FPS_TARGET", t(a, "Frame rate"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s fps", p[5]) },
             { "30", "30 fps", t(a, "30 fps, as the game is made") }, { "60", "60 fps", GameSettings.paldea(a) ? t(a, "Up to 60 fps: faster where the phone can, game speed stays right (Fl4sh's Dynamic FPS mod)")
-                                                                                               : t(a, "60 fps (experimental: needs a fast phone)") } });
+                                                                                               : t(a, "60 fps: smoother; drops to 720p when needed to hold 60 (with Graphics on Auto or Adaptive)") } });
         if (GameSettings.paldea(a)) choice(a, "DM_SHADOWS", t(a, "Shadows"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", p[7].equals("2k") ? t(a, "Sharp") : t(a, "Standard")) },
             { "std", t(a, "Standard"), t(a, "Standard: 1024 × 1024, as the game is made") },
             { "2k", t(a, "Sharp"), t(a, "Sharp: 2048 × 2048 shadow maps, more GPU work (Fl4sh's 2K Shadows mod)") } });

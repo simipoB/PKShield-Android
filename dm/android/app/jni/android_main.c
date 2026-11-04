@@ -495,14 +495,43 @@ static const char *thermal_text(char *buf, size_t n) {
 // Graphics "auto": TV mode while the phone keeps cool; handheld mode (720p, lighter effects) once it is hot (thermal status severe or worse, or throttling forecast
 // within 10 s), back to TV mode after a minute below "moderate" with headroom to spare. The game switches as when a Switch leaves or enters its dock
 void dm_set_opmode(int m);   // host/hle_oe.c: tells the game the console mode changed
+// Frame-rate guard (DM_FPS_TARGET 60 and up, with Graphics on Auto or Adaptive; DM_FPS_GUARD=0 turns it off): the frames presented each 5 s against the target. Two
+//   checks in a row short of it (under 93 %) drop to handheld mode (720p, the game's lighter settings), which holds the rate where TV mode cannot; TV mode is tried
+//   again after a calm, steady spell, a minute the first time and twice as long after each fall back (up to 16 minutes), so a scene that cannot hold it does not
+//   flip between the two. Game speed stays right meanwhile (hle_nvn.c vstep_tick). Graphics on High or Low chosen by hand is left alone
+static int g_fps_guard;   // set at start (fps_guard_init): the target, 0 off
+static void fps_guard_init(void) {
+    const char *t = getenv("DM_FPS_TARGET"), *off = getenv("DM_FPS_GUARD"), *g = getenv("DM_GRAPHICS");
+    if (!t || !*t) t = getenv("DM_AUTO_FPS");   // (Frame rate on Auto: what the app chose for this phone)
+    int fps = t ? atoi(t) : 0;
+    if (fps < 60 || (off && !strcmp(off, "0")) || (g && (!strcmp(g, "high") || !strcmp(g, "low")))) return;   // (read before the phone's profile fills DM_GRAPHICS in)
+    g_fps_guard = fps; fprintf(stderr, "fps guard: %d fps target: handheld mode (720p) whenever TV mode falls short of it\n", fps);
+}
 static void graphics_auto(void) {
-    static int mode = 1, cool; const char *g = getenv("DM_GRAPHICS");
-    if (!g || strcmp(g, "auto") || !g_th_mgr || !g_th_st) return;
-    int st = g_th_st(g_th_mgr); float hr = g_th_hr ? g_th_hr(g_th_mgr, 10) : -1.0f;
-    int hot = st >= 3 || hr >= 0.95f, calm = st <= 1 && (hr < 0 || hr < 0.75f);
-    cool = calm ? cool + 1 : 0;
-    if (mode == 1 && hot) { mode = 0; dm_set_opmode(0); fprintf(stderr, "graphics auto: the phone is hot (status %d, headroom %.2f): handheld mode (720p)\n", st, hr); }
-    else if (mode == 0 && cool >= 12) { mode = 1; dm_set_opmode(1); fprintf(stderr, "graphics auto: cooled down: TV mode (1080p)\n"); }
+    static int mode = 1, cool, slow, held, wait = 12, primed; static uint64_t last_fr;
+    const char *g = getenv("DM_GRAPHICS");
+    if (!(g && !strcmp(g, "auto") && g_th_mgr && g_th_st) && !g_fps_guard) return;
+    int hot = 0, calm = 1;
+    if (g_th_mgr && g_th_st) { int st = g_th_st(g_th_mgr); float hr = g_th_hr ? g_th_hr(g_th_mgr, 10) : -1.0f;
+        hot = st >= 3 || hr >= 0.95f; calm = st <= 1 && (hr < 0 || hr < 0.75f); }
+    double fps = -1;
+    if (g_fps_guard && dm_nvn_frame_count) { uint64_t fr = dm_nvn_frame_count(); if (primed) fps = (fr - last_fr) / 5.0; last_fr = fr; primed = 1; }
+    int short_ = fps > 1 && fps < g_fps_guard * 0.93, full = fps >= g_fps_guard * 0.97;   // (no frames at all: a load or a pause, not a slow scene)
+    slow = short_ ? slow + 1 : 0;
+    cool = calm && (!g_fps_guard || full) ? cool + 1 : 0;
+    if (mode == 1) {
+        if (full) held++;
+        if (held >= 24) wait = 12;   // two minutes held in TV mode: the next fall back waits a minute again
+        if (hot || slow >= 2) {
+            if (!hot && held < 24 && wait < 192) wait *= 2;   // fell back soon after trying TV mode again: wait twice as long next time
+            mode = 0; dm_set_opmode(0); cool = 0; held = 0;
+            if (hot) fprintf(stderr, "graphics auto: the phone is hot: handheld mode (720p)\n");
+            else fprintf(stderr, "fps guard: %.1f fps, short of %d: handheld mode (720p); TV mode again after %d s steady\n", fps, g_fps_guard, wait * 5);
+        }
+    } else if (cool >= wait) {
+        mode = 1; dm_set_opmode(1); slow = 0; held = 0;
+        fprintf(stderr, "graphics auto: %s: TV mode (1080p)\n", g_fps_guard ? "steady and cool" : "cooled down");
+    }
 }
 static void pin_update(void);
 static void *log_mirror(void *p) {
@@ -581,6 +610,7 @@ static void host_start(void) {
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
     { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);
+    fps_guard_init();   // (before the phone profile: Graphics chosen by hand only)
     device_profile();   // the chip tier's defaults, under env.txt
     // Game files: inside the installed APKs (the all-in-one .apks bundle, read through apkfs.c as /nxapk/...), else copied into the files folder
     struct stat st; int inapk = !stat("/nxapk/RomFS", &st);

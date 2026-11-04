@@ -240,3 +240,4 @@ Shadows	Sombras
 Standard	Padrão
 Standard: 1024 × 1024, as the game is made	Padrão: 1024 × 1024, como o jogo original
 Sharp: 2048 × 2048 shadow maps, more GPU work (Fl4sh's 2K Shadows mod)	Nítidas: mapas de sombra 2048 × 2048, mais trabalho para a GPU (mod 2K Shadows de Fl4sh)
+60 fps: smoother; drops to 720p when needed to hold 60 (with Graphics on Auto or Adaptive)	60 fps: mais fluido; cai para 720p quando preciso para manter 60 (com Gráficos em Auto ou Adaptável)
