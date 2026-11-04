@@ -419,6 +419,9 @@ public final class GameMenu {
         heading(a, t(a, "Language"));
         String[][] l = new String[T.LANGS.length][]; for (int i = 0; i < l.length; i++) l[i] = new String[] { T.LANGS[i][0], i == 0 ? t(a, "Auto") : T.LANGS[i][1], i == 0 ? t(a, "Auto (the phone's language)") : "" };
         choice(a, "DM_LANG", t(a, "Language"), l);
+        heading(a, t(a, "Background"));
+        choice(a, "DM_BACKGROUND", t(a, "Leaving the game"), new String[][] { { "", t(a, "Keep playing"), t(a, "Keep playing: the game and its sound go on in the background") },
+            { "off", t(a, "Pause"), t(a, "Pause: the game stops while it is not on screen") } });
     }
     // the graphics driver: the phone's own, an installed package (Turnip, PanVK...), a new package from the file picker, or the releases page for this GPU; from the next start
     private static void driver(Activity a) {

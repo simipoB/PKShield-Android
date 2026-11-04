@@ -198,9 +198,12 @@ void touch_ui_setting(const char *key, const char *value);
 void touch_ui_edit(void);
 // GameMenu.java: a setting changed while playing (it also writes env.txt for the next start). The ones the game can take at once go to their owners here, never through
 // setenv (other threads read the environment meanwhile); the rest wait for the next start. Returns whether it took effect now
+static int g_bg_off = -1;   // DM_BACKGROUND=off: pause in the background (default: keep playing); the settings panel changes it at once
+static int bg_play(void) { if (g_bg_off < 0) { const char *e = getenv("DM_BACKGROUND"); g_bg_off = e && !strcmp(e, "off"); } return !g_bg_off; }
 JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env, jclass c, jstring jk, jstring jv) {
     (void)c; const char *k = (*env)->GetStringUTFChars(env, jk, NULL), *v0 = (*env)->GetStringUTFChars(env, jv, NULL); const char *v = *v0 ? v0 : NULL; int now = 1;
-    if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE")) touch_ui_setting(k, v);
+    if (!strcmp(k, "DM_BACKGROUND")) g_bg_off = v && !strcmp(v, "off");
+    else if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE")) touch_ui_setting(k, v);
     else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
     else if (!strcmp(k, "DM_SCALER")) { extern volatile int dm_scaler_mode; if (!v || !*v) v = getenv("DM_AUTO_SCALER"); dm_scaler_mode = v && !strcmp(v, "sgsr") ? 1 : v && !strcmp(v, "smooth") ? 2 : 0; }   // (Auto: the app's pick)
     else if (!strcmp(k, "DM_SCALER_SHARPNESS")) { extern volatile float dm_scaler_sharpness; dm_scaler_sharpness = !v || !strcmp(v, "sharp") ? 0.7f : !strcmp(v, "smooth") ? -1.0f : (float)atof(v); }   // nvn_vk.c scale_draw
@@ -700,8 +703,10 @@ static void on_cmd(struct android_app *app, int32_t cmd) {
         case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); host_start(); window_rate(app->window); break;   // (after host_start: env.txt and the Auto settings decide the rate)
         case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); if (g_started && nvn_vk_window_term) nvn_vk_window_term(); break;
         case APP_CMD_GAINED_FOCUS: immersive(); if (g_started) { dm_focus_set(1); dm_audio_suspend(0); } break;
-        case APP_CMD_LOST_FOCUS: if (g_started) { dm_focus_set(2); } break;
-        case APP_CMD_PAUSE: if (g_started) { dm_focus_set(3); dm_audio_suspend(1); if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;
+        // In the background (recents, home, another app) the game keeps running with its sound, as a Switch game does under the HOME menu with a suspend-free
+        //   setting: it is not told it lost focus (it would pause itself), and frames are simply not shown while there is no window. DM_BACKGROUND=off pauses it as before
+        case APP_CMD_LOST_FOCUS: if (g_started && !bg_play()) { dm_focus_set(2); } break;
+        case APP_CMD_PAUSE: if (g_started) { if (!bg_play()) { dm_focus_set(3); dm_audio_suspend(1); } if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;
         case APP_CMD_RESUME: if (g_started) { dm_focus_set(1); dm_audio_suspend(0); swapin_start(); } break;
     }
 }

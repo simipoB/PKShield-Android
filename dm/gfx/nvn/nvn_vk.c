@@ -2275,7 +2275,17 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
 }
 
 // ================= Draws =================
+// DM_VK_PROF: where the replay's CPU time goes per draw (pass + pipeline, dynamic state + vertex streams, descriptors, flush + draw), logged every 300 presents
+static int g_vprof = -1; static uint64_t g_vp_t[4], g_vp_n;
+#define VPROF_ON (g_vprof < 0 ? (g_vprof = getenv("DM_VK_PROF") != NULL) : g_vprof)
+static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark);
 static void draw(const p_draw *dw, const p_draw_idx *di) {
+    if (!VPROF_ON) { draw_(dw, di, NULL); return; }
+    uint64_t m[5] = { mono_ns(), 0, 0, 0, 0 }; draw_(dw, di, m); uint64_t e = mono_ns();
+    for (int i = 0; i < 4; i++) { uint64_t a = m[i], b = m[i + 1] ? m[i + 1] : e; if (b > a) g_vp_t[i] += b - a; if (!m[i + 1]) break; }
+    g_vp_n++;
+}
+static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark) {
     g_draw_binst = (uint32_t)(dw ? dw->base_instance : di ? di->base_instance : 0);
     if ((dw && dw->mdi_cnt) || (di && di->mdi_cnt)) { uint64_t a = dw ? dw->mdi_cnt : di->mdi_cnt; int i = dw ? dw->mdi_i : di->mdi_i; uint32_t n = 0; memcpy(&n, (const void *)(uintptr_t)a, 4); if ((uint32_t)i >= n) return; }
     if (!S.prog) { RED_ONCE(33, "draw with no program bound"); return; }
@@ -2304,7 +2314,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     int prim = dw ? dw->prim : di->prim; VkPrimitiveTopology topo = topo_of(prim);
     VkPipeline p = pso_get(pr, topo); if (!p) return;
     if (TD_TRACE) VLOG("[trace] draw vs %s fs %s blend_en %#x", pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-", (unsigned)S.color.blend_en);
-    VkCommandBuffer cb = CB();
+    VkCommandBuffer cb = CB(); if (mark) mark[1] = mono_ns();
     { static VkCommandBuffer bcb; static VkPipeline bp; static uint64_t bfence;   // the same pipeline already bound in this command buffer: no rebind (Vulkan keeps it across passes)
       static int off = -1; if (off < 0) off = getenv("DM_VK_BIND_ALWAYS") != NULL;
       if (off || cb != bcb || bp != p || bfence != g_sub->fence) { vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p); bcb = cb; bp = p; bfence = g_sub->fence; } }
@@ -2344,8 +2354,10 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
         vs_[s_] = S.stream[s_].stride; }
     vb[16] = g_zero_buf; vo[16] = 0; vs_[16] = 0;
     vkCmdBindVertexBuffers2(cb, 0, 17, vb, vo, NULL, vs_);
+    if (mark) mark[2] = mono_ns();
     VkPipelineLayout pl = prog_layout(pr, 0); g_np = pr->np[0];
     for (int st = 0; st < 5; st++) push_stage(pr->sh[st], st, VK_PIPELINE_BIND_POINT_GRAPHICS, pl);
+    if (mark) mark[3] = mono_ns();
     if (tfcap) {   // the capture buffers, then the draw, then its writes made visible to what reads them (vertex streams, shaders, copies)
         VkWriteDescriptorSet w_[4]; VkDescriptorBufferInfo bi_[4]; uint32_t nw = 0;
         VkWriteDescriptorSet *w = w_; VkDescriptorBufferInfo *bi = bi_;
@@ -3115,6 +3127,10 @@ static void mem_report(void) {
 __attribute__((weak)) void front_frame_work(uint64_t busy_ns, uint64_t target_ns) { (void)busy_ns; (void)target_ns; }   // (no front end report: nothing)
 uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     uint64_t n = atomic_fetch_add(&g_present_n, 1) + 1;
+    if (VPROF_ON && n % 300 == 0 && g_vp_n) { double f = 300.0 * 1e6;
+        VLOG("[prof] replay per frame: %.0f draws; pass + pipeline %.2f ms, dynamic state + vertex %.2f ms, descriptors %.2f ms, flush + draw %.2f ms (%.1f us a draw)", g_vp_n / 300.0,
+             g_vp_t[0] / f, g_vp_t[1] / f, g_vp_t[2] / f, g_vp_t[3] / f, (g_vp_t[0] + g_vp_t[1] + g_vp_t[2] + g_vp_t[3]) / 1e3 / (double)g_vp_n);
+        memset(g_vp_t, 0, sizeof g_vp_t); g_vp_n = 0; }
     static uint64_t g_present_exit;   // when the last present returned (after its pacing sleep): from there to this call is the frame's work
     if (g_present_exit && period_s > 0) front_frame_work(mono_ns() - g_present_exit, (uint64_t)(period_s * 1e9));
     static long shots[256]; static int nshot = -1; static const char *shot_path;
