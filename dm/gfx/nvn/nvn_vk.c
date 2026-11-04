@@ -983,7 +983,7 @@ static vtex *tex_new(const tex_t *t, int pkg) {
     ci.extent = (VkExtent3D){ t->d.width ? t->d.width : 1, t->d.height ? t->d.height : 1, 1 };
     switch (t->d.target) {
         case 0: ci.extent.height = 1; break;                                                   // 1D as one-row 2D (as nvn_mtl.m)
-        case 2: ci.imageType = VK_IMAGE_TYPE_3D; ci.extent.depth = t->d.depth ? t->d.depth : 1; ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT; x->is3d = 1; break;
+        case 2: ci.imageType = VK_IMAGE_TYPE_3D; ci.extent.depth = t->d.depth ? t->d.depth : 1; ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT; x->is3d = 1; break;   // (2D-array compatible: rendered into slice by slice, att_view)
         case 3: ci.arrayLayers = t->d.height ? t->d.height : 1; ci.extent.height = 1; break;
         case 4: ci.arrayLayers = t->d.depth ? t->d.depth : 1; break;
         case 5: ci.samples = (VkSampleCountFlagBits)(t->d.samples ? t->d.samples : 1); ci.mipLevels = 1; break;
@@ -1059,6 +1059,7 @@ static VkImageView view_get(vtex *t, VkImageViewType vt, VkFormat fmt, uint32_t 
     pthread_mutex_lock(&t->vmu);
     for (int i = 0; i < t->nviews; i++) if (!memcmp(&t->views[i].k, &k, sizeof k)) { VkImageView v = t->views[i].v; pthread_mutex_unlock(&t->vmu); return v; }
     VkImageViewUsageCreateInfo uci = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO, .usage = t->usage };
+    if (t->is3d && (vt == VK_IMAGE_VIEW_TYPE_2D || vt == VK_IMAGE_VIEW_TYPE_2D_ARRAY)) uci.usage &= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;   // a 2D(-array) view of a 3D image is for rendering only
     // a view in a format whose features lack some of the image's usages (sRGB views of a storage image): the view only gets what its format supports
     if (fmt != t->fmt) { VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_pd, fmt, &fp); VkFormatFeatureFlags ff = fp.optimalTilingFeatures;
         if (!(ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) uci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT;
@@ -1204,6 +1205,15 @@ static vtex *tex_res(const tex_t *t) {
     }
     alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = (uint64_t)(uintptr_t)t->pool; ak.off = t->off; ak.d = t->d;
     vtex *shared = nvn_hm_get(&g_alias, &ak);
+    // No exact match: a texture object over the same memory with the same size and format but other flags / levels (Violet renders its 3D scene into a render target and its UI samples
+    //   that memory through a second texture object made without the render-target flags: as a new image it read black, and the academy video and the ID photo came out black)
+    if (!shared) for (uint32_t i = 0; i < g_alias.cap && !shared; i++) {
+        if (!g_alias.vals[i]) continue;
+        alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
+        if (k.pool != ak.pool || k.off != ak.off || k.d.width != t->d.width || k.d.height != t->d.height || k.d.depth != t->d.depth || k.d.format != t->d.format || k.d.target != t->d.target) continue;
+        vtex *c = (vtex *)g_alias.vals[i]; if (!(c->usage & VK_IMAGE_USAGE_SAMPLED_BIT)) continue;
+        shared = c; static int said; if (!said++) VLOG("texture over a render target's memory with other flags (%#x vs %#x, %ux%u format %#x): sharing its image", t->d.flags, k.d.flags, t->d.width, t->d.height, t->d.format);
+    }
     if (shared) { serial_put(t->serial, shared); pthread_mutex_unlock(&g_smu); return shared; }
     vtex *x = tex_new(t, 0);
     if (!x) { pthread_mutex_unlock(&g_smu); return NULL; }
@@ -1741,6 +1751,7 @@ static int format_supports_attachment(VkFormat f, VkImageUsageFlags usage, VkFor
     return 1;
 }
 // the attachment view of a render target: one level, one layer (3D: one depth slice through a 2D-array view is not available, the slice is taken as layer 0 — first case reported)
+static uint32_t g_att_layers = 1;   // att_view: how many layers the view it returned has (a 3D target's slices)
 static VkImageView att_view(const tex_t *t, const view_t *v, int has_v, vtex **out, uint32_t *w, uint32_t *h) {
     vtex *x = tex_res(t); *out = x;
     if (!x || !x->img) {
@@ -1758,8 +1769,8 @@ static VkImageView att_view(const tex_t *t, const view_t *v, int has_v, vtex **o
         return VK_NULL_HANDLE;
     }
     uint32_t lv = has_v && v->set_levels ? v->base_level : 0, ly = has_v && v->set_layers ? v->min_layer : 0;
-    if (x->is3d) { if (ly) RED_ONCE(20, "render target is a slice of a 3D texture: not supported yet"); ly = 0; }
-    if (lv >= x->levels || ly >= x->layers) return VK_NULL_HANDLE;
+    g_att_layers = 1;
+    if (lv >= x->levels || (!x->is3d && ly >= x->layers)) return VK_NULL_HANDLE;
     if (x->cube_ok) { static uint64_t said[32]; static int nsaid; int seen = 0; uint64_t key = t->serial << 8 | ly << 4 | lv;
         for (int q = 0; q < nsaid; q++) if (said[q] == key) seen = 1;
         if (!seen && nsaid < 32) { said[nsaid++] = key; VLOG("render target: cube texture ser %llu level %u layer %u, view layers %u (set %d)", (unsigned long long)t->serial, lv, ly,
@@ -1784,14 +1795,26 @@ static VkImageView att_view(const tex_t *t, const view_t *v, int has_v, vtex **o
         }
     }
     *w = x->w >> lv ? x->w >> lv : 1; *h = x->h >> lv ? x->h >> lv : 1;
-    return view_get(x, x->is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D, f, lv, 1, ly, 1, SW_ID, x->aspect);
+    // A 3D target: all its slices at that level as a 2D array, the pass layered over them (the shader picks the slice with gl_Layer). Violet fills its 32x32x32 colour-grading
+    //   table so, in one instanced draw; with slice 0 alone attached the other 31 stayed zero, tone mapping looked them up, and every 3D scene came out black
+    static int flat = -1; if (flat < 0) flat = getenv("DM_VK_NO_LAYERED_3D") != NULL;   // DM_VK_NO_LAYERED_3D: slice 0 only, as before (to compare)
+    if (x->is3d && flat) return view_get(x, VK_IMAGE_VIEW_TYPE_2D_ARRAY, f, lv, 1, 0, 1, SW_ID, x->aspect);
+    if (x->is3d) { uint32_t dz = x->d >> lv ? x->d >> lv : 1; if (ly >= dz) return VK_NULL_HANDLE; g_att_layers = dz - ly;
+        return view_get(x, VK_IMAGE_VIEW_TYPE_2D_ARRAY, f, lv, 1, ly, dz - ly, SW_ID, x->aspect); }
+    return view_get(x, VK_IMAGE_VIEW_TYPE_2D, f, lv, 1, ly, 1, SW_ID, x->aspect);
 }
 // DM_NVN_TEXDUMP=frame:path (as nvn_mtl.m): every colour render target that frame uses, saved once the frame is over as <path with %d = index * 100 + level> (PNG, clamped to [0,1])
 static long g_td_frame = -2; static const char *g_td_path; static int g_td_done;
 static struct { vtex *x; uint64_t ser; uint32_t lv, sl; } g_td[256]; static int g_ntd;
 static void shot_level(vtex *x, uint32_t lv, uint32_t sl, const char *path);
+// the dumped frame also logs its passes, draws and sampled textures (which pass reads what), for a picture that comes out wrong
+#define TD_TRACE (g_td_frame >= 0 && !g_td_done && (long)g_frame_no == g_td_frame)
 static void td_note(vtex *x, uint64_t ser, uint32_t lv, uint32_t sl) {
     if (g_td_frame == -2) { const char *e = getenv("DM_NVN_TEXDUMP"), *c = e ? strchr(e, ':') : NULL; g_td_frame = c ? atol(e) : -1; g_td_path = c ? c + 1 : NULL; }
+    // DM_NVN_TEXDUMP_NOW=file:path: when that file appears (looked for every 30 frames), the next frame is dumped to path and the file removed (a scene reached by playing, at no known frame)
+    { static const char *nowf, *nowp; static int init; static uint64_t last;
+      if (!init) { init = 1; const char *e = getenv("DM_NVN_TEXDUMP_NOW"), *c = e ? strchr(e, ':') : NULL; if (c) { static char f[512]; snprintf(f, sizeof f, "%.*s", (int)(c - e), e); nowf = f; nowp = c + 1; } }
+      if (nowf && g_td_frame < 0 && g_frame_no - last >= 30) { last = g_frame_no; if (!access(nowf, F_OK)) { unlink(nowf); g_td_frame = (long)g_frame_no + 1; g_td_path = nowp; g_td_done = 0; g_ntd = 0; } } }
     if (g_td_frame < 0 || g_td_done) return;
     if ((long)g_frame_no > g_td_frame) {
         g_td_done = 1; pass_end(); uint64_t f = mtl_sub_commit(); mtl_wait(f, UINT64_MAX); mtl_sub_begin();
@@ -1815,21 +1838,24 @@ static int pass_begin(void) {
     if (P.open) return 1;
     if (!R.has_rt) { RED_ONCE(21, "draw with no render target set"); return 0; }
     VkRenderingAttachmentInfo ca[8]; VkRenderingAttachmentInfo da = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }, sa = da;
-    memset(&P, 0, sizeof P); uint32_t tw = 16384, th = 16384; int any = 0, ncol = 0;
+    memset(&P, 0, sizeof P); uint32_t tw = 16384, th = 16384, nlay = 0; int any = 0, ncol = 0;   // nlay: the fewest layers of the attachments (a layered pass over a 3D target)
     for (int i = 0; i < 8; i++) { ca[i] = (VkRenderingAttachmentInfo){ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; }
     for (int i = 0; i < R.rt.n && i < 8; i++) {
         if (!R.rt.color[i] || rt_dup_slot(&R.rt, i)) continue;
         vtex *x; uint32_t w, h; VkImageView v = att_view(R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i], &x, &w, &h);
         if (!v || !(x->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) continue;
+        if (!nlay || g_att_layers < nlay) nlay = g_att_layers;
         ca[i].imageView = v; ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL; ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         ca[i].loadOp = R.clear_c[i] ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; ca[i].clearValue.color = R.cc[i];
         VkFormat f = x->fmt; if (R.rt.has_cview[i] && R.rt.cview[i].set_format) { uint32_t vf = 0; uint8_t s[4]; if (nvn_fmt_to_vk(R.rt.cview[i].format, &vf, s) && vf) f = (VkFormat)vf; }
         P.cfmt[i] = (uint32_t)f; P.samples = x->samples; if (w < tw) tw = w; if (h < th) th = h; any = 1; ncol = i + 1;
+        if (TD_TRACE) VLOG("[trace] pass colour %d ser=%llu %ux%u fmt %d %s", i, (unsigned long long)R.rt.color[i]->serial, w, h, (int)x->fmt, R.clear_c[i] ? "clear" : "load");
         td_note(x, R.rt.color[i]->serial, R.rt.has_cview[i] && R.rt.cview[i].set_levels ? R.rt.cview[i].base_level : 0, R.rt.has_cview[i] && R.rt.cview[i].set_layers ? R.rt.cview[i].min_layer : 0);
     }
     if (R.rt.depth) {
         vtex *x; uint32_t w, h; VkImageView v = att_view(R.rt.depth, &R.rt.dview, R.rt.has_dview, &x, &w, &h);
         if (v && (x->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
+            if (!nlay || g_att_layers < nlay) nlay = g_att_layers;
             if (x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) { da.imageView = v; da.imageLayout = VK_IMAGE_LAYOUT_GENERAL; da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                 da.loadOp = R.clear_d ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; da.clearValue.depthStencil.depth = R.cd; P.hd = 1; P.dfmt = (uint32_t)x->fmt; }
             if (x->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) { sa.imageView = v; sa.imageLayout = VK_IMAGE_LAYOUT_GENERAL; sa.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1855,7 +1881,7 @@ static int pass_begin(void) {
     if (!P.samples) P.samples = 1;
     P.tw = tw; P.th = th; P.ncolor = ncol;
     barrier_all(CB());
-    VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {tw, th}}, .layerCount = 1, .colorAttachmentCount = (uint32_t)ncol, .pColorAttachments = ca,
+    VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {tw, th}}, .layerCount = nlay ? nlay : 1, .colorAttachmentCount = (uint32_t)ncol, .pColorAttachments = ca,
                            .pDepthAttachment = P.hd ? &da : NULL, .pStencilAttachment = P.hs ? &sa : NULL };
     vkCmdBeginRendering(CB(), &ri); g_stat_begins++;
     memset(R.clear_c, 0, sizeof R.clear_c); R.clear_d = R.clear_s = 0;
@@ -2183,6 +2209,8 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
                     else if (h->what == W_SSBO) u = h->reg < 16 ? &S.ssbo[st][h->reg] : NULL;
                     if (u) { addr = u->addr; size = u->size; }
                     if (h->what == W_SBUFU) { uint32_t lo = ubo_word(st, h->reg, h->off), hi = ubo_word(st, h->reg, h->off + 4); addr = (uint64_t)hi << 32 | lo; size = 0; }
+                    if (TD_TRACE) { float f[8] = {0}; if (addr) memcpy(f, (const void *)(uintptr_t)addr, sizeof f);
+                        VLOG("[trace]   %s %s stage %d reg %d at %#llx size %llu: %g %g %g %g %g %g %g %g", r->kind == SPV_RES_UBO ? "uniform" : "storage", r->name, st, h->reg, (unsigned long long)addr, (unsigned long long)size, f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]); }
                     VkBuffer pb; VkDeviceSize po, left;
                     if (addr && pool_buf(addr, 1, &pb, &po, &left)) {
                         VkDeviceSize al = r->kind == SPV_RES_UBO ? g_props.limits.minUniformBufferOffsetAlignment : g_props.limits.minStorageBufferOffsetAlignment;
@@ -2195,10 +2223,22 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
                             if (want > 65536) want = 65536;   // the translated shaders declare 64 KB uniform blocks: never more to copy (MoltenVK reports a range of gigabytes)
                             uint8_t *d = arena_alloc(g_sub, want, &b, &o); memcpy(d, (const void *)(uintptr_t)addr, want); n = want;
                             RED_ONCE(29, "uniform buffer at pool offset %#llx is not %llu-aligned: bound as a snapshot", (unsigned long long)po, (unsigned long long)al);
-                        } else if (!h->rw) {   // misaligned read-only storage data (Adreno wants 64, the Switch less): a snapshot as for uniforms, not zeros
+                        } else if (!h->rw) {   // misaligned read-only storage data (Adreno wants 64, the Switch less): copied on the GPU, in order, to an aligned arena slot
+                            // A snapshot of guest memory taken here missed what the GPU wrote earlier in the submission: Violet's tone mapping reads its exposure that way
+                            //   (written by a pass in the same frame), read zeros, and every 3D scene came out black (the academy video, the ID photo). The copy runs between
+                            //   render passes: the open one is ended and opened again (its clears were taken when it first began, so it reopens loading)
                             VkDeviceSize m = size && size < want ? size : want; if (m > (size ? 1u << 20 : 65536u)) m = size ? 1u << 20 : 65536u;
-                            uint8_t *d = arena_alloc(g_sub, m, &b, &o); memcpy(d, (const void *)(uintptr_t)addr, m); n = m;
-                            RED_ONCE(30, "storage buffer at pool offset %#llx is not %llu-aligned: bound as a snapshot", (unsigned long long)po, (unsigned long long)al);
+                            static int snap = -1; if (snap < 0) snap = getenv("DM_VK_SSBO_GPU_COPY") == NULL;   // the CPU snapshot unless DM_VK_SSBO_GPU_COPY (that copy lost the device on an Adreno 830 at Violet's enrollment screen: experimental)
+                            if (snap) { uint8_t *d = arena_alloc(g_sub, m, &b, &o); memcpy(d, (const void *)(uintptr_t)addr, m); n = m; } else {
+                            (void)arena_alloc(g_sub, m, &b, &o); n = m;
+                            int reopen = P.open && bp == VK_PIPELINE_BIND_POINT_GRAPHICS; VkCommandBuffer ccb = CB(); pass_end();
+                            VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT };
+                            vkCmdPipelineBarrier(ccb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+                            VkBufferCopy bc = { po, o, m }; vkCmdCopyBuffer(ccb, pb, b, 1, &bc);
+                            mb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                            vkCmdPipelineBarrier(ccb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+                            if (reopen) pass_begin(); }
+                            RED_ONCE(30, "storage buffer at pool offset %#llx is not %llu-aligned: %s", (unsigned long long)po, (unsigned long long)al, snap ? "bound as a snapshot" : "copied on the GPU to an aligned slot");
                         } else RED_ONCE(32, "writable storage buffer at pool offset %#llx is not %llu-aligned: bound to zeros", (unsigned long long)po, (unsigned long long)al);
                         if (r->kind == SPV_RES_SSBO && h->rw) wb_note(addr, size ? size : (want < 65536 ? want : 65536));   // a writable storage buffer: its bound range comes back (mirrored pools)
                     } else if (h->what != W_NONE && addr) RED_ONCE(31, "stage %d %s slot %d at %#llx is in no memory pool", st, r->kind == SPV_RES_UBO ? "uniform" : "storage", h->reg, (unsigned long long)addr);
@@ -2215,6 +2255,7 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
                 else if (h->skind == S_UBO) sid = (int)(ubo_word(st, h->sreg, h->soff) >> 20);
                 else if (h->skind == S_ID) sid = h->sreg;
                 VkImageView v = tid ? tex_view_for(tid, r, storage) : VK_NULL_HANDLE;
+                if (TD_TRACE) VLOG("[trace]   %s %s tid %d ser=%llu%s", storage ? "image" : "texture", r->name, tid, tid > 0 && tid < g_ntreg && g_treg[tid].ok ? (unsigned long long)g_treg[tid].t.serial : 0ull, v ? "" : " (no view: dummy)");
                 if (!v) v = dummy_view(r, storage);
                 VkSampler smp = storage ? VK_NULL_HANDLE : (tid && tex_is_int(tid) ? samp_nearest_by_id(sid) : samp_by_id(sid)); if (!storage && !smp) smp = g_dummy_samp;
                 ii[nw] = (VkDescriptorImageInfo){ smp, v, VK_IMAGE_LAYOUT_GENERAL }; w[nw].pImageInfo = &ii[nw]; nw++; break;
@@ -2262,6 +2303,7 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (tfcap) tf_pass_begin(); else if (!pass_begin()) return;
     int prim = dw ? dw->prim : di->prim; VkPrimitiveTopology topo = topo_of(prim);
     VkPipeline p = pso_get(pr, topo); if (!p) return;
+    if (TD_TRACE) VLOG("[trace] draw vs %s fs %s blend_en %#x", pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-", (unsigned)S.color.blend_en);
     VkCommandBuffer cb = CB();
     { static VkCommandBuffer bcb; static VkPipeline bp; static uint64_t bfence;   // the same pipeline already bound in this command buffer: no rebind (Vulkan keeps it across passes)
       static int off = -1; if (off < 0) off = getenv("DM_VK_BIND_ALWAYS") != NULL;
@@ -2270,6 +2312,9 @@ static void draw(const p_draw *dw, const p_draw_idx *di) {
     float vx = 0, vy = 0, vw = (float)P.tw, vh = (float)P.th;
     if (S.has_vp) { vx = S.vp[0][0]; vy = S.vp[0][1]; vw = S.vp[0][2]; vh = S.vp[0][3]; }
     VkViewport v = { vx, vy, vw, vh, S.dr[0], S.dr[1] };
+    { static int on = -1, n; static float seen[48][6]; if (on < 0) on = getenv("DM_VK_LOG_VP") != NULL;   // DM_VK_LOG_VP: the first distinct viewports (with the target size) the game draws with
+      if (on && n < 48) { float k[6] = { vx, vy, vw, vh, (float)P.tw, (float)P.th }; int i; for (i = 0; i < n && memcmp(seen[i], k, sizeof k); i++) {}
+        if (i == n) { memcpy(seen[n++], k, sizeof k); VLOG("viewport %g,%g %gx%g depth %g..%g on a %ux%u target (scissor %s %d,%d %ux%u)", vx, vy, vw, vh, S.dr[0], S.dr[1], P.tw, P.th, R.has_sc ? "set" : "none", R.sc.x, R.sc.y, R.sc.w, R.sc.h); } } }
     if (!atomic_load(&g_origin_ll)) { v.y = vy + vh; v.height = -vh; }   // NVN upper-left: NDC +1 on the first row (Vulkan puts -1 there)
     if (v.minDepth < 0) v.minDepth = 0; if (v.minDepth > 1) v.minDepth = 1; if (v.maxDepth < 0) v.maxDepth = 0; if (v.maxDepth > 1) v.maxDepth = 1;
     vkCmdSetViewport(cb, 0, 1, &v);
@@ -2654,7 +2699,8 @@ static void shot_ex(vtex *x, const int crop[4], const char *path, uint32_t lv, u
     barrier_all(cb);
     VkBufferImageCopy rg = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, .imageExtent = { w, h, 1 } }; vkCmdCopyImageToBuffer(cb, im, VK_IMAGE_LAYOUT_GENERAL, b, 1, &rg);
     once_end(cb);
-    for (uint32_t i = 0; i < w * h; i++) { uint8_t *q = (uint8_t *)m + 4 * i; if (bgra8) { uint8_t t = q[0]; q[0] = q[2]; q[2] = t; } q[3] = 255; }
+    static int keep_a = -1; if (keep_a < 0) keep_a = getenv("DM_NVN_TEXDUMP_ALPHA") != NULL;   // DM_NVN_TEXDUMP_ALPHA: the real alpha channel (default opaque, to look at)
+    for (uint32_t i = 0; i < w * h; i++) { uint8_t *q = (uint8_t *)m + 4 * i; if (bgra8) { uint8_t t = q[0]; q[0] = q[2]; q[2] = t; } if (!keep_a) q[3] = 255; }
     png_write(path, m, w, h, atomic_load(&g_origin_ll));
     vkDestroyImage(g_dev, im, NULL); vk_free(ia); vkDestroyBuffer(g_dev, b, NULL); vk_free(ba);
     VLOG("screenshot %s (%ux%u)", path, w, h);
