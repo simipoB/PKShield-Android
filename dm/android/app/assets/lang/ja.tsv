@@ -195,3 +195,38 @@ translate %s shaders	シェーダー%s個を変換
 translate the shaders	シェーダーを変換
 unpack the game	ゲームを展開
 warm	やや高温
+%s is compressed (NSZ): decompress it to .nsp / .xci first, then choose that.	%s は圧縮されています (NSZ)。先に .nsp / .xci に展開してから、そちらを選んでください。
+%s is not a Switch game file (.nsp or .xci).	%s は Switch のゲームファイル (.nsp または .xci) ではありません。
+%s is not a game file: choose it under Your keys.	%s はゲームファイルではありません。「鍵」で選んでください。
+%s is not a key file: choose prod.keys (and title.keys).	%s は鍵ファイルではありません。prod.keys (と title.keys) を選んでください。
+(kept in the app's private storage)	(アプリ専用の保存領域に保管)
+Background	バックグラウンド
+Change the driver (only if the game does not start)	ドライバーを変更 (ゲームが起動しない場合のみ)
+Choose	選択
+Choose game files	ゲームファイルを選択
+Choose keys	鍵を選択
+Clear	クリア
+Could not read %s.	%s を読み込めませんでした。
+Game	ゲーム
+Keep playing	プレイを続ける
+Keep playing: the game and its sound go on in the background	プレイを続ける: ゲームと音声はバックグラウンドで続きます
+Leaving the game	ゲームを離れたとき
+No game files or keys come with this app; yours never leave the phone.	このアプリにゲームファイルや鍵は含まれず、あなたのデータが端末の外に出ることはありません。
+Pause	一時停止
+Pause: the game stops while it is not on screen	一時停止: 画面に表示されていない間、ゲームは止まります
+Ready: tap Play.	準備完了: 「プレイ」をタップしてください。
+Save data	セーブデータ
+Set up	セットアップ
+Set up again	もう一度セットアップ
+Set up or manage a game	ゲームのセットアップ・管理
+Tap Clear and choose your files again.	「クリア」をタップして、ファイルを選び直してください。
+The base game (.nsp or .xci), the %s update and any DLC. You can choose them all at once.	本編 (.nsp または .xci)、%s の更新データ、DLC。まとめて選べます。
+The setup log is in Android/data/%s/files/setup_work.	セットアップのログは Android/data/%s/files/setup_work にあります。
+These files are from different games (%s): set up one game at a time. Tap Clear and choose the files of one game.	異なるゲームのファイルです (%s)。1 本ずつセットアップしてください。「クリア」をタップして、1 本分のファイルを選んでください。
+Welcome! To play, set up %s from your own Switch dump. It takes three steps.	ようこそ! プレイするには、ご自身の Switch のダンプから %s をセットアップします。3 ステップです。
+Your game files	ゲームファイル
+Your keys	鍵
+none chosen	未選択
+or	または
+prod.keys from your own Switch (and title.keys if your dump needs it).	ご自身の Switch の prod.keys (ダンプに必要なら title.keys も)。
+the phone's own Vulkan driver	端末標準の Vulkan ドライバー

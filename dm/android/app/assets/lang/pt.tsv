@@ -195,3 +195,38 @@ translate %s shaders	traduzir %s shaders
 translate the shaders	traduzir os shaders
 unpack the game	desempacotar o jogo
 warm	morno
+%s is compressed (NSZ): decompress it to .nsp / .xci first, then choose that.	%s está compactado (NSZ): descompacte-o primeiro para .nsp / .xci e escolha esse.
+%s is not a Switch game file (.nsp or .xci).	%s não é um arquivo de jogo do Switch (.nsp ou .xci).
+%s is not a game file: choose it under Your keys.	%s não é um arquivo de jogo: escolha-o em Suas chaves.
+%s is not a key file: choose prod.keys (and title.keys).	%s não é um arquivo de chaves: escolha prod.keys (e title.keys).
+(kept in the app's private storage)	(guardado no armazenamento privado do app)
+Background	Segundo plano
+Change the driver (only if the game does not start)	Trocar o driver (só se o jogo não iniciar)
+Choose	Escolher
+Choose game files	Escolher arquivos do jogo
+Choose keys	Escolher chaves
+Clear	Limpar
+Could not read %s.	Não foi possível ler %s.
+Game	Jogo
+Keep playing	Continuar jogando
+Keep playing: the game and its sound go on in the background	Continuar jogando: o jogo e o som continuam em segundo plano
+Leaving the game	Ao sair do jogo
+No game files or keys come with this app; yours never leave the phone.	Este app não inclui arquivos do jogo nem chaves; os seus nunca saem do celular.
+Pause	Pausar
+Pause: the game stops while it is not on screen	Pausar: o jogo para enquanto não está na tela
+Ready: tap Play.	Pronto: toque em Jogar.
+Save data	Dados salvos
+Set up	Configurar
+Set up again	Configurar de novo
+Set up or manage a game	Configurar ou gerenciar um jogo
+Tap Clear and choose your files again.	Toque em Limpar e escolha seus arquivos de novo.
+The base game (.nsp or .xci), the %s update and any DLC. You can choose them all at once.	O jogo base (.nsp ou .xci), a atualização %s e qualquer DLC. Você pode escolher todos de uma vez.
+The setup log is in Android/data/%s/files/setup_work.	O registro da configuração está em Android/data/%s/files/setup_work.
+These files are from different games (%s): set up one game at a time. Tap Clear and choose the files of one game.	Estes arquivos são de jogos diferentes (%s): configure um jogo por vez. Toque em Limpar e escolha os arquivos de um só jogo.
+Welcome! To play, set up %s from your own Switch dump. It takes three steps.	Bem-vindo! Para jogar, configure %s a partir do seu próprio dump do Switch. São três passos.
+Your game files	Seus arquivos do jogo
+Your keys	Suas chaves
+none chosen	nada escolhido
+or	ou
+prod.keys from your own Switch (and title.keys if your dump needs it).	prod.keys do seu próprio Switch (e title.keys se o seu dump precisar).
+the phone's own Vulkan driver	o driver Vulkan do próprio celular
