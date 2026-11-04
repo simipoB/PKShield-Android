@@ -1,8 +1,30 @@
 # Handoff: Galar Native and Paldea Native
 
-State as of 2026-11-03. All testing below was on one phone: a Galaxy S25+ (Adreno 830, Android with 4 KB pages). No Mali, Xclipse or second device was tested in this round.
+State as of 2026-11-04. All testing was on one phone: a Galaxy S25+ (Adreno 830, Android with 4 KB pages). No Mali, Xclipse or second device was tested in this round.
 
-**The bar:** a locked 30 fps is the minimum, for every supported phone. It is not met on Scarlet and Violet yet.
+**The bar:** a locked 30 fps is the minimum, for every supported phone, in gameplay (menus don't count).
+
+## Taking over: start here
+
+1. **Get the code.** Clone `simipoB/Galar-Native-Android` and check out `violet`. That branch is the shared tree for both apps. Add the Paldea repo as a second remote:
+   `git remote add paldea https://github.com/simipoB/Paldea-Native-Android.git` (private: ask the owner for access).
+2. **Know the branch rule.** Work on `violet`. Push it to `origin violet` and to `paldea main`. Merge it into Galar's `main` keeping Galar's own `README.md` (`git checkout origin/main -- README.md` before committing the merge).
+3. **Set up the build.** Follow [BUILDING.md](BUILDING.md), then the "Build and run" section below. Build one engine per game pair: `01008DB008C2C000` for Galar, `01008F6008C5E000` for Paldea.
+4. **Get game data.** You need your own dumps and `prod.keys`; none are in the repo. The supported route is the app's own setup on a phone. Ask the owner for file paths: do not scan their Downloads.
+5. **Check the current release.** Galar Native **v0.40** is published (versionCode 40, release key `a5f49b44…`). Releases kept: v0.40, v0.39, v0.38. The next release is v0.41 or later. Never publish until a build has passed on a phone, and only when the owner says so.
+6. **Learn the measuring tools before changing performance code:**
+   - `DM_VK_PROF=1` in `env.txt` logs replay time per draw, other ops, and how long the game waits on the GPU.
+   - `DM_VK_GPU_TIME=1` adds GPU time to the "timing up to frame" lines.
+   - Always read `/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq` (and cpu7) with every result. A hot or fast-charging phone halves its clocks, and the numbers are meaningless without them.
+   - Clear these switches from `env.txt` after testing.
+7. **Use a save past the opening.** The owner's Scarlet save (`Downloads\pkmnscarlet_100\main`, ask first) loads outdoors in the academy plaza. That is the reference scene for open-world speed: it now runs 33.3 ms a frame. Violet has no such save yet; ask for one.
+8. **Pick up the open work in this order:**
+   1. Check 30 fps holds in battles, other towns and long play on Scarlet, and on Violet outdoors (problem 1).
+   2. Find Sword and Shield's YEBIS shaders during setup, so fresh players aren't missing effects (problem 3).
+   3. Violet's black enrollment photo (problem 2).
+   4. Sword and Shield sharing game files, to save about 10 GB (section 6).
+   5. Translations for the new launcher and background-play strings (section 6).
+9. **Update this file** when you finish something or rule something out. Write what you measured, not what you expect.
 
 ## Where things are
 
@@ -17,7 +39,7 @@ Rules for this project:
 
 - No AI co-author lines in commits or PRs.
 - Sign releases with `dm/android/probe/out/debug.keystore` from the `PKShield-Android` checkout (cert `a5f49b44…`).
-- Publish no release until it has passed on a phone. The user decides when.
+- Publish no release until it has passed on a phone. The owner decides when. When releasing, delete old release pages except the last 2 (keep their git tags).
 - Do not install over, or change, the user's own `com.nxnative.shield` and `com.nxnative.arceus`. The first keeps its game data inside its APK splits, so its nearly empty files folder is normal. It was last updated Nov 2 at 22:30, probably by an earlier step of this work; it still runs and its save is intact.
 - Do not scan the user's Downloads. Ask for paths.
 - Check what is in the foreground before driving the phone. Input sent over adb goes to whatever is on screen, and it has landed in other apps before.
@@ -40,7 +62,7 @@ cd ../.. && STRICT_16K=1 python dm/android/tools/build_apk.py --game <GAME_ID> -
 - All helper libraries in WSL's `~/psa-build/libs` are now 16 KB aligned. The full rebuild is `scripts/build_apk_pc.sh`.
   - It needs `cmake` and `ninja` in WSL. They were installed with `pip install --user`, so put `~/.local/bin` on PATH.
   - Delete `libadrenotools/build` when changing linker flags. CMake otherwise reuses the old link.
-- The phone currently has **debuggable test builds** of both apps. Android 15+ shows its 16 KB notice only for debuggable apps. A release must drop `--debuggable`.
+- The owner's phone has **debuggable test builds** of both apps. Android 15+ shows its 16 KB notice only for debuggable apps. A release must drop `--debuggable`, and v0.40 was built without it.
 
 Game data on the phone goes in the first game's files folder, and the second game goes in a subfolder named after its ID. `ready` must hold the shader chain: `bebeadf4ac3b` for Galar, `b72f9b70ebb2` for Paldea. Prepared data from this round is in the session scratchpad (`violet/`, `scarlet/`, `swphone/`, `shphone/`, `swsetup/`), which is temporary. If it is gone, rebuild from the dumps; the app's own setup is the supported route.
 
