@@ -67,7 +67,10 @@ _nvn_prof_entry:
     adrp x10, _nvn_prof_ticks@PAGE
     add x10, x10, _nvn_prof_ticks@PAGEOFF
     add x10, x10, x16, lsl #3
-    stadd x9, [x10]
+1:  ldxr x11, [x10]                  // (an exclusive add, not LSE's stadd: ARMv8.0 CPUs and the emulator's ARM translation have no LSE)
+    add x11, x11, x9
+    stxr w12, x11, [x10]
+    cbnz w12, 1b
     ldp x0, x1, [sp, #16]
     ldp q0, q1, [sp, #96]
     ldp q2, q3, [sp, #128]

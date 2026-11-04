@@ -15,6 +15,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
     private static native void nativePadConnected(boolean connected);
     private static native long nativeFrames();   // frames the engine has presented (android_main.c), -1 before it draws
     private InputManager im;
+    static volatile boolean alive;   // the game runs in this process (SetupActivity: the app icon goes back to it rather than to the setup screen)
     static boolean viaSetup;   // this process started the game from the setup screen (SetupActivity.startGame)
 
     @Override protected void onCreate(Bundle b) {
@@ -22,7 +23,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         // local play (hle_ldn.c) finds other phones by Wi-Fi broadcasts, which many phones drop without a multicast lock
         try { android.net.wifi.WifiManager wm = (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
               if (wm != null) { android.net.wifi.WifiManager.MulticastLock ml = wm.createMulticastLock("local play"); ml.setReferenceCounted(false); ml.acquire(); } } catch (Exception e) { }
-        super.onCreate(b);
+        super.onCreate(b); alive = true;
         // Android brings the task back after the process ended (recents, the launcher icon) straight into this activity, past the setup screen that translates the
         // shaders the game captured last time: hand over to it before there is a window (the engine starts with the window, android_main.c)
         if (!viaSetup && SetupActivity.pendingWork(GameSettings.dir(this))) { startActivity(new Intent(this, SetupActivity.class)); finish(); return; }
@@ -135,7 +136,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); getSystemService(android.app.ActivityManager.class).getMemoryInfo(mi);
         return !mi.lowMemory && mi.availMem - mi.threshold > (700L << 20);   // (room for a translator above Android's own low-memory line)
     }
-    @Override protected void onDestroy() { liveOn = false; if (im != null) im.unregisterInputDeviceListener(this); super.onDestroy(); }
+    @Override protected void onDestroy() { liveOn = false; alive = false; if (im != null) im.unregisterInputDeviceListener(this); super.onDestroy(); }
     @Override public void onInputDeviceAdded(int id) { check(); }
     @Override public void onInputDeviceRemoved(int id) { check(); }
     @Override public void onInputDeviceChanged(int id) { check(); }

@@ -192,6 +192,38 @@ HLE_FORCE("_ZN2nn3nfp19StartGameDataEraserEPNS0_12DeviceHandleERKNS0_24AmiiboSet
 HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_12RegisterInfoERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoE", "amiibo nickname and owner settings applet: no tag", Result, h_nfp_Nick, NfpDeviceHandle *h, uint8_t *changed, void *reg, const void *p, const void *tag) { (void)h; (void)reg; (void)p; (void)tag; if (changed) *changed = 0; return nfp_no_tag("StartNicknameAndOwnerSettings"); }
 HLE_FORCE("_ZN2nn3nfp29StartNicknameAndOwnerSettingsEPNS0_12DeviceHandleEPbPNS0_12RegisterInfoERKNS0_24AmiiboSettingsStartParamERKNS0_7TagInfoERKS4_", "amiibo nickname and owner settings applet (with the old register info): no tag", Result, h_nfp_Nick2, NfpDeviceHandle *h, uint8_t *changed, void *reg, const void *p, const void *tag, const void *old) { (void)h; (void)reg; (void)p; (void)tag; (void)old; if (changed) *changed = 0; return nfp_no_tag("StartNicknameAndOwnerSettings"); }
 
+// ---------- bluetooth: Bluetooth LE (Pokémon Scarlet / Violet: the Poké Ball Plus and Pokémon GO Plus +) ----------
+// The host has a Bluetooth LE adapter that never finds a device: scans start and stop, the scan results and connection list stay empty, the events are bound to kernel events that
+//   never fire, and connecting or touching a GATT attribute fails. Unhooked, InitializeBle opens the bluetooth service through sm, which the host does not run, and the SDK aborts
+//   (Violet: main+0xa0b030 → nn::bluetooth::InitializeBle → nn::sm::Initialize → abort). The GattService / GattCharacteristic / GattDescriptor objects are plain SDK code and stay as they are
+static Result ble_none(const char *what) {
+    static _Atomic int logged; if (!atomic_exchange(&logged, 1)) LOG("bluetooth: %s and other operations that need a Bluetooth LE device → none (the host never finds one)", what);
+    return RES_FAIL;
+}
+HLE_FORCE("_ZN2nn9bluetooth13InitializeBleEv", "Bluetooth LE init; the host's adapter never finds a device", void, h_ble_Init, void) { LOG("bluetooth::InitializeBle: the host has a Bluetooth LE adapter that never finds a device"); }
+HLE_FORCE("_ZN2nn9bluetooth19AcquireBleScanEventEPNS_2os15SystemEventTypeE", "BLE scan event; bound to a kernel event, never signalled", Result, h_ble_ScanEv, void *ev) { hle_bind_system_event(ev, 0); return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth24AcquireBleMtuConfigEventEPNS_2os15SystemEventTypeE", "BLE MTU event; bound to a kernel event, never signalled", Result, h_ble_MtuEv, void *ev) { hle_bind_system_event(ev, 0); return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth28AcquireBleGattOperationEventEPNS_2os15SystemEventTypeE", "BLE GATT operation event; bound to a kernel event, never signalled", Result, h_ble_GattEv, void *ev) { hle_bind_system_event(ev, 0); return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth31AcquireBleServiceDiscoveryEventEPNS_2os15SystemEventTypeE", "BLE service discovery event; bound to a kernel event, never signalled", Result, h_ble_DiscEv, void *ev) { hle_bind_system_event(ev, 0); return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth37AcquireBleConnectionStateChangedEventEPNS_2os15SystemEventTypeE", "BLE connection event; bound to a kernel event, never signalled", Result, h_ble_ConnEv, void *ev) { hle_bind_system_event(ev, 0); return RES_OK; }
+// GattAttributeUuid = { u8 length; u8 uuid[16] } (0x14 with padding): an empty parameter, the scan it starts finds nothing anyway
+HLE_FORCE("_ZN2nn9bluetooth19GetBleScanParameterEPNS0_17GattAttributeUuidEi", "BLE scan parameter: empty", Result, h_ble_ScanParam, void *out, int id) { (void)id; memset(out, 0, 0x14); return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth23StartBleScanSmartDeviceERKNS0_17GattAttributeUuidE", "start BLE scan (finds nothing)", Result, h_ble_ScanStart, const void *uuid) { (void)uuid; return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth22StopBleScanSmartDeviceEv", "stop BLE scan", Result, h_ble_ScanStop, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth16GetBleScanResultEPNS0_13BleScanResultEi", "BLE scan results: none", int, h_ble_ScanResult, void *out, int max) { (void)out; (void)max; return 0; }
+HLE_FORCE("_ZN2nn9bluetooth24GetBleConnectionInfoListEPNS0_17BleConnectionInfoEi", "BLE connections: none", int, h_ble_ConnList, void *out, int max) { (void)out; (void)max; return 0; }
+HLE_FORCE("_ZN2nn9bluetooth19ConnectToGattServerERKNS0_7AddressE", "connect to a BLE device: none", Result, h_ble_Connect, const void *addr) { (void)addr; return ble_none("ConnectToGattServer"); }
+HLE_FORCE("_ZN2nn9bluetooth24DisconnectFromGattServerEj", "disconnect a BLE device: none connected", Result, h_ble_Disconnect, uint32_t h) { (void)h; return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth15ConfigureBleMtuEjt", "BLE MTU: no device", Result, h_ble_Mtu, uint32_t h, uint16_t mtu) { (void)h; (void)mtu; return ble_none("ConfigureBleMtu"); }
+HLE_FORCE("_ZN2nn9bluetooth14GetGattServiceEPNS0_11GattServiceERKNS0_17GattAttributeUuidEj", "GATT service: no device", bool, h_ble_Service, void *out, const void *uuid, uint32_t h) { (void)out; (void)uuid; (void)h; return false; }
+HLE_FORCE("_ZN2nn9bluetooth22GetGattOperationResultEPNS0_26BleClientGattOperationInfoE", "GATT operation result: no device", Result, h_ble_OpResult, void *out) { (void)out; return ble_none("GetGattOperationResult"); }
+HLE_FORCE("_ZN2nn9bluetooth22ReadGattCharacteristicERKNS0_18GattCharacteristicE", "read GATT characteristic: no device", Result, h_ble_ReadChar, const void *c) { (void)c; return ble_none("ReadGattCharacteristic"); }
+HLE_FORCE("_ZN2nn9bluetooth23WriteGattCharacteristicERKNS0_18GattCharacteristicE", "write GATT characteristic: no device", Result, h_ble_WriteChar, const void *c) { (void)c; return ble_none("WriteGattCharacteristic"); }
+HLE_FORCE("_ZN2nn9bluetooth19WriteGattDescriptorERKNS0_14GattDescriptorE", "write GATT descriptor: no device", Result, h_ble_WriteDesc, const void *d) { (void)d; return ble_none("WriteGattDescriptor"); }
+HLE_FORCE("_ZN2nn9bluetooth36EnableGattCharacteristicNotificationERKNS0_18GattCharacteristicEb", "GATT notification: no device", Result, h_ble_Notify, const void *c, bool on) { (void)c; (void)on; return ble_none("EnableGattCharacteristicNotification"); }
+HLE_FORCE("_ZN2nn9bluetooth33RegisterGattOperationNotificationERKNS0_17GattAttributeUuidE", "register GATT notification (never fires)", Result, h_ble_RegNotify, const void *uuid) { (void)uuid; return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth35UnregisterGattOperationNotificationERKNS0_17GattAttributeUuidE", "unregister GATT notification", Result, h_ble_UnregNotify, const void *uuid) { (void)uuid; return RES_OK; }
+
 // ---------- vi: vsync event ----------
 // The game passes a SystemEventType; after binding, a host thread fires it at 60 Hz (DM_VSYNC_HZ can change it)
 void dm_host_helper_qos(qos_class_t q);   // hle_thread.c

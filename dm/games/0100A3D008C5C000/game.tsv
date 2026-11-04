@@ -1,0 +1,61 @@
+# Pokémon Scarlet, SDK 13: the same engine build as Pokémon Violet (sdk has Violet's build ID, main the same layout: its allocator setup at the same offset)
+# The shader tables, and so the shader translation chain, are Violet's (tables_from): the two games share their engine, and setup maps the player's own dump
+# (setup_game.py: shader_map.found.tsv), Scarlet's own models included. The keys the chain hashes (nvn_*, shader_*) must stay equal to Violet's.
+
+# ---- Identity ----
+title_id	0100A3D008C5C000
+program_id	0100A3D008C5C000
+tables_from	01008F6008C5E000
+
+# ---- App ----
+name	Pokémon Scarlet
+ipa	PokemonScarlet.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v4.0.0	4.0.0	main=421c5411b487eb4d049dd065fec95477	sdk=bb560bdfa85b4a97786ae2c3b7995df6
+package	v4.0.0
+shader_versions	v4.0.0
+
+# ---- Files ----
+# not loaded, main takes nothing from them the host does not supply: subsdk0 (NintendoSDK_movie)
+modules	main sdk
+romfs_marker	arc/data.trpfd
+zip_store	.trpfs:.trpfd:.bnk:.wem:.pck:.mp4:.metallib
+
+# ---- Memory ----
+# The NPDM declares 16 MB of system resource (virtual address memory), as Arceus: the game's StandardAllocator reserves its address space in the alias region
+# (nninitStartup → StandardAllocator::Initialize aborted with the survey's 256 MB). Arceus' layout: a 5.5 GB block, 4.9 GB of it alias
+mem_reserve	0x160000000
+mem_alias	0x138000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# Arceus: the pool bounds what the allocator maps
+mem_map_limit	on
+
+# ---- NVN driver constant segments (the translator's built-in layout, as Arceus and Shield) ----
+nvn_tex_base	0x20
+nvn_tex_slots	32
+nvn_samp_base	0x568
+nvn_img_base	0x120
+nvn_img_slots	8
+nvn_ssbo_bases	vs=0x110 ps=0x510 cs=0x310
+
+# ---- Shader split ----
+shader_groups	/arc/=arc
+shader_note	Pokémon Violet shaders (provisional profile)
+# the RomFS keeps the shaders as BNSH inside the Trinity packs of arc/data.trpfs (ONEPACK), every file Oodle-compressed: decoded for the split by the game's own
+# decoder (dm/host/hle_oodle.c, found in main by its "OodleLZ_Decompress" string), as for Pokémon Legends: Z-A
+shader_oodle	on
+# shaders the game builds in memory (Shield had 45): saved on the first runs and translated at the next start (Galar Native's capture path)
+shader_nvn_capture	on
+
+# ---- Shared font ----
+# Arceus (SDK 11) took the shared font as TTF; SDK 13 decodes the BFTTF itself: left at the default until the first boot says otherwise
+
+# ---- Android ----
+# as Violet: Auto picks one tier lower (GameSettings.profile)
+android_heavy	on
+# Trinity's open world is heavier than Arceus (about 20 fps docked on the Galaxy S25+): handheld mode, the game's own lower render resolution
+android_op_mode	handheld
+touch_zlzr	on

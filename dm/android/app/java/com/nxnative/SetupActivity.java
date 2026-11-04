@@ -109,6 +109,8 @@ public final class SetupActivity extends Activity {
     }
 
     @Override protected void onCreate(Bundle b) {
+        if (GameActivity.alive) {   // the game is running (in the background): the icon goes back to it
+            super.onCreate(b); startActivity(new Intent(this, GameActivity.class).addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)); finish(); return; }
         super.onCreate(b);
         if (getIntent().getStringExtra("menu") != null) {   // am start ... --es menu 1: the in-game settings panel over this screen (a look at it without the game, over adb)
             setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE); setContentView(new android.view.View(this));
@@ -122,6 +124,7 @@ public final class SetupActivity extends Activity {
         // which game: a game's home screen shortcut names it; from the app's icon, with more than one game set up, this screen lets the player choose (the dual launcher)
         String want = getIntent().getStringExtra("game");
         if (want != null) GameSettings.choose(this, want);
+        else if (!running && !asked && GameSettings.games(this).size() > 1) { launcher(official); return; }   // the app's icon with two games: the launcher
         else if (!running && !asked) { List<String> ready = readyGames(); if (ready.size() == 1) GameSettings.choose(this, ready.get(0)); else if (ready.size() > 1) asked = true; }
         if (ready()) setupShortcut();
         if (ready() && !asked && !running && notices()) asked = true;   // the last run crashed starting its graphics: this screen offers a driver instead of starting the game
@@ -158,6 +161,64 @@ public final class SetupActivity extends Activity {
         ScrollView sv = new ScrollView(this); sv.addView(root); setContentView(sv);
         refresh(); gameIcon();
         if (ready() && !asked) startCaptures();
+    }
+    // The launcher: the app's games side by side (their own icon, name and colour), one tap to play; a game not set up yet opens its setup. Setup and the save tools
+    //   are one tap further ("Set up or manage a game"), so the screen the player sees every day is just the games
+    private void launcher(boolean official) {
+        setRequestedOrientation(android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        if (getActionBar() != null) getActionBar().hide();   // full screen: no title bar, no system bars (Immersive), the games fill it
+        Immersive.apply(this);
+        float dp = getResources().getDisplayMetrics().density;
+        android.util.DisplayMetrics dm = getResources().getDisplayMetrics(); int sw = Math.max(dm.widthPixels, dm.heightPixels), sh = Math.min(dm.widthPixels, dm.heightPixels);
+        List<String[]> all = GameSettings.games(this);
+        int[] acc = new int[all.size()];
+        for (int k = 0; k < all.size(); k++) { String up = all.get(k)[0].toUpperCase(java.util.Locale.ROOT);
+            acc[k] = up.startsWith("0100ABF") ? 0xFF2E9BFF : up.startsWith("01008DB") ? 0xFFE0306E : up.startsWith("01008F6") ? 0xFF9B5CFF : up.startsWith("0100A3D") ? 0xFFFF4D3D : 0xFF3DDC97; }
+        // the background: the games' colours, faint, from one side to the other over near-black
+        android.graphics.drawable.GradientDrawable back = new android.graphics.drawable.GradientDrawable(android.graphics.drawable.GradientDrawable.Orientation.LEFT_RIGHT,
+            new int[] { mix(acc[0], 0xFF0B0C10, 0.78f), 0xFF0B0C10, mix(acc[acc.length - 1], 0xFF0B0C10, 0.78f) });
+        LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setGravity(Gravity.CENTER); root.setBackground(back);
+        root.setPadding((int) (24 * dp), (int) (10 * dp), (int) (24 * dp), (int) (10 * dp));
+        TextView title = new TextView(this); title.setText(getApplicationInfo().loadLabel(getPackageManager())); title.setTextSize(22); title.setTextColor(0xFFF2F3F5);
+        title.setTypeface(android.graphics.Typeface.DEFAULT_BOLD); title.setGravity(Gravity.CENTER); root.addView(title);
+        if (!official) { TextView u = new TextView(this); u.setText(unofficial()); u.setTextColor(0xffff5252); u.setTextSize(12); u.setGravity(Gravity.CENTER); root.addView(u); }
+        // the cards share the screen: as wide as two fit with room around them, the icon as tall as the screen allows under the title and above the link
+        int cardW = Math.min((sw - (int) (48 * dp)) / all.size() - (int) (28 * dp), (int) (sh * 0.62f));
+        int iconS = Math.min(cardW - (int) (28 * dp), sh - (int) (210 * dp));
+        LinearLayout row = new LinearLayout(this); row.setOrientation(LinearLayout.HORIZONTAL); row.setGravity(Gravity.CENTER); row.setPadding(0, (int) (10 * dp), 0, (int) (6 * dp));
+        for (int k = 0; k < all.size(); k++) {
+            String[] g = all.get(k); String id = g[0]; boolean ok = isReady(id); int accent = acc[k];
+            LinearLayout card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setGravity(Gravity.CENTER_HORIZONTAL);
+            card.setPadding((int) (14 * dp), (int) (14 * dp), (int) (14 * dp), (int) (14 * dp));
+            android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable(); bg.setColor(0xE61C1F26); bg.setCornerRadius(22 * dp); bg.setStroke((int) (2 * dp), accent);
+            card.setBackground(bg); card.setElevation(8 * dp);
+            ImageView icon = new ImageView(this); icon.setScaleType(ImageView.ScaleType.CENTER_CROP); icon.setClipToOutline(true);
+            android.graphics.drawable.GradientDrawable clip = new android.graphics.drawable.GradientDrawable(); clip.setCornerRadius(16 * dp); clip.setColor(0xFF2A2E37); icon.setBackground(clip);
+            File d = k == 0 ? GameSettings.root(this) : new File(GameSettings.root(this), id);
+            android.graphics.Bitmap bm = android.graphics.BitmapFactory.decodeFile(new File(d, "icon.jpg").getPath()); if (bm != null) icon.setImageBitmap(bm);
+            card.addView(icon, new LinearLayout.LayoutParams(iconS, iconS));
+            TextView name = new TextView(this); name.setText(g[1]); name.setTextSize(17); name.setTextColor(0xFFF2F3F5); name.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            name.setGravity(Gravity.CENTER); name.setSingleLine(true); name.setPadding(0, (int) (10 * dp), 0, (int) (8 * dp)); card.addView(name);
+            TextView go = new TextView(this); go.setText(T.t(this, ok ? "Play" : "Set up")); go.setTextSize(15); go.setTextColor(ok ? 0xFFFFFFFF : 0xFF9AA0AB); go.setGravity(Gravity.CENTER);
+            go.setTypeface(android.graphics.Typeface.DEFAULT_BOLD); go.setPadding(0, (int) (9 * dp), 0, (int) (9 * dp));
+            android.graphics.drawable.GradientDrawable gb = new android.graphics.drawable.GradientDrawable(); gb.setCornerRadius(20 * dp); gb.setColor(ok ? accent : 0xFF262A33); go.setBackground(gb);
+            card.addView(go, new LinearLayout.LayoutParams(iconS, -2));
+            card.setOnClickListener(v -> { GameSettings.choose(this, id);   // Play goes the way a home screen shortcut goes, not straight to the game: captured shaders are translated into the pack first (pendingWork)
+                if (ok) { Intent it = new Intent(this, SetupActivity.class); it.putExtra("game", id); startActivity(it); finish(); } else openSetup(); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.leftMargin = lp.rightMargin = (int) (14 * dp); row.addView(card, lp);
+        }
+        root.addView(row);
+        TextView manage = new TextView(this); manage.setText(T.t(this, "Set up or manage a game")); manage.setTextColor(0xFFC4C9D2); manage.setTextSize(14); manage.setGravity(Gravity.CENTER);
+        manage.setPadding((int) (18 * dp), (int) (7 * dp), (int) (18 * dp), (int) (7 * dp));
+        android.graphics.drawable.GradientDrawable mb = new android.graphics.drawable.GradientDrawable(); mb.setCornerRadius(16 * dp); mb.setColor(0x33FFFFFF); manage.setBackground(mb);
+        manage.setOnClickListener(v -> openSetup());
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(-2, -2); ml.topMargin = (int) (6 * dp); root.addView(manage, ml);
+        setContentView(root);
+    }
+    private void openSetup() { Intent it = new Intent(this, SetupActivity.class); it.putExtra("setup", true); startActivity(it); finish(); }
+    private static int mix(int a, int b, float t) {   // a toward b by t (0..1), per channel
+        int r = (int) (((a >> 16) & 255) * (1 - t) + ((b >> 16) & 255) * t), g = (int) (((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t), bl = (int) ((a & 255) * (1 - t) + (b & 255) * t);
+        return 0xFF000000 | r << 16 | g << 8 | bl;
     }
     private TextView row(LinearLayout root, String label, String btn, android.view.View.OnClickListener l) {
         LinearLayout r = new LinearLayout(this); r.setOrientation(LinearLayout.HORIZONTAL); r.setGravity(Gravity.CENTER_VERTICAL);

@@ -118,6 +118,10 @@ static void prep_write(void *addr, size_t len) {
 }
 
 void nvn_dirty_add_range(const void *mem, size_t size) {
+    // DM_NO_DIRTY=1: no pool is tracked, so no page is write-protected and no write faults (the Android emulator's ARM translation cannot deliver them: "Cannot process signal 11");
+    // untracked pools count as dirty, their textures uploaded again at every use (slower, never stale)
+    static int off = -1; if (off < 0) { const char *e = getenv("DM_NO_DIRTY"); off = e && atoi(e); }
+    if (off) return;
     static int inited;
     if (!inited) { inited = 1; g_pg = (uintptr_t)getpagesize(); g_shift = __builtin_ctzl(g_pg); mach_timebase_info(&g_tb); dm_fault_hook_register(on_fault); dm_guest_write_prep_register(prep_write); }
     atomic_fetch_add(&g_adds_total, 1);

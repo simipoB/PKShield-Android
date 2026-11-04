@@ -13,6 +13,7 @@
 #include <android/input.h>
 #include <android_native_app_glue.h>
 #include <pthread.h>
+#include <sched.h>
 #include <jni.h>
 #include <sys/resource.h>
 #include <dlfcn.h>
@@ -198,9 +199,12 @@ void touch_ui_setting(const char *key, const char *value);
 void touch_ui_edit(void);
 // GameMenu.java: a setting changed while playing (it also writes env.txt for the next start). The ones the game can take at once go to their owners here, never through
 // setenv (other threads read the environment meanwhile); the rest wait for the next start. Returns whether it took effect now
+static int g_bg_off = -1;   // DM_BACKGROUND=off: pause in the background (default: keep playing); the settings panel changes it at once
+static int bg_play(void) { if (g_bg_off < 0) { const char *e = getenv("DM_BACKGROUND"); g_bg_off = e && !strcmp(e, "off"); } return !g_bg_off; }
 JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env, jclass c, jstring jk, jstring jv) {
     (void)c; const char *k = (*env)->GetStringUTFChars(env, jk, NULL), *v0 = (*env)->GetStringUTFChars(env, jv, NULL); const char *v = *v0 ? v0 : NULL; int now = 1;
-    if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE")) touch_ui_setting(k, v);
+    if (!strcmp(k, "DM_BACKGROUND")) g_bg_off = v && !strcmp(v, "off");
+    else if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE")) touch_ui_setting(k, v);
     else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
     else if (!strcmp(k, "DM_SCALER")) { extern volatile int dm_scaler_mode; if (!v || !*v) v = getenv("DM_AUTO_SCALER"); dm_scaler_mode = v && !strcmp(v, "sgsr") ? 1 : v && !strcmp(v, "smooth") ? 2 : 0; }   // (Auto: the app's pick)
     else if (!strcmp(k, "DM_SCALER_SHARPNESS")) { extern volatile float dm_scaler_sharpness; dm_scaler_sharpness = !v || !strcmp(v, "sharp") ? 0.7f : !strcmp(v, "smooth") ? -1.0f : (float)atof(v); }   // nvn_vk.c scale_draw
@@ -280,11 +284,11 @@ static int g_started;
 // ---------- Crash-aware starts: <files>/boot_state says how far a run got (start → device: the graphics device is up → gone after 30 s of play), and "crashed" when
 // the crash handler ran (crash.c dm_crash_note). A crashed run's stage decides what the next start does:
 //   · crashed before 30 s of play on the phone's own driver, with the device not up or no frames yet: the app offers a driver package for this GPU (notice.txt,
-//     SetupActivity reads it and does not start the game straight away)
+//     SetupActivity reads it and does not start the game straight away); not when the pc was in the game's own code (main / sdk: a driver would not help)
 //   · crashed with mods on: the mods are switched off (each folder renamed with a leading "-", loose .pchtxt files to .pchtxt.off), and the player is told
 // A run Android ends (swiped away, low memory) writes no "crashed": nothing is changed then
 static char g_boot_path[1100]; static int g_boot_fd = -1;
-void dm_crash_note(void) { if (g_boot_fd >= 0) { static const char m[] = "crashed\n"; (void)!write(g_boot_fd, m, sizeof m - 1); } }
+void dm_crash_note(int in_game) { if (g_boot_fd >= 0) { static const char m[] = "crashed\n", g[] = "crashed in the game's code\n"; if (in_game) (void)!write(g_boot_fd, g, sizeof g - 1); else (void)!write(g_boot_fd, m, sizeof m - 1); } }
 const char *nvn_vk_gpu_name(void) __attribute__((weak));
 static void notice(const char *kind, const char *text) {
     char p[1200]; snprintf(p, sizeof p, "%s/notice.txt", g_files); FILE *f = fopen(p, "a"); if (f) { fprintf(f, "%s\t%s\n", kind, text); fclose(f); }
@@ -313,7 +317,7 @@ static void boot_guard(const char *mods) {
         const char *drv = getenv("DM_VK_DRIVER"); int stock = !drv || !*drv;
         fprintf(stderr, "boot: the last run crashed (%s)\n", device ? "after the graphics device came up" : "before the graphics device came up");
         if (had_mods) { int n = mods_off(mods); if (n) { char t[200]; snprintf(t, sizeof t, "The game closed while %d mod%s were on, so they are switched off. Switch them back on in the menu, Mods.", n, n == 1 ? "" : "s"); notice("mods", t); } }
-        else if (stock && !strstr(prev, "playing")) {
+        else if (stock && !strstr(prev, "playing") && !strstr(prev, "in the game's code")) {   // (a crash in the game's own code is the engine's to fix, not the driver's: no driver dialog)
             char gpu[256] = ""; char gp[1200]; snprintf(gp, sizeof gp, "%s/gpu.txt", g_files); FILE *g = fopen(gp, "r"); if (g) { if (!fgets(gpu, sizeof gpu, g)) gpu[0] = 0; fclose(g); }
             char *nl = strchr(gpu, '\n'); if (nl) *nl = 0;
             notice("driver", *gpu ? gpu : "unknown");
@@ -500,13 +504,14 @@ static void graphics_auto(void) {
     if (mode == 1 && hot) { mode = 0; dm_set_opmode(0); fprintf(stderr, "graphics auto: the phone is hot (status %d, headroom %.2f): handheld mode (720p)\n", st, hr); }
     else if (mode == 0 && cool >= 12) { mode = 1; dm_set_opmode(1); fprintf(stderr, "graphics auto: cooled down: TV mode (1080p)\n"); }
 }
+static void pin_update(void);
 static void *log_mirror(void *p) {
     (void)p; char src[1200]; snprintf(src, sizeof src, "%s/log.txt", g_files);
     for (int n = 0;; n++) {
         sleep(5);
         char th[64];
         if (!n) { char t0[64]; thermal_text(t0, sizeof t0); }   // looks the thermal functions up
-        graphics_auto();
+        graphics_auto(); pin_update();
         if (n % 6 == 0) fprintf(stderr, "[mem] app %ld MB resident (%ld MB swapped), phone %ld MB available of %ld MB; heat %s\n", kb_of("/proc/self/status", "VmRSS:") / 1024,
                                 kb_of("/proc/self/status", "VmSwap:") / 1024, kb_of("/proc/meminfo", "MemAvailable:") / 1024, kb_of("/proc/meminfo", "MemTotal:") / 1024, thermal_text(th, sizeof th));
         { char d[256]; snprintf(d, sizeof d, DL "/%s-log.txt", g_stem); copy_file(src, d); }
@@ -636,6 +641,24 @@ static void host_start(void) {
     pthread_t t; pthread_create(&t, &at, host_thread, NULL); pthread_detach(t);
     { pthread_t g; if (!pthread_create(&g, NULL, boot_guard_main, NULL)) pthread_detach(g); }
 }
+// ---------- The fastest cores for the threads a frame waits on. Left alone, the scheduler kept Violet's main thread moving over the middle cores of a Galaxy S25+ (2.7 GHz) with
+// its two fastest cores idle at 1 GHz (pinned, the replay's CPU cost fell from 21 to 14 ms a frame). "Fastest" is each core's clock limit right now, looked at again every 5 s
+// (log_mirror): a hot phone can cap its prime cores below the others (1.69 GHz seen against 2.9), and then the threads move. A phone whose cores are all alike is left alone.
+// DM_CPU_PIN=off leaves the scheduler to it
+static pid_t g_pin_tid[2]; static int g_pin_n; static long g_pin_top;
+static void pin_update(void) {
+    const char *e = getenv("DM_CPU_PIN"); if ((e && !strcmp(e, "off")) || !g_pin_n) return;
+    long top = 0, low = 0, f[32]; cpu_set_t set; CPU_ZERO(&set); int n = 0;
+    for (int c = 0; c < 32; c++) { char p[96]; snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cpufreq/scaling_max_freq", c); FILE *fp = fopen(p, "r"); f[c] = 0;
+        if (fp) { if (fscanf(fp, "%ld", &f[c]) != 1) f[c] = 0; fclose(fp); } if (f[c] > top) top = f[c]; if (f[c] && (!low || f[c] < low)) low = f[c]; }
+    if (!top) return;
+    if (top == low) { if (!g_pin_top) return; for (int c = 0; c < 32; c++) if (f[c]) { CPU_SET(c, &set); n++; } }   // all alike now: every core
+    else for (int c = 0; c < 32; c++) if (f[c] == top) { CPU_SET(c, &set); n++; }
+    if (top == g_pin_top && !(top == low)) { static cpu_set_t last; if (CPU_EQUAL(&last, &set)) return; last = set; }
+    g_pin_top = top;
+    for (int i = 0; i < g_pin_n; i++) sched_setaffinity(g_pin_tid[i], sizeof set, &set);
+    fprintf(stderr, "[cpu] main threads on %d core%s limited to %.2f GHz\n", n, n == 1 ? "" : "s", top / 1e6);
+}
 // ---------- Performance hints (Android 13+): one session for the game's main thread and the presenting thread, told every frame how long the presenting thread
 // worked against the frame's period (nvn_vk.c mtl_present). That is what brings the fastest cores and higher clocks when the game needs them, and lower ones
 // when it does not (LAS Recomp's Android port: the prime core otherwise stays parked). The presenting thread also gets the most urgent priority an app may set
@@ -656,7 +679,7 @@ void front_frame_work(uint64_t busy_ns, uint64_t target_ns) {
         int32_t t[2]; size_t n = 0; t[n++] = gettid(); if (g_game_tid && g_game_tid != gettid()) t[n++] = g_game_tid;
         g_hint = m && p_hint_create ? p_hint_create(m, t, n, (int64_t)target_ns) : NULL;
         if (!g_hint || !p_hint_report) { g_hint_failed = 1; fprintf(stderr, "[cpu] no performance hint session\n"); return; }
-        g_hint_target = (int64_t)target_ns;
+        g_hint_target = (int64_t)target_ns; for (size_t i = 0; i < n; i++) g_pin_tid[i] = t[i]; g_pin_n = (int)n; pin_update();
         fprintf(stderr, "[cpu] performance hint session: %zu threads, target %.1f ms; presenting thread at priority -10\n", n, target_ns / 1e6);
     }
     if ((int64_t)target_ns != g_hint_target && p_hint_target) p_hint_target(g_hint, g_hint_target = (int64_t)target_ns);
@@ -700,8 +723,10 @@ static void on_cmd(struct android_app *app, int32_t cmd) {
         case APP_CMD_INIT_WINDOW: atomic_store(&g_window, app->window); immersive(); host_start(); window_rate(app->window); break;   // (after host_start: env.txt and the Auto settings decide the rate)
         case APP_CMD_TERM_WINDOW: atomic_store(&g_window, NULL); if (g_started && nvn_vk_window_term) nvn_vk_window_term(); break;
         case APP_CMD_GAINED_FOCUS: immersive(); if (g_started) { dm_focus_set(1); dm_audio_suspend(0); } break;
-        case APP_CMD_LOST_FOCUS: if (g_started) { dm_focus_set(2); } break;
-        case APP_CMD_PAUSE: if (g_started) { dm_focus_set(3); dm_audio_suspend(1); if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;
+        // In the background (recents, home, another app) the game keeps running with its sound, as a Switch game does under the HOME menu with a suspend-free
+        //   setting: it is not told it lost focus (it would pause itself), and frames are simply not shown while there is no window. DM_BACKGROUND=off pauses it as before
+        case APP_CMD_LOST_FOCUS: if (g_started && !bg_play()) { dm_focus_set(2); } break;
+        case APP_CMD_PAUSE: if (g_started) { if (!bg_play()) { dm_focus_set(3); dm_audio_suspend(1); } if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;
         case APP_CMD_RESUME: if (g_started) { dm_focus_set(1); dm_audio_suspend(0); swapin_start(); } break;
     }
 }
