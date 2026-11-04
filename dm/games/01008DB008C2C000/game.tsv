@@ -6,6 +6,8 @@ title_id	01008DB008C2C000
 program_id	01008DB008C2C000
 
 # ---- App ----
+# the app's name when it runs this game and the ones that take their tables from it (build_apk.py)
+app_name	Galar Native
 name	Pokémon Shield
 ipa	PokemonShield.ipa
 app_category	public.app-category.games
