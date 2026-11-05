@@ -80,6 +80,7 @@ typedef struct thr {
     const uint32_t *whs; int whn;   // WaitSynchronization's handle array (guest memory, valid while the thread waits there): a signal wakes only waiters that hold the signalled object
     int ctx_ok; uint64_t ctx_x[29], ctx_fp, ctx_lr, ctx_sp, ctx_pc; uint32_t ctx_pstate, ctx_fpcr, ctx_fpsr; __uint128_t ctx_v[32];
     pthread_cond_t pcv;
+    int ltid;                  // the host thread's kernel id (Android: the performance hint session, thr_frame_tids)
 } thr_t;
 static thr_t *g_all;
 extern __thread _Atomic int dm_host_work;   // declared in hle.h too; defined in hle_nvn.c
@@ -243,6 +244,9 @@ static void *thread_main(void *p) {
     qos_class_t qc = QOS_CLASS_UNSPECIFIED; int rp = 0;
     pthread_get_qos_class_np(pthread_self(), &qc, &rp); t->qos = (uint32_t)qc;
     t->mport = pthread_mach_thread_np(pthread_self()); t->host_work = &dm_host_work;
+#ifdef __linux__
+    t->ltid = (int)gettid();
+#endif
     crash_thread_init();
     guest_thread_init();
     pthread_mutex_lock(&G); while (!t->started) pthread_cond_wait(&t->cv, &G); pthread_mutex_unlock(&G);
@@ -394,6 +398,15 @@ static const char *thr_name(thr_t *t, char *nb, size_t n) {   // SDK ThreadType+
     if (vm_read_overwrite(mach_task_self(), t->arg + 0x1a0, 8, (vm_address_t)&np, &got) || !np ||
         vm_read_overwrite(mach_task_self(), np, n - 1, (vm_address_t)nb, &got)) return "?";
     nb[got] = 0; return nb;
+}
+// The game's frame workers (threads named Job*: Sword / Shield's JobThread1 / JobThread2 share each frame's work with the main thread): their kernel ids, for the
+//   performance hint session (android_main.c front_frame_work), so the scheduler raises them with the main thread when a frame runs late
+int thr_frame_tids(int *out, int max) {
+    int n = 0; char nb[32];
+    pthread_mutex_lock(&G);
+    for (thr_t *t = g_all; t && n < max; t = t->all) if (t->started && !t->exited && !t->host_owned && t->ltid && !strncmp(thr_name(t, nb, sizeof nb), "Job", 3)) out[n++] = t->ltid;
+    pthread_mutex_unlock(&G);
+    return n;
 }
 // All live guest threads (used by the sampler DM_SAMPLE=ms:*): fill the pthreads into out, return the count
 int thr_list(pthread_t *out, int max) {
