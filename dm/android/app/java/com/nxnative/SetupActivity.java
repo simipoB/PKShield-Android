@@ -694,7 +694,9 @@ public final class SetupActivity extends Activity {
         for (String r : roots) fingerprint(new File(r), r.length(), fp);
         String sig = roots.isEmpty() ? "" : Long.toHexString(fp[0]) + " " + String.join(":", roots), done = "";
         try (BufferedReader rd = new BufferedReader(new FileReader(new File(gameDir, "mod_shaders_done")))) { String l = rd.readLine(); if (l != null) done = l.trim(); } catch (IOException e) { }
-        return roots.isEmpty() || sig.equals(done) ? null : new String[] { String.join(":", roots), sig };
+        // (no mods left but a Trinity index from earlier: a run with no roots deletes it, setup_game.py trinity_index)
+        if (roots.isEmpty()) return new File(mods, ".trinity_index").exists() ? new String[] { "", "" } : null;
+        return sig.equals(done) ? null : new String[] { String.join(":", roots), sig };
     }
     private static void fingerprint(File d, int cut, long[] fp) {   // every file's path, size and time
         File[] fs = d.listFiles(); if (fs == null) return; Arrays.sort(fs);

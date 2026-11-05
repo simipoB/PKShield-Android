@@ -537,8 +537,13 @@ public final class GameMenu {
         for (int i = 0; i < parts.length - 1; i++) { String q = parts[i].toLowerCase(java.util.Locale.ROOT);
             if (q.equals("romfs") || q.equals("exefs")) { StringBuilder sb = new StringBuilder(q);
                 for (int j = i + 1; j < parts.length; j++) { if (parts[j].equals("..")) return null; sb.append('/').append(parts[j]); } return sb.toString(); } }
+        // a mod packed from the game's own top folders, without a romfs/ above them (Team Seri's Scarlet / Violet mods: world/scene/...): those go under romfs/
+        for (int i = 0; i < parts.length - 1; i++) if (ROMFS_TOPS.contains(parts[i].toLowerCase(java.util.Locale.ROOT))) { StringBuilder sb = new StringBuilder("romfs");
+            for (int j = i; j < parts.length; j++) { if (parts[j].equals("..")) return null; sb.append('/').append(parts[j]); } return sb.toString(); }
         String last = parts[parts.length - 1];
         return last.toLowerCase(java.util.Locale.ROOT).endsWith(".pchtxt") && !last.contains("..") ? "exefs/" + last : null;
     }
+    private static final Set<String> ROMFS_TOPS = new HashSet<>(Arrays.asList("world", "chara", "pokemon", "field", "field_graphic", "ui", "message", "script", "effect",
+        "avalon", "ai", "gfx", "obj", "system_resource", "demo", "sound", "shader", "arc", "bin"));
     private static void deleteTree(File f) { File[] cs = f.listFiles(); if (cs != null) for (File c : cs) deleteTree(c); f.delete(); }
 }

@@ -369,7 +369,9 @@ static void mod_root(const char *mods, const char *nm) {
 static void mods_romfs(const char *mods) {
     if (getenv("DM_ROMFS_OVERLAY")) return;   // env.txt chose
     struct stat st; char d[1200];
-    snprintf(d, sizeof d, "%s/romfs", mods); if (!stat(d, &st) && S_ISDIR(st.st_mode)) { g_roots_len += snprintf(g_roots, sizeof g_roots, "%s", d); g_roots_n++; }
+    // Trinity games: the pack index with the mods' paths taken out (setup_game.py trinity_index), first, so it is the arc/data.trpfd the game reads
+    snprintf(d, sizeof d, "%s/.trinity_index/romfs", mods); if (!stat(d, &st) && S_ISDIR(st.st_mode)) { g_roots_len += snprintf(g_roots, sizeof g_roots, "%s", d); g_roots_n++; }
+    snprintf(d, sizeof d, "%s/romfs", mods); if (!stat(d, &st) && S_ISDIR(st.st_mode)) { g_roots_len += snprintf(g_roots + g_roots_len, sizeof g_roots - g_roots_len, "%s%s", g_roots_len ? ":" : "", d); g_roots_n++; }
     snprintf(d, sizeof d, "%s/order.txt", mods); FILE *f = fopen(d, "r");
     if (f) { char ln[512]; while (fgets(ln, sizeof ln, f)) { ln[strcspn(ln, "\r\n")] = 0; if (*ln) mod_root(mods, ln); } fclose(f); }
     struct dirent **ents = NULL; int n = scandir(mods, &ents, NULL, alphasort);
