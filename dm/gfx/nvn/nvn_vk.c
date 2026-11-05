@@ -1028,6 +1028,7 @@ typedef struct vtex {
     VkBufferView bview;                    // buffer texture (TARGET_BUFFER): a view of its memory pool
     int fixed_fmt; VkFormat twin;          // 1: not mutable (depth / stencil), 2: mutable within fmt / twin only (tex_make: keeps UBWC)
     int drop;                              // mip levels left out (texture quality half: the image is the game's levels from this one on)
+    struct vtex *alt; int alt_fmt;         // BC decoded / transcoded on this GPU, viewed as another BC kind (tex_view_for): the same blocks converted for that kind
 } vtex;
 static pthread_mutex_t g_smu = PTHREAD_MUTEX_INITIALIZER;   // serial / sharing / CPU-written tables
 static nvn_hmap g_by_serial = {.klen = 8}, g_ghost = {.klen = 8}, g_tex_live = {.klen = 8}, g_cpu_tex = {.klen = 8};
@@ -1045,6 +1046,7 @@ static void vtex_unref(vtex *t) {
     for (int i = 0; i < t->nviews; i++) defer_add((dfr){ .kind = DF_VIEW, .h.view = t->views[i].v });
     if (t->bview) defer_add((dfr){ .kind = DF_BUFVIEW, .h.bview = t->bview });
     if (t->img) defer_add((dfr){ .kind = DF_IMAGE, .h.img = t->img, .a = t->a });
+    if (t->alt) vtex_unref(t->alt);
     free(t->views); free(t);
 }
 static int fmt_is_depth(VkFormat f) { return f == VK_FORMAT_D16_UNORM || f == VK_FORMAT_X8_D24_UNORM_PACK32 || f == VK_FORMAT_D32_SFLOAT || f == VK_FORMAT_D24_UNORM_S8_UINT || f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_D16_UNORM_S8_UINT; }
@@ -1489,6 +1491,23 @@ static VkImageView tex_view_for(int tid, const spv_res *r, int storage) {
     if (g_tpool_n && tid >= g_tpool_n) return VK_NULL_HANDLE;
     treg_t rg; if (!treg_get(tid, &rg)) { if (tid > 0) RED_ONCE(11, "texture ID %d not registered", tid); return VK_NULL_HANDLE; }
     vtex *x = tex_res(&rg.t); if (!x || !x->img) return VK_NULL_HANDLE;
+    // A view in another BC kind than its texture (BC5 unsigned read as signed, BC4 likewise, BC6H unsigned as signed): on the Switch (and on a GPU with BC) the same
+    //   blocks are read the other way. Where BC is decoded / transcoded on upload the image holds values converted for the texture's own kind, which the other
+    //   kind's view would read as garbage (lighting from such normal maps white and black on Mali, #47 / #53 / #56; BC6H's two kinds are not even compatible
+    //   formats here). Such a view gets a second image, the game's blocks converted for the view's kind (packaged textures; made once, dropped with the first)
+    if (rg.has_v && rg.v.set_format && rg.v.format != rg.t.d.format && x->pkg && rg.t.mem) {
+        int ik = nvn_fmt_vk_decode(rg.t.d.format), vk_ = nvn_fmt_vk_decode(rg.v.format);
+        if (ik && vk_ && ik != vk_) {
+            pthread_mutex_lock(&g_smu);
+            if (!x->alt || x->alt_fmt != (int)rg.v.format) {
+                tex_t tc = rg.t; tc.d.format = rg.v.format; vtex *a = pkg_upload(&tc);
+                if (a) { if (x->alt) vtex_unref(x->alt); x->alt = a; x->alt_fmt = (int)rg.v.format;
+                    static int said; if (said++ < 8) VLOG("texture ID %d (BC format %#x, decoded here) viewed as BC format %#x: converted a second time for that view", tid, rg.t.d.format, rg.v.format); }
+            }
+            if (x->alt && x->alt_fmt == (int)rg.v.format) x = x->alt;
+            pthread_mutex_unlock(&g_smu);
+        }
+    }
     VkFormat f = x->fmt; uint8_t fsw[4]; memcpy(fsw, x->fswz, 4);
     if (rg.has_v && rg.v.set_format) { uint32_t vf = 0; uint8_t s2[4]; if (nvn_fmt_to_vk(rg.v.format, &vf, s2) && vf) { f = (VkFormat)vf; memcpy(fsw, s2, 4); } }
     uint32_t l0 = rg.has_v && rg.v.set_levels ? rg.v.base_level : 0, nl = rg.has_v && rg.v.set_levels && rg.v.nlevels ? rg.v.nlevels : x->levels + x->drop - (l0 < x->levels + x->drop ? l0 : 0);
