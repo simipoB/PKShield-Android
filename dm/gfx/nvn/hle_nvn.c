@@ -1197,7 +1197,10 @@ NVN(nvnWindowInitialize, NVNboolean, NVNwindow *w, const NVNwindowBuilder *b) {
         o->ntex ? (int)CTX(o->tex[0])->d.width : 0, o->ntex ? (int)CTX(o->tex[0])->d.height : 0, o->ntex ? CTX(o->tex[0])->d.format : 0);
     return 1;
 }
-NVN(nvnWindowGetPresentInterval, int, const NVNwindow *w) { return ((const win_t *)w)->interval; }   // Link's Awakening reads it back every frame
+// DM_NVN_REPORT_INTERVAL=<n> (test): the interval the game reads back, whatever the window presents at. With Sword / Shield's 60 fps patch the window runs at
+//   interval 1 while the game's logic stays in its 30 fps mode (the step from the interval table); code that reads the interval back sees 1 (the stadium crowd?)
+static int report_interval(int real) { static int r = -1; if (r < 0) { const char *e = getenv("DM_NVN_REPORT_INTERVAL"); r = e ? atoi(e) : 0; } return r > 0 ? r : real; }
+NVN(nvnWindowGetPresentInterval, int, const NVNwindow *w) { return report_interval(((const win_t *)w)->interval); }   // Link's Awakening reads it back every frame
 NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) { if (((win_t *)w)->interval != v) LOG("[nvn] the game sets present interval %d → %d", ((win_t *)w)->interval, v); ((win_t *)w)->interval = v; }
 NVN(nvnWindowSetCrop, void, NVNwindow *w, int x, int y, int ww, int hh) {
     win_t *o = (win_t *)w; int v[4] = {x, y, ww, hh};
