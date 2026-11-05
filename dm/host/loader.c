@@ -502,6 +502,7 @@ static int bmod_wanted(const char *name) {
     return 0;
 }
 static int g_bmod_fps;   // the frame rate came from a built-in mod: the Sword / Shield patch below is not this game's
+int dm_dynfps;   // hle_nvn.c dyn_tick: Scarlet / Violet's Dynamic FPS is in, presentation is paced in steps of 30 / 60
 static int bmod_apply(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     int total = 0;
     for (unsigned i = 0; i < sizeof BUILTIN_MODS / sizeof *BUILTIN_MODS; i++) {
@@ -513,7 +514,7 @@ static int bmod_apply(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
             if ((uint64_t)t->off + t->len > lim || memcmp(m->base + t->off, t->orig, t->len) || overlaps_rewrite(m, t->off, t->len, p0, p1)) bad = s; }
         if (bad >= 0) { LOG("[RED] %s: built-in mod %s not applied: +%#x differs from the game's code or was rewritten", m->name, b->name, b->sites[bad].off); continue; }
         for (int s = 0; s < b->n; s++) memcpy(m->base + b->sites[s].off, b->sites[s].mod, b->sites[s].len);
-        LOG("%s: built-in mod %s applied (%d sites)", m->name, b->name, b->n); total += b->n; if (!strcmp(b->name, "dynamic_fps")) g_bmod_fps = 1;
+        LOG("%s: built-in mod %s applied (%d sites)", m->name, b->name, b->n); total += b->n; if (!strcmp(b->name, "dynamic_fps")) g_bmod_fps = dm_dynfps = 1;
     }
     return total;
 }

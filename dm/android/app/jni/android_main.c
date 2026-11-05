@@ -516,7 +516,8 @@ static void graphics_auto(void) {
         hot = st >= 3 || hr >= 0.95f; calm = st <= 1 && (hr < 0 || hr < 0.75f); }
     double fps = -1;
     if (g_fps_guard && dm_nvn_frame_count) { uint64_t fr = dm_nvn_frame_count(); if (primed) fps = (fr - last_fr) / 5.0; last_fr = fr; primed = 1; }
-    int short_ = fps > 1 && fps < g_fps_guard * 0.93, full = fps >= g_fps_guard * 0.97;   // (no frames at all: a load or a pause, not a slow scene)
+    // the floor is 30: frames are paced at 30 or 60 (hle_nvn.c vstep_tick / dyn_tick), so 720p comes in only when even 30 is missed
+    int short_ = fps > 1 && fps < 30 * 0.93, full = fps >= 30 * 0.97;   // (no frames at all: a load or a pause, not a slow scene)
     slow = short_ ? slow + 1 : 0;
     cool = calm && (!g_fps_guard || full) ? cool + 1 : 0;
     if (mode == 1) {
