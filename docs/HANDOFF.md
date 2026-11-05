@@ -79,7 +79,7 @@ Galar and Paldea (both apps, `violet` and `main`):
 
 ### 1. Violet's enrollment photo is black (blocks the Paldea release)
 
-The photo frame on the Uva Academy enrollment form is solid black; on the Switch it shows the player's character (the owner has a reference picture). The form appears right after a new game's language and name, so it is quick to reach: start Violet with no save and press A.
+The photo frame on the Uva Academy enrollment form is solid black; on the Switch it shows the player's character (the owner has a reference picture). **This is not a camera photo:** "Violet" is the game, and the "photo" is the game rendering the player's 3D model into a texture on the GPU. The phone's camera, camera HAL and files are not involved; look at render targets, texture copies and readbacks in the engine. The form appears right after a new game's language and name, so it is quick to reach: start Violet with no save and press A.
 
 Measured tonight (frame dump with `DM_NVN_TEXDUMP_NOW`):
 - The form's frame renders a character into a 1920x1080 G-buffer at 2/3 scale (viewport `0,0 1280x720`, shader constants `0.666667 0.666667 1.5 1.5`). Only the legs are in it, at the top. The earlier note says that framing is the camera's, not a viewport bug, and tonight's viewport log agrees: every viewport is full-target or `1280x720` at 0,0.
