@@ -433,3 +433,72 @@ uint32_t *spv_image_caps(const uint32_t *code, size_t words, size_t *out_words) 
     memcpy(o + w, code + last_cap, 4 * (words - last_cap)); w += words - last_cap;
     *out_words = w; return o;
 }
+// Gathers nudged by 1/512 of a texel (Adreno). On a coordinate right at a texel centre the host picks another 2x2 block than Maxwell does; Ryujinx's translator adds
+//   1 / (size * 2^(8+1)) to the coordinate for such hosts (TexturePass, QueryHostGatherBiasPrecision 8), and Lemon found Adreno is one (64x64 dark shadow squares in
+//   Tears of the Kingdom). Done here on the loaded SPIR-V, so shaders translated earlier get it too. 2D and 2D-array gathers only (x and y; a layer stays as it is)
+uint32_t *spv_gather_bias(const uint32_t *code, size_t words, size_t *out_words) {
+    enum { OpCapability = 17, OpFunction = 54, OpConstantComposite = 44, OpVectorShuffle = 79, OpImageGather = 96, OpImageDrefGather = 97,
+           OpImage = 100, OpImageQuerySizeLod = 103, OpConvertSToF = 111, OpConvertUToF = 112, OpFAdd = 129, OpFDiv = 136, CapImageQuery = 50 };
+    if (words < 5 || code[0] != 0x07230203u) return NULL;
+    uint32_t bound = code[3]; if (!bound || bound > (1u << 22)) return NULL;
+    uint32_t *ty = calloc(bound, 4), *info = calloc(bound, 4);   // ty: an id's result type; info: per type id, what it is (below)
+    if (!ty || !info) { free(ty); free(info); return NULL; }
+    // info: 1 = f32, 2 = i32 signed, 3 = i32 unsigned; vectors 0x100 | count << 4 | component kind; image 0x1000 | dim << 4 | arrayed << 2 | ms << 1 | sampled==1; sampled image 0x2000 (its image in ty[])
+    size_t first_fn = 0, last_cap = 0; int has_cap = 0, ngath = 0; uint32_t f32 = 0, i32 = 0, i32u = 0;
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) { free(ty); free(info); return NULL; } const uint32_t *x = code + i;
+        if (op == OpCapability && n == 2) { last_cap = i + n; if (x[1] == CapImageQuery) has_cap = 1; }
+        else if (op == OpTypeFloat && n >= 3 && x[2] == 32 && x[1] < bound) { info[x[1]] = 1; if (!f32) f32 = x[1]; }
+        else if (op == OpTypeInt && n == 4 && x[2] == 32 && x[1] < bound) { info[x[1]] = x[3] ? 2 : 3; if (x[3] && !i32) i32 = x[1]; if (!x[3] && !i32u) i32u = x[1]; }
+        else if (op == OpTypeVector && n == 4 && x[1] < bound && x[2] < bound && info[x[2]] && info[x[2]] < 4) info[x[1]] = 0x100 | x[3] << 4 | info[x[2]];
+        else if (op == OpTypeImage && n >= 9 && x[1] < bound) info[x[1]] = 0x1000 | (x[3] & 0xf) << 4 | (x[5] ? 4 : 0) | (x[6] ? 2 : 0) | (x[7] == 1);
+        else if (op == OpTypeSampledImage && n == 3 && x[1] < bound && x[2] < bound) { info[x[1]] = 0x2000; ty[x[1]] = x[2]; }
+        else if (op == OpFunction && !first_fn) first_fn = i;
+        else if ((op == OpImageGather || op == OpImageDrefGather) && n >= 5) ngath++;
+        // result-bearing instructions inside functions with a result type at x[1] and id at x[2] (what a gather's operands come from)
+        if (first_fn && n >= 3 && (op == 61 /* OpLoad */ || op == 86 /* OpSampledImage */ || op == 80 /* OpCompositeConstruct */ || op == OpVectorShuffle || op == 81 /* OpCompositeExtract */
+            || (op >= 109 && op <= 200) /* conversions, arithmetic, logic */ || op == 245 /* OpPhi */) && x[2] < bound) ty[x[2]] = x[1];
+        if (op == 43 /* OpConstant */ && n >= 4 && x[2] < bound) ty[x[2]] = x[1];
+        if (op == OpConstantComposite && n >= 3 && x[2] < bound) ty[x[2]] = x[1];
+        if (op == 59 /* OpVariable */ && n >= 4 && x[2] < bound) ty[x[2]] = x[1];
+        i += n; }
+    if (!ngath || !first_fn || !f32 || !last_cap) { free(ty); free(info); return NULL; }
+    uint32_t it = i32 ? i32 : i32u ? i32u : 0, ik = i32 ? 2 : i32u ? 3 : 2, next = bound;
+    uint32_t *o = malloc(4 * (words + 64 + 40 * (size_t)ngath)); if (!o) { free(ty); free(info); return NULL; }
+    size_t w = 0; memcpy(o, code, 4 * last_cap); w = last_cap;
+    if (!has_cap) { o[w++] = 2u << 16 | OpCapability; o[w++] = CapImageQuery; }
+    memcpy(o + w, code + last_cap, 4 * (first_fn - last_cap)); w += first_fn - last_cap;
+    // the types and constants the nudge needs, declared once before the first function where the shader lacks them
+    uint32_t vec[4][4] = {{0}};   // vec[kind][count]
+    for (uint32_t id = 1; id < bound; id++) if ((info[id] & 0xf00) == 0x100) { uint32_t c = info[id] >> 4 & 0xf, k = info[id] & 0xf; if (c < 4 && (k == 1 || k == ik) && !vec[k][c]) vec[k][c] = id; }
+    if (!it) { it = next++; o[w++] = 4u << 16 | OpTypeInt; o[w++] = it; o[w++] = 32; o[w++] = 1; }
+#define NEED_VEC(k, c, comp) if (!vec[k][c]) { vec[k][c] = next++; o[w++] = 4u << 16 | OpTypeVector; o[w++] = vec[k][c]; o[w++] = comp; o[w++] = c; }
+    NEED_VEC(1, 2, f32) NEED_VEC(1, 3, f32) NEED_VEC(ik, 2, it) NEED_VEC(ik, 3, it)
+#undef NEED_VEC
+    uint32_t c0 = next++, cn = next++, cn2 = next++;
+    o[w++] = 4u << 16 | 43; o[w++] = it; o[w++] = c0; o[w++] = 0;
+    o[w++] = 4u << 16 | 43; o[w++] = f32; o[w++] = cn; o[w++] = 0x3B000000u;   // 2^-9
+    o[w++] = 5u << 16 | OpConstantComposite; o[w++] = vec[1][2]; o[w++] = cn2; o[w++] = cn; o[w++] = cn;
+    int done = 0;
+    for (size_t i = first_fn; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; const uint32_t *x = code + i;
+        if ((op == OpImageGather || op == OpImageDrefGather) && n >= 5 && x[3] < bound && x[4] < bound) {
+            uint32_t sit = ty[x[3]], imt = sit && sit < bound && info[sit] == 0x2000 ? ty[sit] : 0, ii = imt && imt < bound ? info[imt] : 0, ct = ty[x[4]];
+            int dim2d = (ii & 0xf000) == 0x1000 && (ii >> 4 & 0xf) == 1 && !(ii & 2), arr = ii & 4;
+            int cok = ct && ct < bound && info[ct] == (0x100u | (arr ? 3u : 2u) << 4 | 1u);
+            if (dim2d && cok) {
+                uint32_t img = next++, sz = next++, szf = next++, off = next++, nc = next++, xy = 0, sxy = 0, out = 0;
+                o[w++] = 4u << 16 | OpImage; o[w++] = imt; o[w++] = img; o[w++] = x[3];
+                o[w++] = 5u << 16 | OpImageQuerySizeLod; o[w++] = vec[ik][arr ? 3 : 2]; o[w++] = sz; o[w++] = img; o[w++] = c0;
+                if (arr) { sxy = next++; o[w++] = 7u << 16 | OpVectorShuffle; o[w++] = vec[ik][2]; o[w++] = sxy; o[w++] = sz; o[w++] = sz; o[w++] = 0; o[w++] = 1;
+                           xy = next++; o[w++] = 7u << 16 | OpVectorShuffle; o[w++] = vec[1][2]; o[w++] = xy; o[w++] = x[4]; o[w++] = x[4]; o[w++] = 0; o[w++] = 1; }
+                o[w++] = 4u << 16 | (ik == 2 ? OpConvertSToF : OpConvertUToF); o[w++] = vec[1][2]; o[w++] = szf; o[w++] = arr ? sxy : sz;
+                o[w++] = 5u << 16 | OpFDiv; o[w++] = vec[1][2]; o[w++] = off; o[w++] = cn2; o[w++] = szf;
+                o[w++] = 5u << 16 | OpFAdd; o[w++] = vec[1][2]; o[w++] = nc; o[w++] = arr ? xy : x[4]; o[w++] = off;
+                if (arr) { out = next++; o[w++] = 8u << 16 | OpVectorShuffle; o[w++] = vec[1][3]; o[w++] = out; o[w++] = nc; o[w++] = x[4]; o[w++] = 0; o[w++] = 1; o[w++] = 4; }
+                memcpy(o + w, x, 4 * n); o[w + 4] = arr ? out : nc; w += n; i += n; done++; continue;
+            }
+        }
+        memcpy(o + w, x, 4 * n); w += n; i += n; }
+    free(ty); free(info);
+    if (!done) { free(o); return NULL; }
+    o[3] = next; *out_words = w; return o;
+}
