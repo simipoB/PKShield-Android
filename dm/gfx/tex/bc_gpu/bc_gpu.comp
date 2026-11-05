@@ -7,6 +7,10 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(std430, binding = 0) readonly buffer In { uint src[]; };
 layout(std430, binding = 1) writeonly buffer Out { uint dst[]; };
 layout(push_constant) uniform P { int kind; uint mode, bw, bh, nz, in_off, in_row, in_slice, out_off, out_row, out_slice, w, h; } pc;
+// The kind and mode as specialization constants (bc_gpu.c makes one pipeline per kind and mode): the driver compiles only that kind's path. One pipeline for all of
+//   them was too big for some compilers (Xclipse 530: vkCreateComputePipelines -1, out of host memory, #57); the push constants' kind / mode are left unused
+layout(constant_id = 0) const int KIND = 1;
+layout(constant_id = 1) const int MODE = 0;
 #include "bc_gpu_tables.glsl"
 
 uvec4 B;   // the block, little-endian words
@@ -292,7 +296,7 @@ uint h2uf(uint h, int mb) {
 
 void main() {
     uvec3 g = gl_GlobalInvocationID; if (g.x >= pc.bw || g.y >= pc.bh || g.z >= pc.nz) return;
-    int k = pc.kind, nbw = (k == 1 || k == 4 || k == -4) ? 2 : 4;
+    int k = KIND, nbw = (k == 1 || k == 4 || k == -4) ? 2 : 4;
     uint ib = pc.in_off + g.z * pc.in_slice + g.y * pc.in_row + g.x * uint(nbw);
     B = uvec4(src[ib], src[ib + 1u], nbw == 4 ? src[ib + 2u] : 0u, nbw == 4 ? src[ib + 3u] : 0u);
     // decode into T / H0 H1 (BC4 / BC5 into T's low bytes)
@@ -307,7 +311,7 @@ void main() {
     else if (k == 6 || k == -6) bc6h(k < 0);
     else if (k == 7) bc7();
     uint ob = pc.out_off + g.z * pc.out_slice;
-    if (pc.mode == 0u) {   // texels: rows of 4 * bw texels (tb bytes each), the block's 4x4 at (4 g.x, 4 g.y)
+    if (MODE == 0) {   // texels: rows of 4 * bw texels (tb bytes each), the block's 4x4 at (4 g.x, 4 g.y)
         for (int y = 0; y < 4; y++) {
             uint row = ob + (g.y * 4u + uint(y)) * pc.out_row;
             if (k == 4 || k == -4) dst[row + g.x] = T[y * 4] | T[y * 4 + 1] << 8 | T[y * 4 + 2] << 16 | T[y * 4 + 3] << 24;

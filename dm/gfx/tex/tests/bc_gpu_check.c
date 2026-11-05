@@ -9,7 +9,7 @@
 #include "bc_decode.h"
 #include "etc_encode.h"
 #define CK(x) do { VkResult r_ = (x); if (r_) { fprintf(stderr, "%s failed: %d\n", #x, r_); exit(1); } } while (0)
-static VkDevice dev; static VkPhysicalDevice pd; static VkQueue q; static VkCommandPool cp; static VkPipeline pipe; static VkPipelineLayout pl; static VkDescriptorSet ds;
+static VkDevice dev; static VkPhysicalDevice pd; static VkQueue q; static VkCommandPool cp; static VkShaderModule smod; static VkPipelineLayout pl; static VkDescriptorSet ds;
 static VkBuffer bin, bout; static VkDeviceMemory min_, mout; static uint8_t *pin, *pout; enum { CAP = 1 << 22 };
 typedef struct { int32_t kind; uint32_t mode, bw, bh, nz, in_off, in_row, in_slice, out_off, out_row, out_slice, w, h; } pcs;
 static void buf(VkBuffer *b, VkDeviceMemory *m, uint8_t **p) {
@@ -32,8 +32,7 @@ static void init(const char *spv) {
     VkDescriptorSetLayoutCreateInfo li = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = 2, .pBindings = lb }; VkDescriptorSetLayout dl; CK(vkCreateDescriptorSetLayout(dev, &li, NULL, &dl));
     VkPushConstantRange rg = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcs) };
     VkPipelineLayoutCreateInfo pli = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dl, .pushConstantRangeCount = 1, .pPushConstantRanges = &rg }; CK(vkCreatePipelineLayout(dev, &pli, NULL, &pl));
-    VkComputePipelineCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = sm, .pName = "main" }, .layout = pl };
-    CK(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &pipe));
+    smod = sm;   // (a pipeline per kind and mode: run(), the shader specialized as bc_gpu.c does)
     buf(&bin, &min_, &pin); buf(&bout, &mout, &pout);
     VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 }; VkDescriptorPoolCreateInfo dpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps };
     VkDescriptorPool dp; CK(vkCreateDescriptorPool(dev, &dpi, NULL, &dp));
@@ -47,6 +46,9 @@ static void init(const char *spv) {
 static void run(pcs p) {
     VkCommandBufferAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cp, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 }; VkCommandBuffer cb; CK(vkAllocateCommandBuffers(dev, &ai, &cb));
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO }; vkBeginCommandBuffer(cb, &bi);
+    int32_t sc[2] = { p.kind, (int32_t)p.mode }; VkSpecializationMapEntry me[2] = { { 0, 0, 4 }, { 1, 4, 4 } }; VkSpecializationInfo spi = { 2, me, sizeof sc, sc };
+    VkComputePipelineCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = smod, .pName = "main", .pSpecializationInfo = &spi }, .layout = pl };
+    VkPipeline pipe; CK(vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &pipe));
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe); vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &ds, 0, NULL);
     vkCmdPushConstants(cb, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p); vkCmdDispatch(cb, (p.bw + 7) / 8, (p.bh + 7) / 8, p.nz); vkEndCommandBuffer(cb);
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb }; CK(vkQueueSubmit(q, 1, &si, VK_NULL_HANDLE)); vkQueueWaitIdle(q);
