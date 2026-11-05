@@ -95,6 +95,7 @@ def main():
     ap.add_argument('--allow-damaged', action='store_true', help='the unpacker writes files that fail their hash check as read (the setup screen: Set up anyway)')
     ap.add_argument('--live', help='with --captures, while the game runs: the translated shaders also go into this folder for the engine to load at once (nvn_vk.c live_check)')
     ap.add_argument('--mod-shaders', help="the RomFS folders of the mods that are on, ':'-separated: their new shaders translated into the pack")
+    ap.add_argument('--resume', action='store_true', help='go on from the shader translation when an earlier run of this setup got that far (resume.json in --work)')
     a = ap.parse_args()
     if a.mod_shaders is not None: return mod_shaders(a)
     if a.games and not a.root: ap.error('--games needs --root')
@@ -110,9 +111,16 @@ def main():
     steps = ['unpack the game', 'rewrite the code', 'find the shaders', 'translate the shaders', 'pack the shaders', 'finish']
     def step(i, extra=''):
         print(f'STEP {i}/{len(steps)} {steps[i - 1]}{extra}', flush=True); log.write(f'== {time.strftime("%H:%M:%S")} {steps[i - 1]}{extra}\n')
-    def run(cmd, **kw):
-        log.write('$ ' + ' '.join(map(str, cmd)) + '\n')
-        r = subprocess.run(list(map(str, cmd)), stdout=log, stderr=subprocess.STDOUT, env=kw.pop('env', env), **kw)
+    def run(cmd, retry_killed=0, **kw):
+        # retry_killed: the shader translation, which Android's low-memory killer can stop as a whole (#51: both setups ended in it with no failure line): it is run
+        #   again that many times, with half the translators each time; what it translated is kept in its cache, so a retry goes on where it stopped
+        e = kw.pop('env', env)
+        for attempt in range(retry_killed + 1):
+            log.write('$ ' + ' '.join(map(str, cmd)) + '\n')
+            r = subprocess.run(list(map(str, cmd)), stdout=log, stderr=subprocess.STDOUT, env=e, **kw)
+            if r.returncode >= 0 or attempt == retry_killed: break
+            slots = max(1, int(e.get('DM_GATE_SLOTS', e.get('J', '8'))) // 2); e = dict(e, J=str(slots), DM_GATE_SLOTS=str(slots))
+            log.write(f'{os.path.basename(str(cmd[1]))} was stopped ({r.returncode}): again with {slots} at a time\n')
         if r.returncode:
             name = os.path.basename(str(cmd[1] if str(cmd[0]) == py else cmd[0]))
             if r.returncode < 0:
@@ -127,92 +135,107 @@ def main():
     if not os.path.isfile(keys): raise RuntimeError(f'no prod.keys in {a.keys}')
     ex = os.path.join(a.work, 'extract')
 
-    step(1)
-    if os.path.isdir(ex): shutil.rmtree(ex)
-    # the DLC unpacks into the scratch folder first: which game the files are is only known once they are unpacked, and the chosen game's own DLC (another game's
-    # when the files are the other one of the pair) must stay until this setup replaces it
-    aoc = os.path.join(a.work, 'aoc'); shutil.rmtree(aoc, ignore_errors=True)
-    # every chosen file in one run: the unpacker tells base game, update and DLC apart by their contents, not their names or the order they were chosen in
-    # (an update named without [UPD], a merged XCI, DLC chosen first all work)
-    files = [f for f in [a.base, a.update] + a.dlc if f]
-    log.write('selected files:\n')
-    for f in files:
-        try: log.write(f'  {f} ({os.path.getsize(f)} bytes)\n')
-        except OSError as e: log.write(f'  {f} (stat failed: {e})\n')
-    try:
-        free = shutil.disk_usage(a.work).free
-        log.write(f'free space at extraction start: {free} bytes\n')
-    except OSError as e: free = None; log.write(f'free-space check failed: {e}\n')
-    # the unpacked game takes about as much as the files it comes from, plus the shaders: said now, not as a failure halfway through the unpacking
-    try: need = sum(os.path.getsize(f) for f in files) + (1 << 30)
-    except OSError: need = 0
-    if free is not None and need and free < need:
-        raise RuntimeError(f'not enough free storage: the setup needs about {need / (1 << 30):.1f} GB free and the phone has {free / (1 << 30):.1f} GB. '
-                           'Free some space (or delete files you copied into the app), then set up again')
-    run([tool('nx_extract'), keys, files[0], '-', ex, '--aoc-dir', aoc] + [x for f in files[1:] for x in ('--more', f)] + (['--allow-damaged'] if a.allow_damaged else []))
-    exefs, romfs = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS')
-    if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError(f'the dump has no main module: is it {NAME}?')
-    # another game (the other one of Sword and Shield most often, #46) said so before the version check, which would otherwise ask for an update the user already chose:
-    # control.nacp holds the title's application ID at 0x3038 and its English name at 0
-    try:
-        nacp = open(os.path.join(ex, 'control.nacp'), 'rb').read()
-        tid = struct.unpack_from('<Q', nacp, 0x3038)[0]
-        name = nacp[:0x200].split(b'\0')[0].decode('utf-8', 'replace')
-    except (OSError, struct.error): tid, name = 0, ''
-    # --games (the app's games, its own first) and --root (the app's folder): the dump says which game it is, and it is set up in that game's place: the first game in
-    # --root, another in --root/<title ID>, replacing what was there (one of each game). Without --games, the profile's game only
-    games = [g for g in (a.games or '').split(',') if g]
-    if tid and games:
-        hit = next((i for i, g in enumerate(games) if int(g, 16) == tid), None)
-        if hit is None:
-            have = ' and '.join(_game.load(g).get('name') for g in games)
-            raise RuntimeError(f'your files are {name or "another game"} ({tid:016X}): this app runs {have}')
-        PROFILE = _game.load(games[hit]); NAME = PROFILE.get('name'); env['DM_GAME'] = os.environ['DM_GAME'] = games[hit]
-        out = a.root if hit == 0 else os.path.join(a.root, games[hit].upper())
-        if os.path.realpath(out) != os.path.realpath(a.out):
-            os.makedirs(out, exist_ok=True); a.out = out
-        log.write(f'the dump is {NAME} ({tid:016X}): set up in {a.out}\n'); print(f'GAME {games[hit].upper()}', flush=True)
-    elif tid and tid != PROFILE.title_id:
-        other = _game.by_title(tid)
-        name = (other.get('name') if other else name) or 'another game'
-        raise RuntimeError(f'your files are {name} ({tid:016X}), not {NAME} ({PROFILE.title_id:016X})')
-    # the game's version, checked now rather than as a failure ten minutes later in the shader steps: the code (main's build ID) must be one the profile knows
-    with open(os.path.join(exefs, 'main'), 'rb') as f: build_id = f.read(0x50)[0x40:0x50].hex()
-    builds = PROFILE.builds(); want = ', '.join(sorted(b['display'] for b in builds.values()))
-    if build_id not in {b.get('main') for b in builds.values()}:
-        have = ''
-        try: have = open(os.path.join(ex, 'control.nacp'), 'rb').read()[0x3060:0x3070].split(b'\0')[0].decode()
-        except OSError: pass
-        raise RuntimeError(f'your files hold {NAME} {have or "of an unknown version"}, and this app needs update {want}: '
-                           f'choose the {want} update too (a separate update file, or a dump that includes it)')
+    # --resume (the setup screen, after Android stopped this setup, #51 / #52: exit 137 during the shader translation): resume.json, written once the shader scan is done,
+    #   says what steps 1-3 found; the unpacked game, the rewritten code and the scanned shaders are still in place, and the translation goes on from what it had done
+    state = os.path.join(a.work, 'resume.json'); resumed = False
+    if a.resume and os.path.isfile(state) and os.path.isfile(os.path.join(ex, 'ExeFS', 'main')) and os.path.isdir(os.path.join(a.work, 'shader_pkg')):
+        import json
+        st = json.load(open(state, encoding='utf-8'))
+        a.out = st['out']; games = st['games']; files = st['files']
+        if st.get('game'):
+            PROFILE = _game.load(st['game']); NAME = PROFILE.get('name'); env['DM_GAME'] = os.environ['DM_GAME'] = st['game']
+            print(f'GAME {st["game"].upper()}', flush=True)
+        exefs, romfs, pkg, pat = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS'), os.path.join(a.work, 'shader_pkg'), os.path.join(a.out, 'patched')
+        resumed = True; log.write(f'== {time.strftime("%H:%M:%S")} resumed after a stop: steps 1-3 kept, the translation goes on\n')
+    if not resumed:
+        step(1)
+        if os.path.isdir(ex): shutil.rmtree(ex)
+        # the DLC unpacks into the scratch folder first: which game the files are is only known once they are unpacked, and the chosen game's own DLC (another game's
+        # when the files are the other one of the pair) must stay until this setup replaces it
+        aoc = os.path.join(a.work, 'aoc'); shutil.rmtree(aoc, ignore_errors=True)
+        # every chosen file in one run: the unpacker tells base game, update and DLC apart by their contents, not their names or the order they were chosen in
+        # (an update named without [UPD], a merged XCI, DLC chosen first all work)
+        files = [f for f in [a.base, a.update] + a.dlc if f]
+        log.write('selected files:\n')
+        for f in files:
+            try: log.write(f'  {f} ({os.path.getsize(f)} bytes)\n')
+            except OSError as e: log.write(f'  {f} (stat failed: {e})\n')
+        try:
+            free = shutil.disk_usage(a.work).free
+            log.write(f'free space at extraction start: {free} bytes\n')
+        except OSError as e: free = None; log.write(f'free-space check failed: {e}\n')
+        # the unpacked game takes about as much as the files it comes from, plus the shaders: said now, not as a failure halfway through the unpacking
+        try: need = sum(os.path.getsize(f) for f in files) + (1 << 30)
+        except OSError: need = 0
+        if free is not None and need and free < need:
+            raise RuntimeError(f'not enough free storage: the setup needs about {need / (1 << 30):.1f} GB free and the phone has {free / (1 << 30):.1f} GB. '
+                               'Free some space (or delete files you copied into the app), then set up again')
+        run([tool('nx_extract'), keys, files[0], '-', ex, '--aoc-dir', aoc] + [x for f in files[1:] for x in ('--more', f)] + (['--allow-damaged'] if a.allow_damaged else []))
+        exefs, romfs = os.path.join(ex, 'ExeFS'), os.path.join(ex, 'RomFS')
+        if not os.path.isfile(os.path.join(exefs, 'main')): raise RuntimeError(f'the dump has no main module: is it {NAME}?')
+        # another game (the other one of Sword and Shield most often, #46) said so before the version check, which would otherwise ask for an update the user already chose:
+        # control.nacp holds the title's application ID at 0x3038 and its English name at 0
+        try:
+            nacp = open(os.path.join(ex, 'control.nacp'), 'rb').read()
+            tid = struct.unpack_from('<Q', nacp, 0x3038)[0]
+            name = nacp[:0x200].split(b'\0')[0].decode('utf-8', 'replace')
+        except (OSError, struct.error): tid, name = 0, ''
+        # --games (the app's games, its own first) and --root (the app's folder): the dump says which game it is, and it is set up in that game's place: the first game in
+        # --root, another in --root/<title ID>, replacing what was there (one of each game). Without --games, the profile's game only
+        games = [g for g in (a.games or '').split(',') if g]
+        if tid and games:
+            hit = next((i for i, g in enumerate(games) if int(g, 16) == tid), None)
+            if hit is None:
+                have = ' and '.join(_game.load(g).get('name') for g in games)
+                raise RuntimeError(f'your files are {name or "another game"} ({tid:016X}): this app runs {have}')
+            PROFILE = _game.load(games[hit]); NAME = PROFILE.get('name'); env['DM_GAME'] = os.environ['DM_GAME'] = games[hit]
+            out = a.root if hit == 0 else os.path.join(a.root, games[hit].upper())
+            if os.path.realpath(out) != os.path.realpath(a.out):
+                os.makedirs(out, exist_ok=True); a.out = out
+            log.write(f'the dump is {NAME} ({tid:016X}): set up in {a.out}\n'); print(f'GAME {games[hit].upper()}', flush=True)
+        elif tid and tid != PROFILE.title_id:
+            other = _game.by_title(tid)
+            name = (other.get('name') if other else name) or 'another game'
+            raise RuntimeError(f'your files are {name} ({tid:016X}), not {NAME} ({PROFILE.title_id:016X})')
+        # the game's version, checked now rather than as a failure ten minutes later in the shader steps: the code (main's build ID) must be one the profile knows
+        with open(os.path.join(exefs, 'main'), 'rb') as f: build_id = f.read(0x50)[0x40:0x50].hex()
+        builds = PROFILE.builds(); want = ', '.join(sorted(b['display'] for b in builds.values()))
+        if build_id not in {b.get('main') for b in builds.values()}:
+            have = ''
+            try: have = open(os.path.join(ex, 'control.nacp'), 'rb').read()[0x3060:0x3070].split(b'\0')[0].decode()
+            except OSError: pass
+            raise RuntimeError(f'your files hold {NAME} {have or "of an unknown version"}, and this app needs update {want}: '
+                               f'choose the {want} update too (a separate update file, or a dump that includes it)')
 
-    # from here the game's folder changes: it is not ready until this setup finishes (a setup stopped halfway left the old ready file, and Play then started a game
-    # with its rewritten code deleted)
-    try: os.remove(os.path.join(a.out, 'ready'))
-    except FileNotFoundError: pass
-    dst = os.path.join(a.out, 'aoc'); shutil.rmtree(dst, ignore_errors=True)
-    if os.path.isdir(aoc): shutil.move(aoc, dst)
-    aoc = dst
+        # from here the game's folder changes: it is not ready until this setup finishes (a setup stopped halfway left the old ready file, and Play then started a game
+        # with its rewritten code deleted)
+        try: os.remove(os.path.join(a.out, 'ready'))
+        except FileNotFoundError: pass
+        dst = os.path.join(a.out, 'aoc'); shutil.rmtree(dst, ignore_errors=True)
+        if os.path.isdir(aoc): shutil.move(aoc, dst)
+        aoc = dst
 
-    step(2)
-    pat = os.path.join(a.out, 'patched'); shutil.rmtree(pat, ignore_errors=True); os.makedirs(pat)
-    for m in PROFILE.words('modules'):
-        if os.path.isfile(os.path.join(exefs, m)):
-            run([py, os.path.join(DM, 'tools/patch_nso.py'), os.path.join(exefs, m), pat, m], env=dict(env, DM_PATCH_TARGET='android'))
+        step(2)
+        pat = os.path.join(a.out, 'patched'); shutil.rmtree(pat, ignore_errors=True); os.makedirs(pat)
+        for m in PROFILE.words('modules'):
+            if os.path.isfile(os.path.join(exefs, m)):
+                run([py, os.path.join(DM, 'tools/patch_nso.py'), os.path.join(exefs, m), pat, m], env=dict(env, DM_PATCH_TARGET='android'))
 
-    step(3)
-    pkg = os.path.join(a.work, 'shader_pkg'); shutil.rmtree(pkg, ignore_errors=True)
-    # the shaders an earlier run of the game captured (nvn_capture/ in the game dir, android_main.c DM_NVN_CAPTURE) go into the new pack too: the game saves each
-    # one only once, so a pack rebuilt without them would never get them back
-    # Trinity games (Violet: every file of arc/data.trpfs is Oodle-compressed): the scan decodes them with the game's own decoder, dmoodle running the rewritten
-    # modules of step 2, and only the files that hold shaders come back over the pipe (hle_oodle.c DM_OODLE_SERVE=BNSH)
-    if PROFILE.get('shader_oodle', 'off') == 'on':
-        if not os.path.isfile(tool('dmoodle')): raise RuntimeError(f'{NAME} needs the dmoodle tool, which this app build does not have')
-        env.update(DM_OODLE_HOST=tool('dmoodle'), DM_OODLE_MODULES=pat, DM_OODLE_FILTER='BNSH')
-    run([py, os.path.join(DM, 'gfx/tools/shader_split.py'), romfs, os.path.join(exefs, 'main'), pkg,
-         os.path.join(a.work, 'shader_map.found.tsv'), os.path.join(a.work, 'shader_facts.found.tsv'), os.path.join(a.work, 'shader_pairs.found.tsv')],
-        env=dict(env, DM_NVN_CAPTURE=os.path.join(a.out, 'nvn_capture')))
+        step(3)
+        pkg = os.path.join(a.work, 'shader_pkg'); shutil.rmtree(pkg, ignore_errors=True)
+        # the shaders an earlier run of the game captured (nvn_capture/ in the game dir, android_main.c DM_NVN_CAPTURE) go into the new pack too: the game saves each
+        # one only once, so a pack rebuilt without them would never get them back
+        # Trinity games (Violet: every file of arc/data.trpfs is Oodle-compressed): the scan decodes them with the game's own decoder, dmoodle running the rewritten
+        # modules of step 2, and only the files that hold shaders come back over the pipe (hle_oodle.c DM_OODLE_SERVE=BNSH)
+        if PROFILE.get('shader_oodle', 'off') == 'on':
+            if not os.path.isfile(tool('dmoodle')): raise RuntimeError(f'{NAME} needs the dmoodle tool, which this app build does not have')
+            env.update(DM_OODLE_HOST=tool('dmoodle'), DM_OODLE_MODULES=pat, DM_OODLE_FILTER='BNSH')
+        run([py, os.path.join(DM, 'gfx/tools/shader_split.py'), romfs, os.path.join(exefs, 'main'), pkg,
+             os.path.join(a.work, 'shader_map.found.tsv'), os.path.join(a.work, 'shader_facts.found.tsv'), os.path.join(a.work, 'shader_pairs.found.tsv')],
+            env=dict(env, DM_NVN_CAPTURE=os.path.join(a.out, 'nvn_capture')))
 
+        import json
+        json.dump({'out': a.out, 'game': env.get('DM_GAME'), 'games': games, 'files': files}, open(state, 'w', encoding='utf-8'))
     step(4)
     chain = subprocess.run([py, os.path.join(DM, 'gfx/tools/dmsh_chain.py')], capture_output=True, text=True, env=env).stdout.strip()
     # The other game of the pair already set up with the same translation chain (Scarlet and Violet share every one of their 35,937 shaders; Sword and Shield most of
@@ -237,11 +260,12 @@ def main():
         try: os.link(dp, tmp)   # (no extra space: a later merge into either game writes a new file and leaves the other's alone)
         except OSError: shutil.copyfile(dp, tmp)
         if missing:
-            vk = os.path.join(a.work, 'vk', 'b-' + chain); shutil.rmtree(os.path.dirname(vk), ignore_errors=True); os.makedirs(vk)
-            cache = os.path.join(a.work, 'shader_cache'); shutil.rmtree(cache, ignore_errors=True)
+            vk = os.path.join(a.work, 'vk', 'b-' + chain); cache = os.path.join(a.work, 'shader_cache')
+            if not resumed: shutil.rmtree(os.path.dirname(vk), ignore_errors=True); shutil.rmtree(cache, ignore_errors=True)
+            os.makedirs(vk, exist_ok=True)
             gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
             xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=a.work) if gate else dict(XLATE=tool('dmsh_xlate'))
-            run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache, *missing],
+            run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache, *missing], retry_killed=3,
                 env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, **xenv, DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
                          DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'), DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
                          DMSH_PAIRS=os.path.join(a.work, 'shader_pairs.found.tsv'), MAIN=os.path.join(exefs, 'main')))
@@ -255,16 +279,18 @@ def main():
         else: step(5)
         os.replace(tmp, target)
     else:
-        vk = os.path.join(a.work, 'vk', 'b-' + chain); shutil.rmtree(os.path.dirname(vk), ignore_errors=True); os.makedirs(vk)
-        cache = os.path.join(a.work, 'shader_cache'); shutil.rmtree(cache, ignore_errors=True)
-        for d in glob.glob(os.path.join(a.work, 'dmsh_*')): shutil.rmtree(d, ignore_errors=True)   # an interrupted run's scratch dir would count toward the progress
+        vk = os.path.join(a.work, 'vk', 'b-' + chain); cache = os.path.join(a.work, 'shader_cache')
+        if not resumed:
+            shutil.rmtree(os.path.dirname(vk), ignore_errors=True); shutil.rmtree(cache, ignore_errors=True)
+            for d in glob.glob(os.path.join(a.work, 'dmsh_*')): shutil.rmtree(d, ignore_errors=True)   # an interrupted run's scratch dir would count toward the progress
+        os.makedirs(vk, exist_ok=True)
         stop = threading.Event(); found = os.path.join(a.work, 'shader_map.found.tsv')
         threading.Thread(target=watch_translation, args=(found, a.work, os.path.join(cache, 'b-' + chain), stop), daemon=True).start()
         # the translators go through dmsh_gate when the app has it: each beyond the first starts only while the phone has the memory for it (dmsh_gate.c)
         gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
         xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=a.work) if gate else dict(XLATE=tool('dmsh_xlate'))
         log.write(f'translators: {env.get("J", "8")} at most, ' + ('started as memory allows (dmsh_gate)\n' if gate else 'all at once (no dmsh_gate)\n'))
-        try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache],
+        try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache], retry_killed=3,
             env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, **xenv, DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
                      DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'),
                      DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
@@ -300,6 +326,8 @@ def main():
     try: os.remove(os.path.join(a.out, 'captures_done'))
     except FileNotFoundError: pass
     open(os.path.join(a.out, 'ready'), 'w').write(chain + '\n')
+    try: os.remove(state)
+    except FileNotFoundError: pass
     print('DONE', flush=True)
 
 def pak_keys(path):   # the keys an NXSP shader pack holds, and its chain version

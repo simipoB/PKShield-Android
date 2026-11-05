@@ -659,7 +659,18 @@ public final class SetupActivity extends Activity {
         if (g[1] != null) { cmd.add("--update"); cmd.add(g[1]); }
         for (int k = 2; k < g.length; k++) { cmd.add("--dlc"); cmd.add(g[k]); }
         if (allowDamaged) cmd.add("--allow-damaged");
+        resumes = 0; workerCap = 0; runFullSetup(cmd);
+    }
+    // Android's memory killer can stop the whole setup on phones that guard memory closely (#51 / #52: "setup stopped (137)" during the shader translation): it is
+    //   started again with --resume, up to 3 times, with half the workers each time; the setup goes on from the translation (setup_game.py resume.json)
+    private int resumes, workerCap;
+    private void runFullSetup(List<String> cmd) {
         runSetup(cmd, err -> {
+            if (err != null && err.contains("(137)") && resumes < 3) {
+                resumes++; workerCap = Math.max(1, (workerCap > 0 ? workerCap : setupWorkers()) / 2);
+                status.setText(T.t(this, "Android stopped the setup to free memory: going on from where it was (%s of 3)...", resumes));
+                List<String> again = new ArrayList<>(cmd); if (!again.contains("--resume")) again.add("--resume"); runFullSetup(again); return;
+            }
             if (err != null && offerAnyway) anyway.setVisibility(android.view.View.VISIBLE);
             bar.setProgress(err == null ? 600 : bar.getProgress());
             status.setText(err == null ? T.t(this, "Ready: tap Play.") : T.t(this, "Setup failed: %s", err) + "\n" + T.t(this, "The setup log is in Android/data/%s/files/setup_work.", getPackageName()));
@@ -671,6 +682,7 @@ public final class SetupActivity extends Activity {
             }
         });
     }
+    private int workers() { return workerCap > 0 ? workerCap : setupWorkers(); }
     // shaders the game saved on an earlier run (nvn_capture/<key>.code) and no setup has translated yet (captures_done lists those already done)
     private List<String> pendingCaptures() { return pendingCaptures(gameDir()); }
     static List<String> pendingCaptures(File gameDir) {   // GameActivity asks too
@@ -741,7 +753,7 @@ public final class SetupActivity extends Activity {
                 if (!args.contains("--captures")) {   // the dump says which game it is: setup puts it in that game's place (GAME line below), one of each game
                     StringBuilder ids = new StringBuilder(); for (String[] g : GameSettings.games(this)) ids.append(ids.length() > 0 ? "," : "").append(g[0]);
                     cmd.add("--games"); cmd.add(ids.toString()); cmd.add("--root"); cmd.add(GameSettings.root(this).getPath()); }
-                ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true); toolEnv(this, pb, py, dm, bin, setupWorkers());
+                ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true); toolEnv(this, pb, py, dm, bin, workers());
                 p = pb.start();
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String ln;
                 while ((ln = r.readLine()) != null) { final String l = ln; try {

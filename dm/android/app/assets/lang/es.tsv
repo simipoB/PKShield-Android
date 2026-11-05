@@ -241,3 +241,4 @@ Standard	Estándar
 Standard: 1024 × 1024, as the game is made	Estándar: 1024 × 1024, como el juego original
 Sharp: 2048 × 2048 shadow maps, more GPU work (Fl4sh's 2K Shadows mod)	Nítidas: mapas de sombras de 2048 × 2048, más trabajo para la GPU (mod 2K Shadows de Fl4sh)
 60 fps: smoother; drops to 720p when needed to hold 60 (with Graphics on Auto or Adaptive)	60 fps: más fluido; baja a 720p cuando hace falta para mantener 60 (con Gráficos en Auto o Adaptable)
+Android stopped the setup to free memory: going on from where it was (%s of 3)...	Android detuvo la configuración para liberar memoria: continúa desde donde estaba (%s de 3)...
