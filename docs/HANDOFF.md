@@ -77,22 +77,9 @@ Galar and Paldea (both apps, `violet` and `main`):
 
 ## Open problems
 
-### 1. Violet's enrollment photo is black (blocks the Paldea release)
+### 1. Violet's enrollment photo was black: fixed
 
-The photo frame on the Uva Academy enrollment form is solid black; on the Switch it shows the player's character (the owner has a reference picture). **This is not a camera photo:** "Violet" is the game, and the "photo" is the game rendering the player's 3D model into a texture on the GPU. The phone's camera, camera HAL and files are not involved; look at render targets, texture copies and readbacks in the engine. The form appears right after a new game's language and name, so it is quick to reach: start Violet with no save and press A.
-
-**Gate:** on a 3120x1440 screenshot of the form, the photo box (x 1147-1412, y 718-1069) measures grey mean 32.2, std 5.4 today: a flat fill, no picture. The fix passes when the box's std is above 15 and it visibly shows the character (compare the owner's Switch reference). Measure on the S25+ in landscape, touch controls faded.
-
-Measured tonight (frame dump with `DM_NVN_TEXDUMP_NOW`):
-- The form's frame renders a character into a 1920x1080 G-buffer at 2/3 scale (viewport `0,0 1280x720`, shader constants `0.666667 0.666667 1.5 1.5`). Only the legs are in it, at the top. The earlier note says that framing is the camera's, not a viewport bug, and tonight's viewport log agrees: every viewport is full-target or `1280x720` at 0,0.
-- A separate **1280x840 render target** is drawn at some point (`viewport 0,0 1280x840 on a 1280x840 target`). It was not drawn in the dumped frame. It is the most likely photo.
-- `DM_VK_LOG_ALIAS=1` logged no texture created over a render target's memory at the same offset, so the form does not read the photo through a second texture object at the same address.
-- No readback or copy lines appeared without `DM_VK_LOG_COPY`, which was only just added.
-
-Next steps:
-1. Run Violet with `DM_VK_LOG_COPY=1` (and keep `DM_VK_LOG_VP=1`) through the name screen to the form. See whether the 1280x840 target is copied to a texture (`copy texture→texture`) or a buffer (`texture→buffer`), and whether the copy finds both images.
-2. If it goes to a buffer and is read on the CPU (the photo is kept in the save), check that the GPU's copy is complete and visible before the CPU reads (`copy_b2t`, the submission fence).
-3. If no copy appears, dump the frame where the 1280x840 viewport is used. `DM_NVN_TEXDUMP_NOW` dumps the next frame after the trigger file appears; set the trigger right as the name is confirmed.
+Fixed on 2026-11-04 (confirmed on the owner's phone). The game takes the photo by copying a 1440x864 area of the screen into a **linear** texture (`NVN_TEXTURE_FLAGS_LINEAR`), reads those pixels on the CPU, compresses them (format `0x42`) and uploads them again for the form. The engine kept the copy in the GPU image only, so the CPU compressed zeros. `copy_t2t` now also writes a copy into a linear texture to the texture's memory (`DM_VK_NO_LINEAR_WB=1` turns that off). Found with `DM_VK_LOG_COPY=1`, which logs each distinct copy once with its frame.
 
 ### 2. Sword / Shield at 60 fps: the stadium crowd flickers
 
