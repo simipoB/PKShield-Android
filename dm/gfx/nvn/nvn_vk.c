@@ -212,8 +212,14 @@ void mtl_init(void) {
             VkPhysicalDeviceExternalBufferInfo xi = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO, .usage = BUF_ALL, .handleType = cand[i] };
             VkExternalBufferProperties xp = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES };
             vkGetPhysicalDeviceExternalBufferProperties(g_pd, &xi, &xp);
+            VLOG("memory pools: %s buffers: external memory features %#x", cand[i] == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "dma-buf" : "opaque-fd", (unsigned)xp.externalMemoryProperties.externalMemoryFeatures);
             if (xp.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT) { g_fdtype = cand[i]; g_fdmap = -1; }
         }
+        // Mali (ARM, PanVK too) answers that no buffer is exportable (Mali-G720 and Mali-G615 with PanVK, #53 / #47), and its pools then stay mirrored, where the game's
+        //   pictures came out white. The dma-buf route is tried anyway: a buffer it refuses (VK_ERROR_INVALID_EXTERNAL_HANDLE), memory it does not export, or a crash
+        //   (fd_export_mark) each fall back to moving the driver's mappings, as today
+        if (!g_fdmap && dmabuf && g_props.vendorID == 0x13B5) { g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT; g_fdmap = -1;
+            VLOG("memory pools: Mali lists no exportable buffer: the dma-buf route tried anyway (it falls back by itself)"); }
         if (g_fdmap) { dext[ndext++] = "VK_KHR_external_memory_fd"; if (g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) dext[ndext++] = "VK_EXT_external_memory_dma_buf"; }
     }
     VLOG("memory pools: fd export %s (host import %d, VK_KHR_external_memory_fd %d, VK_EXT_external_memory_dma_buf %d)", !g_fdmap ? "off" : g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "to try, as a dma-buf" : "to try, as an opaque fd",
