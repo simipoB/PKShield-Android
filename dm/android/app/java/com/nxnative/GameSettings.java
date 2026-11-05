@@ -80,6 +80,7 @@ final class GameSettings {
     static boolean isShield(Context c) { return "01008DB008C2C000".equalsIgnoreCase(game(c)[0]); }
     // the games the built-in 60 fps patch knows (loader.c FPS_SITES: Pokémon Shield and Sword 1.3.2)
     // the frame-rate setting: Sword / Shield 1.3.2 (loader.c fps_patch), Scarlet / Violet 4.0.0 (loader.c's built-in Dynamic FPS mod)
+    static final boolean AUTO_60 = false;
     static boolean has60(Context c) { String id = game(c)[0]; return "01008DB008C2C000".equalsIgnoreCase(id) || "0100ABF008968000".equalsIgnoreCase(id) || paldea(c); }
     static boolean paldea(Context c) { String id = game(c)[0]; return "0100A3D008C5C000".equalsIgnoreCase(id) || "01008F6008C5E000".equalsIgnoreCase(id); }
 
@@ -112,7 +113,8 @@ final class GameSettings {
         String tex = ram == 0 || (gpu == 0 && ram < 2) || (heavy && ram < 2) ? "half" : "full";
         String aniso = gpu == 2 ? "8" : gpu == 1 ? "4" : "2";
         // 60 on top phones for Sword / Shield (held by the frame-rate guard, android_main.c graphics_auto); Scarlet / Violet stay at 30 unless chosen
-        String fps = !heavy && cpu == 2 && gpu == 2 && ram == 2 && displayDivides(c, 60) ? "60" : "30";
+        // Auto stays at the game's 30: at 60 the stadium crowd flickers (an animation counted in frames) and a heavy scene falls back to 720p; 60 is the player's choice
+        String fps = AUTO_60 && !heavy && cpu == 2 && gpu == 2 && ram == 2 && displayDivides(c, 60) ? "60" : "30";
         String scaler = gpu >= 1 ? "sgsr" : "sharp";
         String shadows = cpu == 2 && gpu == 2 && ram == 2 ? "2k" : "";   // (Scarlet / Violet's 2K shadow maps: top phones only)   // (SGSR's extra passes on a GPU with room for them; the cheaper Sharp on a low one)
         String[] t = { "low", "mid", "top" };
