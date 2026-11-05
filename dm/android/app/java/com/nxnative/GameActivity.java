@@ -160,7 +160,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         } catch (Exception e) { }
         // Why Android ended the previous run (Android 11+): a game that vanished with no crash in its log was killed from outside (memory, heat, the phone's own
         //   game manager: #57's log simply stops). Said at the top of the new log (android_main.c boot lines)
-        if (Build.VERSION.SDK_INT >= 30) try {
+        if (android.os.Build.VERSION.SDK_INT >= 30) try {
             android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
             java.util.List<android.app.ApplicationExitInfo> ex = am.getHistoricalProcessExitReasons(null, 0, 1);
             if (!ex.isEmpty()) { android.app.ApplicationExitInfo e = ex.get(0);
