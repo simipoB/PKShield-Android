@@ -116,7 +116,7 @@ final class GameSettings {
         // Auto stays at the game's 30: at 60 the stadium crowd flickers (an animation counted in frames) and a heavy scene falls back to 720p; 60 is the player's choice
         String fps = AUTO_60 && !heavy && cpu == 2 && gpu == 2 && ram == 2 && displayDivides(c, 60) ? "60" : "30";
         String scaler = gpu >= 1 ? "sgsr" : "sharp";
-        String shadows = cpu == 2 && gpu == 2 && ram == 2 ? "2k" : "";   // (Scarlet / Violet's 2K shadow maps: top phones only)   // (SGSR's extra passes on a GPU with room for them; the cheaper Sharp on a low one)
+        String shadows = "";   // (2K shadow maps: removed from Auto and the menu at the owner's request; DM_SHADOWS=2k in env.txt still applies them, for testing)   // (SGSR's extra passes on a GPU with room for them; the cheaper Sharp on a low one)
         String[] t = { "low", "mid", "top" };
         String what = String.format(java.util.Locale.ROOT, "%s CPU%s, %s GPU, %s memory (%.0f GB), display up to %.0f Hz", t[cpu], khz > 0 ? String.format(java.util.Locale.ROOT, " %.1f GHz", khz / 1e6) : "",
                                     t[gpu], t[ram], Math.ceil(gb), maxRefresh(c));
