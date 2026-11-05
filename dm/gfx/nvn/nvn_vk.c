@@ -185,6 +185,11 @@ void mtl_init(void) {
         if (old11) for (unsigned k = 0; k < sizeof deps11 / sizeof *deps11; k++) if (has_ext(de, nde, deps11[k])) dext[ndext++] = deps11[k];
         VLOG("Vulkan %u.%u device: dynamic rendering, timeline semaphores and extended dynamic state through their extensions", VK_API_VERSION_MAJOR(g_api), VK_API_VERSION_MINOR(g_api));
     }
+    // DM_VK_AS_MALI=1: this GPU takes the routes a Mali-G615 / G720 takes (no BC textures: transcoded on upload; no push descriptors, depth clip control, vertex divisor
+    //   or host import; pools on dma-bufs from Android's heap), so what goes wrong there shows on a phone at hand (#47, #53, #55). Each still has its own DM_VK_ switch
+    static int as_mali = -1; if (as_mali < 0) { const char *e = getenv("DM_VK_AS_MALI"); as_mali = e && atoi(e); }
+    if (as_mali) { setenv("DM_VK_NO_PUSH", "1", 0); setenv("DM_VK_NO_BC", "1", 0); setenv("DM_VK_NO_HOST_IMPORT", "1", 0); setenv("DM_VK_DMAHEAP", "1", 0);
+        VLOG("DM_VK_AS_MALI: Mali's routes on this GPU (no BC, push descriptors, depth clip control, vertex divisor, host import; dma-buf pools)"); }
     if (has_ext(de, nde, "VK_KHR_push_descriptor") && !getenv("DM_VK_NO_PUSH")) dext[ndext++] = "VK_KHR_push_descriptor";
     else { g_nopush = 1; VLOG("no push descriptors: descriptor sets from per-submission pools"); }
     if (has_ext(de, nde, "VK_KHR_portability_subset")) { dext[ndext++] = "VK_KHR_portability_subset"; g_moltenvk = 1; }
@@ -194,9 +199,9 @@ void mtl_init(void) {
         VLOG("push descriptors: up to %u per program", g_maxpush); }
     if ((g_host_import = has_ext(de, nde, "VK_EXT_external_memory_host"))) dext[ndext++] = "VK_EXT_external_memory_host";
     if ((g_has_swapchain = has_ext(de, nde, "VK_KHR_swapchain"))) dext[ndext++] = "VK_KHR_swapchain";
-    if ((g_clipctl = has_ext(de, nde, "VK_EXT_depth_clip_control"))) dext[ndext++] = "VK_EXT_depth_clip_control";
+    if ((g_clipctl = !as_mali && has_ext(de, nde, "VK_EXT_depth_clip_control"))) dext[ndext++] = "VK_EXT_depth_clip_control";
     if ((g_border = has_ext(de, nde, "VK_EXT_custom_border_color"))) dext[ndext++] = "VK_EXT_custom_border_color";
-    if ((g_divisor = has_ext(de, nde, "VK_EXT_vertex_attribute_divisor"))) dext[ndext++] = "VK_EXT_vertex_attribute_divisor";
+    if ((g_divisor = !as_mali && has_ext(de, nde, "VK_EXT_vertex_attribute_divisor"))) dext[ndext++] = "VK_EXT_vertex_attribute_divisor";
     if ((g_eds2 = has_ext(de, nde, "VK_EXT_extended_dynamic_state2"))) dext[ndext++] = "VK_EXT_extended_dynamic_state2";
     int compctl = has_ext(de, nde, "VK_EXT_image_compression_control"); if (compctl) dext[ndext++] = "VK_EXT_image_compression_control";   // to read whether render targets stay compressed
     if (getenv("DM_VK_NO_HOST_IMPORT")) g_host_import = 0;
