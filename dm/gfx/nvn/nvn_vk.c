@@ -276,7 +276,8 @@ void mtl_init(void) {
     int dynren = old ? fdr.dynamicRendering : f13.dynamicRendering, timeline = old11 ? fts.timelineSemaphore : f12.timelineSemaphore;
     if (!dynren || !timeline || (old && !fed.extendedDynamicState)) VDIE("dynamic rendering %d / timeline semaphores %d / extended dynamic state %d missing", dynren, timeline, old ? fed.extendedDynamicState : 1);
     if (!fcc.depthClipControl) g_clipctl = 0;
-    if (!fbc.customBorderColors) g_border = 0;
+    // custom border colours are made without a format (sampler_get), which needs customBorderColorWithoutFormat: a driver without it gets the nearest standard colour
+    if (!fbc.customBorderColors || !fbc.customBorderColorWithoutFormat) { if (fbc.customBorderColors) VLOG("custom border colours need a format on this driver: the nearest standard colour instead"); g_border = 0; }
     // BC1–BC7: sampled directly where the GPU has them (Adreno, Xclipse, desktop), else decoded on upload (Mali, PowerVR; DM_VK_NO_BC=1 tries that path anywhere)
     if (getenv("DM_VK_NO_BC") && atoi(getenv("DM_VK_NO_BC"))) f2.features.textureCompressionBC = VK_FALSE;
     nvn_fmt_vk_bc(f2.features.textureCompressionBC);
@@ -2223,6 +2224,7 @@ static VkPipeline pso_make(vprog *pr, pkey k) {
     { static int npipe; VLOG("pipeline %d: vertex %s fragment %s", ++npipe, vs->key, fs ? fs->key : "-"); }   // the last line before a driver crash names the shaders it was compiling
 #endif
     VkResult r = vkCreateGraphicsPipelines(g_dev, g_pcache, 1, &gi, NULL, &p);
+    if (r == VK_INCOMPLETE && p) { RED_ONCE(107, "graphics pipeline creation answered VK_INCOMPLETE (out of spec; Mali, Adreno 5xx): the pipeline it made is used"); r = VK_SUCCESS; }
     if (r) { VLOG("[RED] graphics pipeline (vertex %s fragment %s) failed: %d", vs->key, fs ? fs->key : "-", r); return VK_NULL_HANDLE; }
     return p;
 }
