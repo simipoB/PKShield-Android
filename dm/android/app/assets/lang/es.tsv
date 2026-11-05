@@ -248,3 +248,7 @@ Almost done with this step: its last part shows no progress and can take several
 Imported %d save file(s) into %s (%s). Tap Play to load it; your current save is kept as a backup.	Se importaron %d archivo(s) de guardado en %s (%s). Pulsa Jugar para cargarlo; tu guardado actual se conserva como copia.
 Could not import save data: %s	No se pudo importar el guardado: %s
 Your files are the base game only: this app needs the %s update too. Choose the update (.nsp, its title ID ends in 800) as well.	Tus archivos son solo el juego base: esta app necesita también la actualización %s. Elige también la actualización (.nsp, su ID de título termina en 800).
+Bug reports	Informes de errores
+Capture a frame	Capturar un fotograma
+Close this menu within 3 seconds and stay where the problem shows: the next frame is saved, step by step, as pictures and notes in Download (a ZIP ending in frame-capture.zip). Attach it to your issue.	Cierra este menú en 3 segundos y quédate donde se ve el problema: el siguiente fotograma se guarda, paso a paso, como imágenes y notas en Download (un ZIP que termina en frame-capture.zip). Adjúntalo a tu reporte.
+Capturing in 3 seconds: close the menu.	Capturando en 3 segundos: cierra el menú.

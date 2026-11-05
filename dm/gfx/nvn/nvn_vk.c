@@ -46,6 +46,7 @@
 #include "../tex/etc_encode.h"
 #include "../tex/tex_cache.h"
 #include "../tex/bc_gpu.h"
+#include "framecap_zip.h"
 #include "dmsh_chain.h"
 #include "game_profile.h"
 #include "../../host/dm.h"
@@ -1030,6 +1031,8 @@ typedef struct vtex {
     int drop;                              // mip levels left out (texture quality half: the image is the game's levels from this one on)
     struct vtex *alt; int alt_fmt;         // BC decoded / transcoded on this GPU, viewed as another BC kind (tex_view_for): the same blocks converted for that kind
 } vtex;
+static _Atomic int g_cap;   // the frame capture's state (Frame capture, before pass_end)
+static void cap_tex(int tid, const tex_t *t, const vtex *x, int vfmt, VkFormat f);
 static pthread_mutex_t g_smu = PTHREAD_MUTEX_INITIALIZER;   // serial / sharing / CPU-written tables
 static nvn_hmap g_by_serial = {.klen = 8}, g_ghost = {.klen = 8}, g_tex_live = {.klen = 8}, g_cpu_tex = {.klen = 8};
 enum { NGHOST = 512 }; static uint64_t g_ghost_ring[NGHOST]; static unsigned g_ghost_next;
@@ -1510,6 +1513,7 @@ static VkImageView tex_view_for(int tid, const spv_res *r, int storage) {
     }
     VkFormat f = x->fmt; uint8_t fsw[4]; memcpy(fsw, x->fswz, 4);
     if (rg.has_v && rg.v.set_format) { uint32_t vf = 0; uint8_t s2[4]; if (nvn_fmt_to_vk(rg.v.format, &vf, s2) && vf) { f = (VkFormat)vf; memcpy(fsw, s2, 4); } }
+    if (atomic_load(&g_cap) == 2 && !storage) cap_tex(tid, &rg.t, x, rg.has_v && rg.v.set_format && rg.v.format != rg.t.d.format ? (int)rg.v.format : 0, f);
     uint32_t l0 = rg.has_v && rg.v.set_levels ? rg.v.base_level : 0, nl = rg.has_v && rg.v.set_levels && rg.v.nlevels ? rg.v.nlevels : x->levels + x->drop - (l0 < x->levels + x->drop ? l0 : 0);
     if (x->drop) { uint32_t d = l0 < (uint32_t)x->drop ? l0 : (uint32_t)x->drop; l0 -= d; if (nl > (uint32_t)x->drop - d) nl -= (uint32_t)x->drop - d; }   // the game's level n is the image's n - drop
     uint32_t s0 = rg.has_v && rg.v.set_layers ? rg.v.min_layer : 0, ns = rg.has_v && rg.v.set_layers && rg.v.nlayers ? rg.v.nlayers : x->layers - (s0 < x->layers ? s0 : 0);
@@ -1880,7 +1884,113 @@ void mtl_prog_release(prog_t *p) { (void)p; }   // programs are kept (keyed by s
 // ================= Render passes =================
 static struct { int open; uint32_t cfmt[8], dfmt, sfmt, samples, tw, th; int hd, hs, ncolor; } P;
 static VkCommandBuffer CB(void) { return g_sub->cb; }
-static void pass_end(void) { if (P.open) { vkCmdEndRendering(CB()); P.open = 0; } }
+// ================= Frame capture (a bug report's pictures) =================
+// One frame, pass by pass: each pass's colour targets scaled into 320x180 pictures (blits into one array image, copied out as they come), and notes on what the pass
+// drew with (target formats, the textures its draws read with their stored / viewed formats and how they were converted here, the first draws' shaders). Asked for
+// by the in-game menu (Bug reports: it writes capture.req in the game's folder, holding how many frames to wait first) or DM_VK_CAPTURE_AT=<present number>; written
+// as frame-capture.zip in the game's folder and in Download/. Nothing runs or is kept while not asked for. The Mali white scenes (#47, #53, #56) show no error in the
+// log: the pictures show which pass goes white, the notes what it read
+enum { CAPN = 192, CAPW = 320, CAPH = 180 };
+static _Atomic int g_cap;   // (declared with vtex too) 0 off, 1 armed (g_cap_wait more presents first), 2 recording this frame, 3 recorded: written at the next present
+static int g_cap_wait, g_cap_n, g_cap_layout, g_cap_draws, g_cap_ntex; static int g_cap_tex[64];
+static VkImage g_cap_img; static vmalloc_t g_cap_ia; static VkBuffer g_cap_buf; static vmalloc_t g_cap_ba;
+static char *g_cap_meta; static size_t g_cap_len, g_cap_size; static uint64_t g_cap_frame;
+static void cap_printf(const char *f, ...) {
+    va_list a; va_start(a, f); char tmp[512]; int n = vsnprintf(tmp, sizeof tmp, f, a); va_end(a); if (n <= 0) return; if (n >= (int)sizeof tmp) n = sizeof tmp - 1;
+    if (g_cap_len + (size_t)n + 1 > g_cap_size) { g_cap_size = (g_cap_size + (size_t)n + 1) * 2; g_cap_meta = realloc(g_cap_meta, g_cap_size); }
+    memcpy(g_cap_meta + g_cap_len, tmp, (size_t)n); g_cap_len += (size_t)n; g_cap_meta[g_cap_len] = 0;
+}
+static int cap_start(void) {
+    VkImageCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = { CAPW, CAPH, 1 }, .mipLevels = 1,
+        .arrayLayers = CAPN, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT };
+    if (vkCreateImage(g_dev, &ci, NULL, &g_cap_img)) return 0;
+    VkMemoryRequirements rq; vkGetImageMemoryRequirements(g_dev, g_cap_img, &rq); g_cap_ia = vk_alloc(rq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0); vkBindImageMemory(g_dev, g_cap_img, g_cap_ia.b->mem, g_cap_ia.off);
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)CAPN * CAPW * CAPH * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
+    if (vkCreateBuffer(g_dev, &bi, NULL, &g_cap_buf)) { vkDestroyImage(g_dev, g_cap_img, NULL); vk_free(g_cap_ia); return 0; }
+    vkGetBufferMemoryRequirements(g_dev, g_cap_buf, &rq); g_cap_ba = vk_alloc(rq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1); vkBindBufferMemory(g_dev, g_cap_buf, g_cap_ba.b->mem, g_cap_ba.off);
+    g_cap_n = 0; g_cap_layout = 0; g_cap_draws = 0; g_cap_ntex = 0; g_cap_len = 0;
+    cap_printf("Frame capture, present %llu. GPU %s (vendor %#x, driver %#x, Vulkan %u.%u). BC textures %s; BC layer %s.\n", (unsigned long long)g_cap_frame, g_props.deviceName, g_props.vendorID,
+               g_props.driverVersion, VK_API_VERSION_MAJOR(g_props.apiVersion), VK_API_VERSION_MINOR(g_props.apiVersion),
+               nvn_fmt_vk_transcode(0x46) ? "transcoded on upload" : nvn_fmt_vk_decode(0x46) ? "decoded on upload" : "sampled by the GPU", g_bcgpu ? "on" : "off");
+    cap_printf("Formats are Vulkan VkFormat numbers (vk) and NVN format numbers (nvn). Pictures: NNN.png, 320x180, values above 1.0 shown as white.\n\n");
+    return 1;
+}
+static void cap_pass(void) {
+    VkCommandBuffer cb = CB(); int idx_first = g_cap_n;
+    cap_printf("pass: %ux%u, %d draws, %d colour target(s), depth format vk %u\n", P.tw, P.th, g_cap_draws, P.ncolor, P.dfmt);
+    for (int i = 0; i < 8; i++) {
+        const tex_t *ct = R.rt.color[i]; if (!ct) continue;
+        vtex *x = tex_res(ct); if (!x || !x->img) { cap_printf("  colour %d: no image\n", i); continue; }
+        uint32_t lv = R.rt.has_cview[i] && R.rt.cview[i].set_levels ? R.rt.cview[i].base_level : 0, ly = R.rt.has_cview[i] && R.rt.cview[i].set_layers ? R.rt.cview[i].min_layer : 0;
+        VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_pd, x->fmt, &fp);
+        const char *skip = x->samples > 1 ? "multisampled" : fmt_int_class(x->fmt) ? "integer format" : !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ? "format cannot be blitted" : g_cap_n >= CAPN ? "no room left" : NULL;
+        cap_printf("  colour %d: vk %d (nvn %#x) %ux%u level %u layer %u%s", i, x->fmt, ct->d.format, x->w, x->h, lv, ly, x->is3d ? " (3D)" : "");
+        if (skip) { cap_printf(", no picture (%s)\n", skip); continue; }
+        if (!g_cap_layout) { g_cap_layout = 1;
+            VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .image = g_cap_img, .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, CAPN } };
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib); }
+        int32_t w = (int32_t)(x->w >> lv ? x->w >> lv : 1), h = (int32_t)(x->h >> lv ? x->h >> lv : 1);
+        VkImageBlit r = { { VK_IMAGE_ASPECT_COLOR_BIT, lv, x->is3d ? 0 : ly, 1 }, { { 0, 0, x->is3d ? (int32_t)ly : 0 }, { w, h, x->is3d ? (int32_t)ly + 1 : 1 } },
+                          { VK_IMAGE_ASPECT_COLOR_BIT, 0, (uint32_t)g_cap_n, 1 }, { { 0, 0, 0 }, { CAPW, CAPH, 1 } } };
+        barrier_all(cb);
+        vkCmdBlitImage(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, g_cap_img, VK_IMAGE_LAYOUT_GENERAL, 1, &r, VK_FILTER_NEAREST);
+        barrier_all(cb);
+        VkBufferImageCopy bc = { .bufferOffset = (VkDeviceSize)g_cap_n * CAPW * CAPH * 4, .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, (uint32_t)g_cap_n, 1 }, .imageExtent = { CAPW, CAPH, 1 } };
+        vkCmdCopyImageToBuffer(cb, g_cap_img, VK_IMAGE_LAYOUT_GENERAL, g_cap_buf, 1, &bc);
+        barrier_all(cb);
+        cap_printf(" -> %03d.png\n", g_cap_n); g_cap_n++;
+    }
+    (void)idx_first; g_cap_draws = 0; g_cap_ntex = 0;
+}
+// a texture a draw of the recording frame reads: noted once a pass
+static void cap_tex(int tid, const tex_t *t, const vtex *x, int vfmt, VkFormat f) {
+    for (int i = 0; i < g_cap_ntex; i++) if (g_cap_tex[i] == tid) return;
+    if (g_cap_ntex < 64) g_cap_tex[g_cap_ntex++] = tid;
+    cap_printf("  reads texture %d: nvn %#x, image vk %d %ux%u%s, viewed as vk %d; BC here: %s%s\n", tid, t->d.format, x->fmt, x->w, x->h,
+               x->pkg ? " (from the game's files)" : " (made at run time)", f, nvn_fmt_vk_transcode(t->d.format) ? "transcoded" : nvn_fmt_vk_decode(t->d.format) ? "decoded" : "no",
+               x->alt && x->alt_fmt == vfmt ? "; this view reads its own second conversion" : "");
+    if (vfmt) cap_printf("    (view format nvn %#x)\n", vfmt);
+}
+static void cap_write(void) {
+    const char *pc = getenv("DM_VK_PCACHE"); char dir[1024] = "."; if (pc) { snprintf(dir, sizeof dir, "%s", pc); char *sl = strrchr(dir, '/'); if (sl) *sl = 0; }
+    char path[1200]; snprintf(path, sizeof path, "%s/frame-capture.zip", dir);
+    const uint8_t *px = (const uint8_t *)g_cap_ba.b->map + g_cap_ba.off;
+    fczip *z = fczip_open(path); int ok = z != NULL;
+    if (z) {
+        for (int i = 0; i < g_cap_n; i++) { char nm[32]; snprintf(nm, sizeof nm, "%03d.png", i); ok &= fczip_add_png(z, nm, px + (size_t)i * CAPW * CAPH * 4, CAPW, CAPH); }
+        ok &= fczip_add(z, "passes.txt", g_cap_meta ? g_cap_meta : "", g_cap_len); ok &= fczip_close(z);
+    }
+    VLOG("frame capture: %d pictures%s %s", g_cap_n, ok ? ", written to" : ", could NOT be written to", path);
+    if (ok) {   // a copy in Download/, where a player finds it (when the app may write there)
+        const char *id = getenv("DM_PROGRAM_ID"); char dl[256]; snprintf(dl, sizeof dl, "/storage/emulated/0/Download/%s-frame-capture.zip", id ? id : "game");
+        FILE *in = fopen(path, "rb"), *out = in ? fopen(dl, "wb") : NULL; char b[65536]; size_t n;
+        if (in && out) { while ((n = fread(b, 1, sizeof b, in)) > 0) fwrite(b, 1, n, out); VLOG("frame capture: copied to %s", dl); }
+        if (in) fclose(in); if (out) fclose(out);
+    }
+    vkDestroyImage(g_dev, g_cap_img, NULL); vk_free(g_cap_ia); vkDestroyBuffer(g_dev, g_cap_buf, NULL); vk_free(g_cap_ba);
+    g_cap_img = VK_NULL_HANDLE; g_cap_buf = VK_NULL_HANDLE;
+}
+// at every present: the request file / DM_VK_CAPTURE_AT arm it; a recorded frame is written once the GPU has finished it
+static void cap_present(uint64_t n) {
+    int st = atomic_load(&g_cap);
+    if (st == 0) {
+        static long at = -2; if (at == -2) { const char *e = getenv("DM_VK_CAPTURE_AT"); at = e ? atol(e) : -1; }
+        int wait = -1;
+        if (at > 0 && (long)n == at) wait = 0;
+        else if (n % 30 == 0) {
+            const char *pc = getenv("DM_VK_PCACHE"); char req[1100]; if (!pc) return; snprintf(req, sizeof req, "%s", pc); char *sl = strrchr(req, '/'); if (!sl) return;
+            snprintf(sl + 1, sizeof req - (size_t)(sl + 1 - req), "capture.req");
+            FILE *f = fopen(req, "r"); if (f) { if (fscanf(f, "%d", &wait) != 1) wait = 90; fclose(f); unlink(req); }
+        }
+        if (wait >= 0) { g_cap_wait = wait; atomic_store(&g_cap, 1); VLOG("frame capture: asked for, in %d frames", wait); }
+        return;
+    }
+    if (st == 1) { if (g_cap_wait-- > 0) return; g_cap_frame = n; if (cap_start()) atomic_store(&g_cap, 2); else { VLOG("[RED] frame capture: no memory for it"); atomic_store(&g_cap, 0); } return; }
+    if (st == 2) { atomic_store(&g_cap, 3); return; }
+    if (st == 3) { pthread_mutex_lock(&g_qmu); vkDeviceWaitIdle(g_dev); pthread_mutex_unlock(&g_qmu); cap_write(); atomic_store(&g_cap, 0); }
+}
+static void pass_end(void) { if (P.open) { vkCmdEndRendering(CB()); P.open = 0; if (atomic_load(&g_cap) == 2) cap_pass(); } }
 static int rt_dup_slot(const p_set_rt *r, int i) {
     if (!r->color[i]) return 0;
     uint8_t lv = r->has_cview[i] && r->cview[i].set_levels ? r->cview[i].base_level : 0; uint16_t ly = r->has_cview[i] && r->cview[i].set_layers ? r->cview[i].min_layer : 0;
@@ -2429,6 +2539,8 @@ static int g_vprof = -1; static uint64_t g_vp_t[4], g_vp_n, g_vp_o[5];
 #define VPROF_ON (g_vprof < 0 ? (g_vprof = getenv("DM_VK_PROF") != NULL) : g_vprof)
 static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark);
 static void draw(const p_draw *dw, const p_draw_idx *di) {
+    if (atomic_load(&g_cap) == 2) { g_cap_draws++;
+        if (g_cap_draws <= 3 && S.prog) { vprog *cp = prog_get(S.prog); if (cp && cp->sh[0]) cap_printf("  draw %d: vertex %s fragment %s\n", g_cap_draws, cp->sh[0]->key, cp->sh[1] ? cp->sh[1]->key : "-"); } }
     if (!VPROF_ON) { draw_(dw, di, NULL); return; }
     uint64_t m[5] = { mono_ns(), 0, 0, 0, 0 }; draw_(dw, di, m); uint64_t e = mono_ns();
     for (int i = 0; i < 4; i++) { uint64_t a = m[i], b = m[i + 1] ? m[i + 1] : e; if (b > a) g_vp_t[i] += b - a; if (!m[i + 1]) break; }
@@ -3346,6 +3458,7 @@ __attribute__((weak)) void front_frame_work(uint64_t busy_ns, uint64_t target_ns
 _Atomic uint64_t g_nvn_game_work_ns;   // hle_nvn.c: the game thread's time per frame (DM_NVN_ASYNC: not the presenting thread's)
 uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     uint64_t n = atomic_fetch_add(&g_present_n, 1) + 1;
+    cap_present(n);
     if (VPROF_ON && n % 300 == 0 && g_vp_n) { double f = 300.0 * 1e6;
         VLOG("[prof] replay per frame: %.0f draws; pass + pipeline %.2f ms, dynamic state + vertex %.2f ms, descriptors %.2f ms, flush + draw %.2f ms (%.1f us a draw)", g_vp_n / 300.0,
              g_vp_t[0] / f, g_vp_t[1] / f, g_vp_t[2] / f, g_vp_t[3] / f, (g_vp_t[0] + g_vp_t[1] + g_vp_t[2] + g_vp_t[3]) / 1e3 / (double)g_vp_n);
