@@ -1568,7 +1568,12 @@ static void vstep_tick(const win_t *o) {
     uint64_t st = g_fs_start ? g_fs_start : now_ns(), pw = g_fs_wait; g_fs_start = g_fs_wait = 0;
     double shown = prev ? (st - prev) / v : 0, gpu = 0; prev = st;
     for (uint64_t f = g_frame; f-- > 0 && g_frame - f <= 8;) { double g = mtl_gpu_ms(f); if (g >= 0) { gpu = g * 1e6 / v; break; } }
-    double cpu = shown - pw / v, cost = cpu > gpu ? cpu : gpu;
+    double cpu = shown - pw / v;
+    // the game's own work for the last frame (present return to the next present: its code and submissions, not the pacing wait). The wait for the slot is taken in
+    //   present here, not in acquire, so shown - pw counted it as cost: at 2 slots the cost read 2 slots forever and 60 fps never came back after a slow start
+    //   (Sword on a Galaxy S25+: 3 ms of work a frame, held at 30 fps for the whole run)
+    { extern _Atomic uint64_t g_nvn_game_work_ns; double w = atomic_load(&g_nvn_game_work_ns) / v; if (w > 0 && w < cpu) cpu = w; }
+    double cost = cpu > gpu ? cpu : gpu;
     int k0 = g_vs.k, n = nvn_fstep_next(&g_vs, shown, cost, 1, FSTEP_MAX, 0);
     uint32_t ns = (uint32_t)(((uint64_t)n * 1000000000ull + (uint64_t)dm_step_hz - 1) / (uint64_t)dm_step_hz);
     dm_guest_write_prepare(dm_step_word, 4); __atomic_store_n((uint32_t *)dm_step_word, ns, __ATOMIC_RELAXED);
