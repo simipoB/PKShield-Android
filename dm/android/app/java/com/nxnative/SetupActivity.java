@@ -577,9 +577,9 @@ public final class SetupActivity extends Activity {
         i.setType("application/zip"); i.putExtra(Intent.EXTRA_TITLE, game()[2] + "-save.zip");
         startActivityForResult(i, PICK_SAVE_EXPORT);
     }
-    private void chooseSaveImport() {
+    private void chooseSaveImport() {   // any file: a ZIP a browser or a chat app saved is often typed octet-stream / x-zip-compressed and the picker greyed it out
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("application/zip");
+        i.setType("*/*");
         startActivityForResult(i, PICK_SAVE_IMPORT);
     }
     private void importSave(Uri source) {
@@ -589,11 +589,10 @@ public final class SetupActivity extends Activity {
             String result;
             try (InputStream input = getContentResolver().openInputStream(source)) {
                 if (input == null) throw new IOException("the file provider could not open the selected archive");
-                int files = SaveImport.install(input, new File(gameDir(), "save_import"));
-                result = "Imported " + files + " save file" + (files == 1 ? "" : "s") +
-                         ". Tap Play to load it; your previous save will be kept as a backup.";
+                int files = SaveImport.install(input, new File(gameDir(), "save_import"), nameOf(source));
+                result = T.t(this, "Imported %d save file(s) into %s (%s). Tap Play to load it; your current save is kept as a backup.", files, game()[1], SaveImport.lastFiles);
             } catch (IOException | SecurityException e) {
-                result = "Could not import save data: " + e.getMessage();
+                result = T.t(this, "Could not import save data: %s", e.getMessage());
             }
             final String message = result;
             runOnUiThread(() -> { running = false; status.setText(message); refresh(); });
@@ -653,6 +652,12 @@ public final class SetupActivity extends Activity {
         offerAnyway = false; anyway.setVisibility(android.view.View.GONE);
         String mixed = mixedGames(); if (mixed != null) { status.setText(mixed); return; }
         for (String g : games) if (!new File(g).canRead()) { status.setText(T.t(this, "Could not read %s.", new File(g).getName()) + " " + T.t(this, "Tap Clear and choose your files again.")); return; }
+        // Sword and Shield run on update 1.3.2 only: a base game named [v0] chosen without any update is said now, not after the unpacking (only for .nsp files named
+        //   with their title IDs: an .xci, or a dump named otherwise, can hold the update, and the setup checks the version itself)
+        { boolean nsp = true, named = true, hasUpd = false, v0 = false;
+          for (String f : games) { String n = new File(f).getName().toLowerCase(java.util.Locale.ROOT); long t = titleId(f);
+              nsp &= n.endsWith(".nsp"); named &= t >= 0; if (t >= 0 && (t & 0xFFF) == 0x800) hasUpd = true; if (t >= 0 && (t & 0xFFF) == 0 && n.contains("[v0]")) v0 = true; }
+          if (nsp && named && v0 && !hasUpd) { status.setText(T.t(this, "Your files are the base game only: this app needs the %s update too. Choose the update (.nsp, its title ID ends in 800) as well.", GameSettings.version(this))); return; } }
         bar.setMax(600); bar.setProgress(0); status.setText(T.t(this, "Preparing..."));
         String[] g = sortGames(); List<String> cmd = new ArrayList<>();
         cmd.add("--keys"); cmd.add(keysDir().getPath()); cmd.add("--base"); cmd.add(g[0]);
@@ -736,11 +741,23 @@ public final class SetupActivity extends Activity {
     // setup_game.py with the given arguments (plus the folders every run needs): progress from its "STEP n/total what" lines (100 bar units a step) and, inside a step,
     // its "PROGRESS done/total" lines (the shader translation, hours on a phone); done(null) or done(the reason it failed) on the UI thread.
     // The screen stays on meanwhile: once it goes dark Android slows or stops the work
+    // What the setup is doing, with the time it has been running under it (a ticker, every second): an hour-long step whose number stays at 99% (the last shaders,
+    //   then the writing of the results, #56) still shows that it is alive
+    private String runText = ""; private long runStart; private final android.os.Handler ticker = new android.os.Handler(android.os.Looper.getMainLooper());
+    private void show(String s) { runText = s; tick(); }
+    private void tick() {
+        if (!running) { status.setText(runText); return; }
+        long t = (android.os.SystemClock.elapsedRealtime() - runStart) / 1000;
+        String el = t >= 3600 ? String.format(java.util.Locale.ROOT, "%d:%02d:%02d", t / 3600, t / 60 % 60, t % 60) : String.format(java.util.Locale.ROOT, "%d:%02d", t / 60, t % 60);
+        status.setText(runText + "\n" + T.t(this, "Running for %s", el));
+    }
+    private final Runnable tickRun = new Runnable() { public void run() { if (!running) return; tick(); ticker.postDelayed(this, 1000); } };
     private void runSetup(List<String> args, Consumer<String> done) {
         running = true; refresh();
+        runStart = android.os.SystemClock.elapsedRealtime(); runText = String.valueOf(status.getText()); ticker.removeCallbacks(tickRun); ticker.post(tickRun);
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         new Thread(() -> {
-            String err = null; int[] stepNo = {1}; String[] stepName = {""}; Process p = null;
+            String err = null; int[] stepNo = {1}, stepOf = {6}; String[] stepName = {""}; Process p = null;
             try {
                 File py = unpackPython(), dm = unpackScripts(), bin = binDir();
                 File work = new File(gameDir(), "setup_work"); work.mkdirs();
@@ -757,19 +774,21 @@ public final class SetupActivity extends Activity {
                 p = pb.start();
                 BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String ln;
                 while ((ln = r.readLine()) != null) { final String l = ln; try {
-                    if (l.startsWith("STEP ")) { String[] f = l.split(" ", 3); int n = Integer.parseInt(f[1].split("/")[0]); stepNo[0] = n; stepName[0] = f[2];
-                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100); status.setText(step(f[2]) + "..."); }); }
+                    if (l.startsWith("STEP ")) { String[] f = l.split(" ", 3); String[] nn = f[1].split("/"); int n = Integer.parseInt(nn[0]), of = Integer.parseInt(nn[1]); stepNo[0] = n; stepName[0] = f[2]; stepOf[0] = of;
+                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100); show(T.t(this, "Step %s of %s: %s", n, of, step(f[2])) + "..."); }); }
                     else if (l.startsWith("PROGRESS ")) {
                         String[] f = l.substring(9).trim().split("/"); long a = Long.parseLong(f[0]), b = Math.max(1, Long.parseLong(f[1])); int pct = (int) Math.min(100, a * 100 / b), n = stepNo[0]; String s = stepName[0];
-                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100 + pct); status.setText(step(s) + "... " + pct + "%\n" + T.t(this, "This takes a long time on a phone: keep this screen open, ideally plugged in.")); }); }
+                        int of = stepOf[0];
+                        runOnUiThread(() -> { bar.setProgress((n - 1) * 100 + pct); show(T.t(this, "Step %s of %s: %s", n, of, step(s)) + "... " + pct + "%\n"
+                            + (pct >= 99 ? T.t(this, "Almost done with this step: its last part shows no progress and can take several minutes.") : T.t(this, "This takes a long time on a phone: keep this screen open, ideally plugged in."))); }); }
                     else if (l.startsWith("GAME ")) { String id = l.substring(5).trim(); GameSettings.choose(this, id);
-                        runOnUiThread(() -> status.setText(T.t(this, "Your files are %s: setting it up...", GameSettings.game(this)[1]))); }
+                        runOnUiThread(() -> show(T.t(this, "Your files are %s: setting it up...", GameSettings.game(this)[1]))); }
                     else if (l.startsWith("OFFER allow-damaged")) offerAnyway = true;
                     else if (l.startsWith("FAILED")) err = l.substring(6).trim(); } catch (RuntimeException e) { } }
                 if (p.waitFor() != 0 && err == null) err = "setup stopped (" + p.exitValue() + ")";
             } catch (Exception e) { err = e.toString(); if (p != null) p.destroy(); }
             final String e2 = err;
-            runOnUiThread(() -> { getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); running = false; done.accept(e2); refresh(); });
+            runOnUiThread(() -> { getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); running = false; ticker.removeCallbacks(tickRun); done.accept(e2); refresh(); });
         }).start();
     }
     // Setup's parallel workers (the shader scan and translation): one per core, but at most one per 1.5 GB of the phone's memory and 4 on phones whose profile is a

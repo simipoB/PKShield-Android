@@ -242,3 +242,9 @@ Standard: 1024 × 1024, as the game is made	Standard : 1024 × 1024, comme le je
 Sharp: 2048 × 2048 shadow maps, more GPU work (Fl4sh's 2K Shadows mod)	Nettes : ombres en 2048 × 2048, plus de travail pour le GPU (mod 2K Shadows de Fl4sh)
 60 fps: smoother; drops to 720p when needed to hold 60 (with Graphics on Auto or Adaptive)	60 fps : plus fluide ; passe en 720p quand il le faut pour tenir 60 (avec Graphismes sur Auto ou Adaptatif)
 Android stopped the setup to free memory: going on from where it was (%s of 3)...	Android a arrêté l'installation pour libérer de la mémoire : elle reprend là où elle en était (%s sur 3)...
+Step %s of %s: %s	Étape %s sur %s : %s
+Running for %s	En cours depuis %s
+Almost done with this step: its last part shows no progress and can take several minutes.	Cette étape est presque finie : sa dernière partie n'affiche pas de progression et peut prendre plusieurs minutes.
+Imported %d save file(s) into %s (%s). Tap Play to load it; your current save is kept as a backup.	%d fichier(s) de sauvegarde importé(s) dans %s (%s). Touchez Jouer pour la charger ; votre sauvegarde actuelle est gardée en copie.
+Could not import save data: %s	Impossible d'importer la sauvegarde : %s
+Your files are the base game only: this app needs the %s update too. Choose the update (.nsp, its title ID ends in 800) as well.	Vos fichiers ne contiennent que le jeu de base : cette app a aussi besoin de la mise à jour %s. Choisissez aussi la mise à jour (.nsp, son ID de titre finit par 800).

@@ -453,7 +453,8 @@ public final class GameMenu {
     // ---------- files: save data out and in, mods and drivers in (the system file picker; GameActivity.onActivityResult hands the answer here) ----------
     static final int REQ_EXPORT = 101, REQ_IMPORT = 102, REQ_MOD = 103, REQ_DRIVER = 104;
     private static void pick(Activity a, String action, String name, int req) {
-        Intent i = new Intent(action); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType("application/zip");
+        // (to open, any file: ZIPs saved by browsers and chat apps are often typed otherwise, and the picker greyed them out; a save ZIP is checked when read)
+        Intent i = new Intent(action); i.addCategory(Intent.CATEGORY_OPENABLE); i.setType(Intent.ACTION_OPEN_DOCUMENT.equals(action) ? "*/*" : "application/zip");
         if (name != null) i.putExtra(Intent.EXTRA_TITLE, name);
         a.startActivityForResult(i, req);
     }
@@ -470,8 +471,8 @@ public final class GameMenu {
                         File save = new File(files, "save").getCanonicalFile(); int n = zipTree(save, save, z); msg = t(a, "Exported %d save file(s).", n); }
                 } else if (req == REQ_IMPORT) {
                     try (InputStream in = a.getContentResolver().openInputStream(u)) {
-                        int n = SaveImport.install(in, new File(files, "save_import"));
-                        msg = t(a, "Imported %d save file(s). Close the game and start it again to load it (your current save is kept as a backup).", n); }
+                        int n = SaveImport.install(in, new File(files, "save_import"), displayName(a, u));
+                        msg = t(a, "Imported %d save file(s). Close the game and start it again to load it (your current save is kept as a backup).", n) + " (" + SaveImport.lastFiles + ")"; }
                 } else {
                     String name = displayName(a, u).replaceAll("(?i)\\.zip$", "").replaceAll("[^A-Za-z0-9 ._()\\[\\]-]", "_").trim();
                     if (name.isEmpty() || name.startsWith(".") || name.startsWith("-")) name = "mod";

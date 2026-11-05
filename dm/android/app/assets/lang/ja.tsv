@@ -242,3 +242,9 @@ Standard: 1024 × 1024, as the game is made	標準: 1024 × 1024 (ゲーム本�
 Sharp: 2048 × 2048 shadow maps, more GPU work (Fl4sh's 2K Shadows mod)	シャープ: 2048 × 2048 の影、GPU負荷が増えます (Fl4sh氏の2K Shadows Mod)
 60 fps: smoother; drops to 720p when needed to hold 60 (with Graphics on Auto or Adaptive)	60fps: より滑らか。60を保つため必要に応じて720pに下げます (グラフィックが自動または適応のとき)
 Android stopped the setup to free memory: going on from where it was (%s of 3)...	Android がメモリ確保のためセットアップを止めました: 途中から再開します (%s / 3)...
+Step %s of %s: %s	ステップ %s / %s: %s
+Running for %s	経過時間 %s
+Almost done with this step: its last part shows no progress and can take several minutes.	このステップはもうすぐ終わります。最後の部分は進み具合が表示されず、数分かかることがあります。
+Imported %d save file(s) into %s (%s). Tap Play to load it; your current save is kept as a backup.	%d 個のセーブファイルを %s に取り込みました (%s)。プレイを押すと読み込みます。今のセーブはバックアップとして残ります。
+Could not import save data: %s	セーブデータを取り込めませんでした: %s
+Your files are the base game only: this app needs the %s update too. Choose the update (.nsp, its title ID ends in 800) as well.	選んだファイルは本体ソフトのみです。このアプリには更新データ %s も必要です。更新データ (.nsp、タイトルIDの末尾が 800) も選んでください。
