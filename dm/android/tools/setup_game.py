@@ -358,6 +358,34 @@ def pak_merge(path, add):   # merge a new uncompressed shader pack into the exis
         for blob in blobs: out.write(blob)
     src.close(); os.replace(tmp, path)
 
+def trinity_index(a, roots, log):
+    # Trinity games (Scarlet / Violet) read every file through arc/data.trpfd, the sorted list of its paths' FNV-1a 64 hashes: a mod's loose file is only read once its path
+    #   is out of that list. <game>/mods/.trinity_index/romfs/arc/data.trpfd is the game's own index with every path the enabled mods replace moved up by one (the list stays
+    #   sorted, every other file is still found); android_main.c lays it over the RomFS first. No mods: it goes, so no path is left pointing at a loose file that is gone
+    src = os.path.join(a.out, 'RomFS', 'arc', 'data.trpfd'); idx = os.path.join(a.out, 'mods', '.trinity_index')
+    if not os.path.isfile(src): return
+    sys.path.insert(0, os.path.join(DM, 'gfx/tools')); import shader_split as ss, bisect
+    def fnv(s):
+        h = 0xcbf29ce484222645
+        for c in s.encode(): h = ((h ^ c) * 0x100000001b3) & 0xffffffffffffffff
+        return h
+    rels = set()
+    for r in roots:
+        for d, _, fs in os.walk(r):
+            for f in fs:
+                rel = os.path.relpath(os.path.join(d, f), r).replace(os.sep, '/')
+                if rel != 'arc/data.trpfd': rels.add(rel)
+    shutil.rmtree(idx, ignore_errors=True)
+    if not rels: log.write('trinity index: no mod files, none\n'); return
+    fd = bytearray(open(src, 'rb').read()); fr = ss.fb_root(fd); st, n = ss.fb_vec(fd, fr, 0)
+    hashes = list(struct.unpack_from(f'<{n}Q', fd, st)); moved = 0
+    for rel in sorted(rels):
+        h = fnv(rel); i = bisect.bisect_left(hashes, h)
+        if i < n and hashes[i] == h and (i + 1 >= n or hashes[i + 1] != h + 1):
+            struct.pack_into('<Q', fd, st + 8 * i, h + 1); moved += 1
+    os.makedirs(os.path.join(idx, 'romfs', 'arc')); open(os.path.join(idx, 'romfs', 'arc', 'data.trpfd'), 'wb').write(fd)
+    log.write(f'trinity index: {moved} of {len(rels)} mod file(s) taken out of the pack (the rest are new files)\n')
+
 def mod_shaders(a):
     # Mods with shaders of their own (a changed .bfsha, a new effect): the game would hand the engine shaders the pack lacks, which then draw nothing until a capture
     # is translated on the next start, and captures miss the vertex / pixel pairing and compute facts a full scan has. So the mods' RomFS is scanned as setup scans the
@@ -371,6 +399,7 @@ def mod_shaders(a):
         if r.returncode: raise RuntimeError(f'{os.path.basename(str(cmd[1]))} failed ({r.returncode}): see {log.name}')
     roots = [r for r in a.mod_shaders.split(':') if r and os.path.isdir(r)]
     log.write(f'== {time.strftime("%H:%M:%S")} mod shaders: {", ".join(roots) or "no mod folders"}\n')
+    trinity_index(a, roots, log)
     if not roots: print('DONE', flush=True); return
     chain = subprocess.run([py, os.path.join(DM, 'gfx/tools/dmsh_chain.py')], capture_output=True, text=True, env=env).stdout.strip()
     pak = os.path.join(a.out, 'shaders.pak'); have, pchain = pak_keys(pak)
