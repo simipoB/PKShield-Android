@@ -22,7 +22,7 @@ FNS(DECL)
 
 enum { IN_CAP = 16 << 20, OUT_CAP = 32 << 20 };   // the largest level converted here: 16 MB of blocks (a 4096x4096 BC7 / BC3 level), 32 MB out; larger ones on the CPU
 typedef struct { int32_t kind; uint32_t mode, bw, bh, nz, in_off, in_row, in_slice, out_off, out_row, out_slice, w, h; } pcs;
-static VkDevice g_d; static VkPipeline g_pipe; static VkPipelineLayout g_pl; static VkDescriptorSet g_ds; static VkBuffer g_in, g_out;
+static VkDevice g_d; static VkPipeline g_pipes[14][2]; static VkShaderModule g_sm; static VkPipelineLayout g_pl; static VkDescriptorSet g_ds; static VkBuffer g_in, g_out;   // (a pipeline per kind + 6 and mode: bc_gpu.comp specialized)
 static uint8_t g_ok[16][2];   // [kind + 6][mode]: checked on this GPU
 static void (*g_log)(const char *, ...);
 #define LOG(...) do { if (g_log) g_log(__VA_ARGS__); } while (0)
@@ -56,7 +56,7 @@ static void convert(VkCommandBuffer cb, int kind, int mode, uint32_t bw, uint32_
     barrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     uint32_t ob = (uint32_t)out_bytes(kind, mode), row = out_blocks(kind, mode) ? bw * ob / 4 : bw * ob / 16;   // (texel rows: 4 per block row)
     pcs p = { kind, (uint32_t)mode, bw, bh, nz, 0, in_row, in_slice, 0, row, row * bh * (out_blocks(kind, mode) ? 1 : 4), w, h };
-    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipe);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_pipes[kind + 6][mode]);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_pl, 0, 1, &g_ds, 0, NULL);
     vkCmdPushConstants(cb, g_pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof p, &p);
     vkCmdDispatch(cb, (bw + 7) / 8, (bh + 7) / 8, nz);
@@ -108,6 +108,13 @@ static int check(VkQueue q, uint32_t qf, const VkPhysicalDeviceMemoryProperties 
         uint32_t bb = (uint32_t)bc_block_bytes(kind), ip = BW * bb, ob = (uint32_t)out_bytes(kind, mode), on_ = ob * BW * BH; uint8_t *in = pp, *res = pp + 65536;
         for (uint32_t i = 0; i < ip * BH; i++) in[i] = (uint8_t)rnd();
         for (int b = 0; b < BW * BH / 2; b++) { uint8_t *x = in + b * bb; if (kind == 1) x[1] = x[0] ^ 8; if (kind == 2 || kind == 3) x[9] = x[8] ^ 8; if (kind == 3 || kind == 4 || kind == 5) x[1] = (uint8_t)(x[0] + 3); }   // (smooth blocks too)
+        {   // this kind's and mode's pipeline (the shader specialized: KIND, MODE)
+            int32_t sc[2] = { kind, mode }; VkSpecializationMapEntry me[2] = { { 0, 0, 4 }, { 1, 4, 4 } }; VkSpecializationInfo si = { 2, me, sizeof sc, sc };
+            VkComputePipelineCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = g_sm, .pName = "main", .pSpecializationInfo = &si }, .layout = g_pl };
+            VkResult pr = vkCreateComputePipelines(g_d, VK_NULL_HANDLE, 1, &pci, NULL, &g_pipes[kind + 6][mode]);
+            if (pr) { g_pipes[kind + 6][mode] = VK_NULL_HANDLE; if (rp < 200) rp += snprintf(rep + rp, sizeof rep - (size_t)rp, " %d/%s (pipeline %d)", kind, mode ? "transcode" : "decode", pr); continue; }
+        }
         g_ok[kind + 6][mode] = 1;   // (for fits(): the check runs the real path)
         VkCommandBufferAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = cp, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 }; VkCommandBuffer cb;
         if (vkAllocateCommandBuffers(g_d, &ai, &cb)) { g_ok[kind + 6][mode] = 0; continue; }
@@ -150,9 +157,7 @@ int bc_gpu_init(const bc_gpu_info *ii) {
     VkPushConstantRange rg = { VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcs) };
     VkPipelineLayoutCreateInfo pli = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &dl, .pushConstantRangeCount = 1, .pPushConstantRanges = &rg };
     if (vkCreateShaderModule(g_d, &mci, NULL, &sm) || vkCreateDescriptorSetLayout(g_d, &li, NULL, &dl) || vkCreatePipelineLayout(g_d, &pli, NULL, &g_pl)) { LOG("BC layer: its pipeline layout failed"); return 0; }
-    VkComputePipelineCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = sm, .pName = "main" }, .layout = g_pl };
-    VkResult r = vkCreateComputePipelines(g_d, VK_NULL_HANDLE, 1, &pci, NULL, &g_pipe); vkDestroyShaderModule(g_d, sm, NULL);
-    if (r) { LOG("BC layer: its compute pipeline failed (%d)", r); return 0; }
+    g_sm = sm;   // (the pipelines are made per kind and mode in the check)
     VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 }; VkDescriptorPoolCreateInfo dpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1, .poolSizeCount = 1, .pPoolSizes = &ps }; VkDescriptorPool dp;
     VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorSetCount = 1, .pSetLayouts = &dl };
     if (vkCreateDescriptorPool(g_d, &dpi, NULL, &dp) || (dai.descriptorPool = dp, vkAllocateDescriptorSets(g_d, &dai, &g_ds))) { LOG("BC layer: its descriptor set failed"); return 0; }
@@ -161,6 +166,7 @@ int bc_gpu_init(const bc_gpu_info *ii) {
                                   { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = g_ds, .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, .pBufferInfo = &b1 } };
     vkUpdateDescriptorSets(g_d, 2, w, 0, NULL);
     int on = check(ii->queue, ii->queue_family, ii->memp);
+    vkDestroyShaderModule(g_d, g_sm, NULL); g_sm = VK_NULL_HANDLE;
     LOG("BC layer: %s (BC textures converted on the GPU, checked against the CPU on this GPU)", on ? "on" : "off: no kind matched the CPU");
     return on;
 }

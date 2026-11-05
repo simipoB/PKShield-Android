@@ -126,6 +126,7 @@ static void crash_gate(int sig) {
     for (;;) pause();
 }
 __attribute__((weak)) int dm_crypto_emu(ucontext_t *uc);   // crypto_emu.c (Linux / Android on ARM64)
+__attribute__((weak)) void dm_crash_log_copy(void);   // android_main.c: the log copied to Download/ now (its copy there is refreshed every 5 s: a crash's record was missing from it, #57); open / read / write only
 __attribute__((weak)) void dm_crash_note(int in_game);   // android_main.c: "this run crashed" for the next start (boot_state), and whether the pc was in the game's own code; only write() inside
 static void on_crash(int sig, siginfo_t *si, void *uc_) {
     ucontext_t *uc = uc_;
@@ -180,6 +181,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         }
         fputc('\n', stderr); }
     if (g_dump_hook) g_dump_hook();
+    fflush(stderr); if (dm_crash_log_copy) dm_crash_log_copy();   // (the crash record into the copy a player finds: android_main.c)
     _exit(128 + sig);
 }
 // The signal alternate stack is per thread: every guest thread must call this when it starts running (only then can the crash state be printed on the alternate stack on a stack overflow)

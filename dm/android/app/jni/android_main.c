@@ -288,6 +288,13 @@ static int g_started;
 //   · crashed with mods on: the mods are switched off (each folder renamed with a leading "-", loose .pchtxt files to .pchtxt.off), and the player is told
 // A run Android ends (swiped away, low memory) writes no "crashed": nothing is changed then
 static char g_boot_path[1100]; static int g_boot_fd = -1;
+static char g_crash_src[1200], g_crash_dl[256];   // log.txt and its copy in Download/ (host_start), for dm_crash_log_copy
+void dm_crash_log_copy(void) {   // from the crash handler: open / read / write only
+    if (!g_crash_src[0] || !g_crash_dl[0]) return;
+    int in = open(g_crash_src, O_RDONLY), out = in >= 0 ? open(g_crash_dl, O_WRONLY | O_CREAT | O_TRUNC, 0644) : -1; char b[16384]; ssize_t n;
+    if (in >= 0 && out >= 0) while ((n = read(in, b, sizeof b)) > 0) if (write(out, b, (size_t)n) != n) break;
+    if (in >= 0) close(in); if (out >= 0) close(out);
+}
 void dm_crash_note(int in_game) { if (g_boot_fd >= 0) { static const char m[] = "crashed\n", g[] = "crashed in the game's code\n"; if (in_game) (void)!write(g_boot_fd, g, sizeof g - 1); else (void)!write(g_boot_fd, m, sizeof m - 1); } }
 const char *nvn_vk_gpu_name(void) __attribute__((weak));
 static void notice(const char *kind, const char *text) {
@@ -610,6 +617,7 @@ static void host_start(void) {
     snprintf(p, sizeof p, "%s/log.txt", g_files); snprintf(q, sizeof q, "%s/log.prev.txt", g_files); rename(p, q);
     if (freopen(p, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
     { char d[256]; snprintf(d, sizeof d, DL "/%s-log-previous.txt", g_stem); copy_file(q, d); }
+    snprintf(g_crash_src, sizeof g_crash_src, "%s/log.txt", g_files); snprintf(g_crash_dl, sizeof g_crash_dl, DL "/%s-log.txt", g_stem);
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
     { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);
