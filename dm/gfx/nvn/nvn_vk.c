@@ -45,6 +45,7 @@
 #include "../tex/bc_decode.h"
 #include "../tex/etc_encode.h"
 #include "../tex/tex_cache.h"
+#include "../tex/bc_gpu.h"
 #include "dmsh_chain.h"
 #include "game_profile.h"
 #include "../../host/dm.h"
@@ -128,6 +129,8 @@ static void *vk_open(void) {
 }
 #define VK_LOAD_G(f) f = (PFN_##f)vkGetInstanceProcAddr(NULL, #f);
 #define VK_LOAD_I(f) f = (PFN_##f)vkGetInstanceProcAddr(g_inst, #f);
+static int g_bcgpu;   // the BC layer is on (mtl_init)
+static void vk_logf(const char *f, ...) { va_list a; va_start(a, f); fputs("[dm] [nvn-vk] ", stderr); vfprintf(stderr, f, a); fputc('\n', stderr); va_end(a); }
 static uint32_t g_api;   // the device's Vulkan version (DM_VK_API=11 / 12 tries an older device's path on a newer one)
 static PFN_vkVoidFunction vk_dev_fn(const char *name) {   // a device function; before 1.3 the KHR / EXT name of a promoted one (dynamic rendering, timeline semaphores, extended dynamic state)
     char alt[128];
@@ -298,6 +301,9 @@ void mtl_init(void) {
     p_push = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(g_dev, "vkCmdPushDescriptorSetKHR");
     if (compctl && fic.imageCompressionControl) p_layout2 = (PFN_vkGetImageSubresourceLayout2EXT)vkGetDeviceProcAddr(g_dev, "vkGetImageSubresourceLayout2EXT");
     p_hostprops = (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_dev, "vkGetMemoryHostPointerPropertiesEXT");
+    // the BC layer (gfx/tex/bc_gpu.c) where the GPU has no BC textures (Mali, PowerVR): uploads and copies of BC blocks converted on the GPU, each kind only once it
+    //   came out the same as the CPU's on this GPU; the rest on the CPU as before (DM_VK_BC_GPU=0: all of it)
+    if (!f2.features.textureCompressionBC) { bc_gpu_info bi = { g_dev, g_q, g_qf, vkGetDeviceProcAddr, &g_memp, vk_logf }; g_bcgpu = bc_gpu_init(&bi); }
     if (g_host_import) {
         VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT };
         VkPhysicalDeviceProperties2 pp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp }; vkGetPhysicalDeviceProperties2(g_pd, &pp);
@@ -1185,6 +1191,7 @@ static VkImageView view_get(vtex *t, VkImageViewType vt, VkFormat fmt, uint32_t 
     return v;
 }
 
+static uint64_t g_bc_gpu_levels, g_bc_gpu_copies; static char g_bc_line[64];   // levels / copies the BC layer converted (the memory line)
 // one level / layer of BC blocks (z slices) into staging: transcoded (etk; read from the texture cache when it was converted before, tex_cache.h) or decoded
 static void bc_convert(int kind, int etk, const uint8_t *src, size_t pitch, size_t rows, int w, int h, uint32_t z, uint8_t *out, size_t opitch, size_t orows) {
     size_t in = pitch * rows * z, on = opitch * orows * z; uint64_t key = 0; uint8_t *tmp = NULL;
@@ -1209,6 +1216,9 @@ static int tex_upload(vtex *x, const tex_t *t) {
     else { VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = total ? total : 16, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT }; VKCHECK(vkCreateBuffer(g_dev, &bi, NULL, &sb));
            VkMemoryRequirements rq; vkGetBufferMemoryRequirements(g_dev, sb, &rq); tmp = vk_alloc(rq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1);
            VKCHECK(vkBindBufferMemory(g_dev, sb, tmp.b->mem, tmp.off)); sp = (uint8_t *)tmp.b->map + tmp.off; }
+    VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .image = x->img, .subresourceRange = { x->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS } };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
     VkBufferImageCopy *rg = calloc(x->levels * layers, sizeof *rg); uint32_t nrg = 0; VkDeviceSize off = 0; int linear = !!(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET));
     for (unsigned l = 0; l < x->levels; l++) {
         uint32_t w = x->w >> l ? x->w >> l : 1, h = x->h >> l ? x->h >> l : 1, z = x->is3d ? (x->d >> l ? x->d >> l : 1) : 1;
@@ -1219,6 +1229,12 @@ static int tex_upload(vtex *x, const tex_t *t) {
             if (linear) {   // LINEAR: rows at the texture's stride (one level, one layer)
                 size_t stride = t->d.stride ? t->d.stride : pitch; for (size_t r = 0; r < rows; r++) memcpy(dst + r * pitch, t->mem + r * stride, pitch);
             } else if (nvn_deswizzle(&t->d, l + (unsigned)x->drop, y, t->mem, dst, pitch)) { RED_ONCE(5, "deswizzle failed format %#x target %d", t->d.format, t->d.target); break; }
+            // BC blocks: converted by the BC layer from the raw blocks in staging (they fit: no conversion makes a level smaller), else on the CPU as before
+            if (bck && g_bcgpu && bc_gpu_can(bck, etk ? 1 : 0)) {
+                memcpy(sp + off, scratch, pitch * rows * z);
+                VkImageSubresourceLayers sub = { x->aspect, l, x->is3d ? 0 : y, 1 };
+                if (bc_gpu_buffer_to_image(cb, bck, etk ? 1 : 0, sb, so + off, (uint32_t)pitch, (uint32_t)(pitch * rows), w, h, z, x->img, sub, (VkOffset3D){0, 0, 0}, x->is3d)) { g_bc_gpu_levels++; off += opitch * orows * z; continue; }
+            }
             if (bck) bc_convert(bck, etk, scratch, pitch, rows, (int)w, (int)h, z, sp + off, opitch, orows);
             rg[nrg++] = (VkBufferImageCopy){ .bufferOffset = so + off, .bufferRowLength = (uint32_t)(opitch / obpb * obw), .bufferImageHeight = (uint32_t)(orows * obh),
                 .imageSubresource = { x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : x->aspect, l, x->is3d ? 0 : y, 1 }, .imageExtent = { w, h, z } };
@@ -1226,9 +1242,6 @@ static int tex_upload(vtex *x, const tex_t *t) {
         }
     }
     free(scratch);
-    VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .image = x->img, .subresourceRange = { x->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS } };
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
     if (nrg) vkCmdCopyBufferToImage(cb, sb, x->img, VK_IMAGE_LAYOUT_GENERAL, nrg, rg);
     free(rg); g_up_bytes += total;
     if (once) { once_end(cb); vkDestroyBuffer(g_dev, sb, NULL); vk_free(tmp); }
@@ -2602,6 +2615,12 @@ static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
     if (row % bpb || (img % row)) { RED_ONCE(47, "texture copy pitch %zu not a whole number of %d-byte blocks", row, bpb); return; }
     int bck = nvn_fmt_vk_decode(c->tex->d.format);
     if (bck && to_buffer) { RED_ONCE(98, "a BC texture decoded on upload copied back to a buffer: skipped (format %#x)", c->tex->d.format); return; }
+    if (bck && g_bcgpu && bc_gpu_can(bck, nvn_fmt_vk_transcode(c->tex->d.format) ? 1 : 0)) {   // the BC layer: from the pool's GPU-side blocks, so blocks the GPU wrote come out right too
+        outside_pass();
+        VkImageSubresourceLayers sub = { x->aspect, level, x->is3d ? 0 : layer0 + (uint32_t)c->r.zoffset, 1 };
+        if (bc_gpu_buffer_to_image(CB(), bck, nvn_fmt_vk_transcode(c->tex->d.format) ? 1 : 0, b, o, (uint32_t)row, (uint32_t)img, (uint32_t)c->r.width, (uint32_t)c->r.height, (uint32_t)nz, x->img, sub,
+                                   (VkOffset3D){ c->r.xoffset, c->r.yoffset, x->is3d ? c->r.zoffset : 0 }, x->is3d)) { g_bc_gpu_copies++; barrier_all(CB()); return; }
+    }
     if (bck) {   // BC blocks the game copies in: decoded now (the CPU has written them) into the submission's arena, then copied as plain texels
         const uint8_t *src = (const uint8_t *)(uintptr_t)c->src; int etk = nvn_fmt_vk_transcode(c->tex->d.format), tb = etk ? bc_transcode_bytes(bck) : bc_texel_bytes(bck), blk = etk && bc_transcode_blocks(bck);
         size_t orow = blk ? (size_t)((c->r.width + 3) / 4) * tb : (size_t)c->r.width * tb, oimg = orow * (blk ? (size_t)((c->r.height + 3) / 4) : (size_t)c->r.height);
@@ -2635,6 +2654,27 @@ static void copy_t2t(const p_copy_t2t *c) {
         else RED_ONCE(48, "downsample case not implemented");
         barrier_all(CB()); return;
     }
+    // Raw BC blocks: a texture of 8- or 16-byte texels (a uint render target the game's GPU wrote blocks into, each texel a block) copied into a BC texture, or a
+    //   BC texture into one: Vulkan copies such size-compatible formats block for block (extent in the source's texels); where the GPU has no BC the destination
+    //   is decoded / transcoded, and the BC layer converts the blocks. The blit below cannot take a compressed format (the copy was lost before)
+    { int sbw, sbh, dbw, dbh, sbpb = nvn_fmt_bpb(c->src->d.format, &sbw, &sbh), dbpb = nvn_fmt_bpb(c->dst->d.format, &dbw, &dbh), dk = nvn_fmt_vk_decode(c->dst->d.format);
+      int raw_in = sbw == 1 && dbw == 4 && sbpb == dbpb && (sbpb == 8 || sbpb == 16), raw_out = sbw == 4 && dbw == 1 && sbpb == dbpb && (dbpb == 8 || dbpb == 16);
+      if ((raw_in || raw_out) && s->samples == 1 && d->samples == 1) {
+          if (raw_in && dk) {
+              int mode = nvn_fmt_vk_transcode(c->dst->d.format) ? 1 : 0;
+              uint32_t w = (uint32_t)c->dr.width, h = (uint32_t)c->dr.height;
+              if (w > (uint32_t)c->sr.width * 4) w = (uint32_t)c->sr.width * 4; if (h > (uint32_t)c->sr.height * 4) h = (uint32_t)c->sr.height * 4;
+              if (g_bcgpu && bc_gpu_can(dk, mode) && bc_gpu_image_to_image(CB(), dk, mode, s->img, ss, (VkOffset3D){ c->sr.xoffset, c->sr.yoffset, s->is3d ? c->sr.zoffset : 0 }, (uint32_t)c->sr.width,
+                      (uint32_t)c->sr.height, (uint32_t)nz, w, h, d->img, ds, (VkOffset3D){ c->dr.xoffset, c->dr.yoffset, d->is3d ? c->dr.zoffset : 0 }, d->is3d)) { g_bc_gpu_copies++; barrier_all(CB()); return; }
+              RED_ONCE(108, "raw BC blocks copied into a texture decoded on this GPU (format %#x) and the BC layer cannot take them: left out", c->dst->d.format); barrier_all(CB()); return;
+          }
+          if (raw_out && nvn_fmt_vk_decode(c->src->d.format)) { RED_ONCE(109, "a BC texture decoded on this GPU copied out as raw blocks (format %#x): left out", c->src->d.format); return; }
+          VkImageCopy r = { ss, { c->sr.xoffset, c->sr.yoffset, s->is3d ? c->sr.zoffset : 0 }, ds, { c->dr.xoffset, c->dr.yoffset, d->is3d ? c->dr.zoffset : 0 },
+                            { (uint32_t)c->sr.width, (uint32_t)c->sr.height, s->is3d ? (uint32_t)nz : 1 } };
+          vkCmdCopyImage(CB(), s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); barrier_all(CB());
+          { static int said; if (!said++) VLOG("raw BC blocks copied between a %s texture (format %#x) and a %s one (format %#x), block for block", raw_in ? "uint" : "BC", c->src->d.format, raw_in ? "BC" : "uint", c->dst->d.format); }
+          return;
+      } }
     int same = c->sr.width == c->dr.width && c->sr.height == c->dr.height && s->fmt == d->fmt && !(c->flags & (NVN_COPY_FLAGS_MIRROR_X_BIT | NVN_COPY_FLAGS_MIRROR_Y_BIT)) && s->samples == d->samples;
     if (same) { VkImageCopy r = { ss, { c->sr.xoffset, c->sr.yoffset, s->is3d ? c->sr.zoffset : 0 }, ds, { c->dr.xoffset, c->dr.yoffset, d->is3d ? c->dr.zoffset : 0 }, { (uint32_t)c->sr.width, (uint32_t)c->sr.height, s->is3d ? (uint32_t)nz : 1 } };
         vkCmdCopyImage(CB(), s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); }
@@ -3311,8 +3351,9 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     if (n % 900 == 0 && atomic_load(&g_pso_new) >= 10) { static atomic_int busy; if (!atomic_exchange(&busy, 1)) {   // new pipelines: the cache file is rewritten in the background
         pthread_t t; void *saver(void *a); if (pthread_create(&t, NULL, saver, &busy)) atomic_store(&busy, 0); else pthread_detach(t); } }
     if (n % 1800 == 0) { VLOG("pipelines built during play so far: %d", atomic_load(&g_pso_ingame)); mem_report(); }
-    if (n == 1 || n % 300 == 0) VLOG("present %llu: %llu render target sets (%llu kept the open pass, %llu passes begun), %llu draws so far; textures uploaded %llu (re-uploaded %llu, %.1f MB)", (unsigned long long)n, (unsigned long long)g_stat_passes, (unsigned long long)g_stat_rt_same, (unsigned long long)g_stat_begins,
-                                     (unsigned long long)g_stat_draws, (unsigned long long)g_pkg_uploads, (unsigned long long)g_pkg_reuploads, g_up_bytes / 1048576.0);
+    if (n == 1 || n % 300 == 0) VLOG("present %llu: %llu render target sets (%llu kept the open pass, %llu passes begun), %llu draws so far; textures uploaded %llu (re-uploaded %llu, %.1f MB)%s", (unsigned long long)n, (unsigned long long)g_stat_passes, (unsigned long long)g_stat_rt_same, (unsigned long long)g_stat_begins,
+                                     (unsigned long long)g_stat_draws, (unsigned long long)g_pkg_uploads, (unsigned long long)g_pkg_reuploads, g_up_bytes / 1048576.0,
+                                     g_bcgpu ? (snprintf(g_bc_line, sizeof g_bc_line, "; BC layer: %llu levels, %llu copies", (unsigned long long)g_bc_gpu_levels, (unsigned long long)g_bc_gpu_copies), g_bc_line) : "");
     return n;
 }
 void mtl_present_wait(uint64_t ticket) { (void)ticket; }
