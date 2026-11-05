@@ -2472,10 +2472,13 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
 }
 
 // ================= Texture copies and clears =================
-static int log_copy(void) { static int on = -1, n; if (on < 0) on = getenv("DM_VK_LOG_COPY") != NULL; return on && n++ < 80; }   // DM_VK_LOG_COPY (diagnosis): the first copies
+// DM_VK_LOG_COPY (diagnosis): each distinct copy (source / destination serials) once, up to 400
+static int log_copy_pair(uint64_t a, uint64_t b) { static int on = -1, n; static uint64_t seen[400][2]; if (on < 0) on = getenv("DM_VK_LOG_COPY") != NULL;
+    if (!on) return 0; for (int i = 0; i < n; i++) if (seen[i][0] == a && seen[i][1] == b) return 0;
+    if (n >= 400) return 0; seen[n][0] = a; seen[n][1] = b; n++; return 1; }
 static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
     vtex *x = tex_res(c->tex);
-    if (log_copy()) VLOG("copy %s: texture ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d, buffer %#llx%s", to_buffer ? "texture→buffer" : "buffer→texture", (unsigned long long)c->tex->serial,
+    if (log_copy_pair(c->tex->serial, c->src | (uint64_t)to_buffer << 63)) VLOG("frame %llu copy %s: texture ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d, buffer %#llx%s", (unsigned long long)g_frame_no, to_buffer ? "texture→buffer" : "buffer→texture", (unsigned long long)c->tex->serial,
                          c->tex->d.width, c->tex->d.height, c->tex->d.format, c->tex->d.flags, c->r.xoffset, c->r.yoffset, c->r.width, c->r.height, (unsigned long long)c->src, x && x->img ? "" : " (no image)");
     if (!x || !x->img) return;
     if (x->drop) { RED_ONCE(104, "a texture kept at half quality copied %s a buffer: left out (DM_VK_TEX_QUALITY=full to compare)", to_buffer ? "to" : "from"); return; }
@@ -2504,7 +2507,7 @@ static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
 static void copy_t2t(const p_copy_t2t *c) {
     pass_flush();
     vtex *s = tex_res(c->src), *d = tex_res(c->dst);
-    if (log_copy()) VLOG("copy texture→texture: ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d → ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d%s", (unsigned long long)c->src->serial,
+    if (log_copy_pair(c->src->serial, c->dst->serial)) VLOG("frame %llu copy texture→texture: ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d → ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d%s", (unsigned long long)g_frame_no, (unsigned long long)c->src->serial,
                          c->src->d.width, c->src->d.height, c->src->d.format, c->src->d.flags, c->sr.xoffset, c->sr.yoffset, c->sr.width, c->sr.height, (unsigned long long)c->dst->serial,
                          c->dst->d.width, c->dst->d.height, c->dst->d.format, c->dst->d.flags, c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height, s && d && s->img && d->img ? "" : " (an image missing)");
     if (!s || !d || !s->img || !d->img) return;
@@ -2533,6 +2536,22 @@ static void copy_t2t(const p_copy_t2t *c) {
         else vkCmdBlitImage(CB(), s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r, lin ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     }
     barrier_all(CB());
+    // A linear texture is plain rows in the game's memory, which its CPU reads: the copied area goes there too. Violet takes the player's ID photo so: the screen
+    //   copied into a linear texture, read and compressed on the CPU, and uploaded again for the enrollment form; with the copy left in the GPU image the CPU
+    //   read zeros and the photo came out black. DM_VK_NO_LINEAR_WB=1: the image only, as before
+    { static int off = -1; if (off < 0) off = getenv("DM_VK_NO_LINEAR_WB") != NULL;
+      if (!off && (c->dst->d.flags & NVN_TEXTURE_FLAGS_LINEAR) && c->dst->mem && !nvn_fmt_vk_decode(c->dst->d.format) && !d->is3d && d->samples <= 1 && !dl) {
+          int bw, bh, bpb = nvn_fmt_bpb(c->dst->d.format, &bw, &bh);
+          if (bpb && bw == 1 && bh == 1) {
+              size_t stride = c->dst->d.stride ? c->dst->d.stride : (size_t)c->dst->d.width * bpb;
+              p_copy_b2t wb; memset(&wb, 0, sizeof wb);
+              wb.src = (uint64_t)(uintptr_t)(c->dst->mem + (size_t)c->dr.yoffset * stride + (size_t)c->dr.xoffset * bpb); wb.tex = c->dst; wb.view = c->dv; wb.has_view = c->has_dv; wb.r = c->dr;
+              wb.r.depth = 1;
+              int64_t ks = S.copy_stride, ki = S.copy_img_stride; S.copy_stride = (int64_t)stride; S.copy_img_stride = 0;
+              copy_b2t(&wb, 1);
+              S.copy_stride = ks; S.copy_img_stride = ki;
+              static int said; if (!said++) VLOG("linear texture %ux%u (format %#x, stride %zu) written by a texture copy: also written to its memory, which the CPU reads", c->dst->d.width, c->dst->d.height, c->dst->d.format, stride);
+          } } }
 }
 static void clear_tex(const p_clear_tex *c) {
     vtex *x = tex_res(c->tex); if (!x || !x->img) return;
