@@ -69,6 +69,19 @@ static pthread_mutex_t g_qmu = PTHREAD_MUTEX_INITIALIZER;
 // 0 when the driver has no such export or its mmap fails: then the mremap route below)
 static int g_fdmap = 0;   // queue submissions come from the submit thread and the present thread
 static VkExternalMemoryHandleTypeFlagBits g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;   // the fd route's handle type (mtl_init: a dma-buf where the driver exports one)
+// The heap route: a dma-buf from Android's own heap (/dev/dma_heap), mapped over the pool's pages and imported into the driver: for a driver that imports dma-bufs but
+// exports none (Mali-G615 / G720 / G57: external memory features 0x4, its export failing; its pools mirrored, the game's pictures white: #47, #53, #55). 1 working,
+// -1 until the first pool tries it, 0 off. DM_VK_DMAHEAP=1 tries it on any GPU, 0 never
+static int g_heapmap = 0, g_heapfd = -1; static const char *g_heapname;
+#ifdef __linux__
+#include <sys/ioctl.h>
+struct dm_heap_alloc { uint64_t len; uint32_t fd, fd_flags; uint64_t heap_flags; };
+#define DM_HEAP_IOCTL_ALLOC _IOWR('H', 0x0, struct dm_heap_alloc)
+static int heap_alloc(size_t n) {
+    struct dm_heap_alloc d = { .len = n, .fd_flags = O_RDWR | O_CLOEXEC };
+    return ioctl(g_heapfd, DM_HEAP_IOCTL_ALLOC, &d) < 0 ? -1 : (int)d.fd;
+}
+#endif
 static const VkBufferUsageFlags BUF_ALL = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT
     | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 static PFN_vkCmdPushDescriptorSetKHR p_push;
@@ -218,9 +231,24 @@ void mtl_init(void) {
         // Mali (ARM, PanVK too) answers that no buffer is exportable (Mali-G720 and Mali-G615 with PanVK, #53 / #47), and its pools then stay mirrored, where the game's
         //   pictures came out white. The dma-buf route is tried anyway: a buffer it refuses (VK_ERROR_INVALID_EXTERNAL_HANDLE), memory it does not export, or a crash
         //   (fd_export_mark) each fall back to moving the driver's mappings, as today
-        if (!g_fdmap && dmabuf && g_props.vendorID == 0x13B5) { g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT; g_fdmap = -1;
+        // A dma-buf the driver imports, from Android's heap (uncached first: the GPU then sees the game's writes without cache upkeep): Mali, which imports but does not
+        //   export (#47: the forced export failed, errno 2), or any GPU with DM_VK_DMAHEAP=1
+        {   const char *he = getenv("DM_VK_DMAHEAP"); int want = he ? atoi(he) : (!g_fdmap && g_props.vendorID == 0x13B5);
+            VkPhysicalDeviceExternalBufferInfo xi = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO, .usage = BUF_ALL, .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT };
+            VkExternalBufferProperties xp = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES };
+            if (want && dmabuf && vkGetPhysicalDeviceExternalBufferProperties) vkGetPhysicalDeviceExternalBufferProperties(g_pd, &xi, &xp);
+            if (want && dmabuf && (xp.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
+                static const char *heaps[] = { "/dev/dma_heap/system-uncached", "/dev/dma_heap/system" };
+                for (int i = 0; i < 2 && g_heapfd < 0; i++) if ((g_heapfd = open(heaps[i], O_RDONLY | O_CLOEXEC)) >= 0) g_heapname = heaps[i];
+                if (g_heapfd >= 0) { g_heapmap = -1; g_fdmap = 0; g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+                    VLOG("memory pools: dma-bufs from %s imported into the driver, mapped over the pools (to try)", g_heapname); }
+                else VLOG("memory pools: no dma-buf heap could be opened (errno %d)", errno);
+            } else if (want) VLOG("memory pools: the driver does not import dma-buf buffers (features %#x)", (unsigned)xp.externalMemoryProperties.externalMemoryFeatures);
+        }
+        if (!g_fdmap && !g_heapmap && dmabuf && g_props.vendorID == 0x13B5) { g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT; g_fdmap = -1;
             VLOG("memory pools: Mali lists no exportable buffer: the dma-buf route tried anyway (it falls back by itself)"); }
-        if (g_fdmap) { dext[ndext++] = "VK_KHR_external_memory_fd"; if (g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) dext[ndext++] = "VK_EXT_external_memory_dma_buf"; }
+        if (g_heapmap) { dext[ndext++] = "VK_KHR_external_memory_fd"; dext[ndext++] = "VK_EXT_external_memory_dma_buf"; }
+        else if (g_fdmap) { dext[ndext++] = "VK_KHR_external_memory_fd"; if (g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) dext[ndext++] = "VK_EXT_external_memory_dma_buf"; }
     }
     VLOG("memory pools: fd export %s (host import %d, VK_KHR_external_memory_fd %d, VK_EXT_external_memory_dma_buf %d)", !g_fdmap ? "off" : g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "to try, as a dma-buf" : "to try, as an opaque fd",
          g_host_import, has_ext(de, nde, "VK_KHR_external_memory_fd"), has_ext(de, nde, "VK_EXT_external_memory_dma_buf"));
@@ -417,13 +445,16 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     void *p = NULL; int reused = 0;
 #ifdef __linux__
     static int shadow_forced = -1; if (shadow_forced < 0) shadow_forced = getenv("DM_VK_POOL_SHADOW") && atoi(getenv("DM_VK_POOL_SHADOW"));
-    if (!g_host_import && !shadow_forced && !g_fdmap && pool_mem_take(n, &e.buf, &e.mem, &p)) { reused = 1; goto reuse; }
+    if (!g_host_import && !shadow_forced && !g_fdmap && !g_heapmap && pool_mem_take(n, &e.buf, &e.mem, &p)) { reused = 1; goto reuse; }
 #endif
     VkExternalMemoryBufferCreateInfo eb = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT };
     VkExternalMemoryBufferCreateInfo ebfd = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = g_fdtype };
-    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = g_host_import ? &eb : g_fdmap ? &ebfd : NULL, .size = n, .usage = BUF_ALL };
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .pNext = g_host_import ? &eb : (g_fdmap || g_heapmap) ? &ebfd : NULL, .size = n, .usage = BUF_ALL };
     VkResult br = vkCreateBuffer(g_dev, &bi, NULL, &e.buf);
 #ifdef __linux__
+    if (br == VK_ERROR_INVALID_EXTERNAL_HANDLE && g_heapmap < 0) {
+        VLOG("[RED] dma-buf buffer rejected (%d): the heap route off", br); g_heapmap = 0; bi.pNext = NULL; br = vkCreateBuffer(g_dev, &bi, NULL, &e.buf);
+    }
     if (br == VK_ERROR_INVALID_EXTERNAL_HANDLE && g_fdmap < 0) {
         VLOG("[RED] %s external buffer rejected (%d): moving driver mappings instead (mremap)", g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT ? "dma-buf" : "opaque-fd", br);
         g_fdmap = 0;
@@ -464,6 +495,42 @@ void mtl_pool_add(const void *mem, uint64_t size) {
 #ifdef __linux__
         // The fd route: the driver's own mapping is never touched (moving it broke Adreno: freed mappings handed out again, crashes and a lost device on area changes);
         // the same pages are mapped once more, shared, over the pool, so the game's pointers and the GPU still address the same memory without copies
+        if (g_heapmap) {
+            static PFN_vkGetMemoryFdPropertiesKHR fdprops; if (!fdprops) fdprops = (PFN_vkGetMemoryFdPropertiesKHR)vkGetDeviceProcAddr(g_dev, "vkGetMemoryFdPropertiesKHR");
+            size_t pgs = (size_t)getpagesize(); VkDeviceSize hn = ((rq.size > n ? rq.size : n) + pgs - 1) & ~(VkDeviceSize)(pgs - 1);
+            int fd = heap_alloc(hn), vfd = -1, why = 0; void *tmp = MAP_FAILED;
+            VkMemoryFdPropertiesKHR fp = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
+            if (fd < 0) why = 1;
+            else if ((tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0)) == MAP_FAILED) why = 2;
+            else if (!fdprops || fdprops(g_dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, fd, &fp)) why = 3;
+            else {
+                uint32_t bits = rq.memoryTypeBits & fp.memoryTypeBits;
+                int ti = mem_type(bits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0); if (ti < 0) ti = mem_type(bits, 0, 0);
+                VkImportMemoryFdInfoKHR im = { .sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR, .pNext = &ded, .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT };
+                VkMemoryAllocateInfo iai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &im, .allocationSize = hn, .memoryTypeIndex = (uint32_t)ti };
+                if (ti < 0) why = 4;
+                else if ((im.fd = vfd = dup(fd)) < 0) why = 5;
+                else if (vkAllocateMemory(g_dev, &iai, NULL, &e.mem)) { close(vfd); why = 6; }   // (the driver owns the fd only when the import succeeds)
+            }
+            if (!why) {
+                memcpy(tmp, (void *)a, n);   // what the pool holds, into the dma-buf
+                void *q = mmap((void *)a, n, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);   // the pool's pages become the dma-buf, in one step
+                munmap(tmp, n); close(fd);
+                if (q != (void *)a) VDIE("memory pool %p+%#llx: mapping the dma-buf over it failed (errno %d)", mem, (unsigned long long)size, errno);
+                e.fdmapped = 1;
+                if (g_heapmap < 0) { g_heapmap = 1; VLOG("memory pools: dma-bufs from %s imported into the driver and mapped over the pools' pages", g_heapname); }
+                goto bind;
+            }
+            int err = errno;
+            if (tmp != MAP_FAILED) munmap(tmp, n);
+            if (fd >= 0) close(fd);
+            // a plain buffer for the routes below (memory bound to a buffer made for dma-bufs must be a dma-buf)
+            vkDestroyBuffer(g_dev, e.buf, NULL); bi.pNext = NULL; VKCHECK(vkCreateBuffer(g_dev, &bi, NULL, &e.buf)); vkGetBufferMemoryRequirements(g_dev, e.buf, &rq);
+            ded.buffer = e.buf; mai.allocationSize = rq.size > n ? rq.size : n;
+            static const char *whys[] = { "", "allocating it", "mapping it", "reading its memory types", "no memory type both accept", "dup", "importing it" };
+            if (g_heapmap < 0) { g_heapmap = 0; VLOG("[RED] memory pools: the dma-buf heap route failed (%s, errno %d): moving the driver's mappings instead", whys[why], err); }
+            else RED_ONCE(106, "memory pool %p+%#llx: dma-buf failed (%s, errno %d): this pool and any other that fails go the mremap route", mem, (unsigned long long)size, whys[why], err);
+        }
         if (g_fdmap) {
             static PFN_vkGetMemoryFdKHR getfd; if (!getfd) getfd = (PFN_vkGetMemoryFdKHR)vkGetDeviceProcAddr(g_dev, "vkGetMemoryFdKHR");
             VkExportMemoryAllocateInfo ex = { .sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, .pNext = &ded, .handleTypes = g_fdtype };
