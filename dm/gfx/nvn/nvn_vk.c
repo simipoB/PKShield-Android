@@ -98,6 +98,7 @@ static void completion_start(void);
 static void dummies_init(void);
 static int host_import_mark(int set);   // (queue_submit)
 static int fd_export_mark(int op);   // (mtl_init, mtl_pool_add)
+static int heap_import_mark(int op);   // the same for the dma-buf heap route (its own file: a crash of one route does not close the other)
 static void pcache_open(void); static void *prewarm_main(void *arg);   // pipeline list and cache (below)
 // The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (a driver package chosen on the setup screen: Mesa Turnip for Adreno, Mesa PanVK for Mali) is opened through
 // libadrenotools (BSD-2-Clause, shipped in the app with its hook libraries); when that is missing or fails, the library itself (PanVK talks to the Mali kernel driver,
@@ -132,11 +133,14 @@ static void *vk_open(void) {
 #define VK_LOAD_I(f) f = (PFN_##f)vkGetInstanceProcAddr(g_inst, #f);
 static int g_bcgpu;   // the BC layer is on (mtl_init)
 static void vk_logf(const char *f, ...) { va_list a; va_start(a, f); fputs("[dm] [nvn-vk] ", stderr); vfprintf(stderr, f, a); fputc('\n', stderr); va_end(a); }
+static uint32_t g_instance_api = VK_API_VERSION_1_3;   // the instance's apiVersion (mtl_init)
 static uint32_t g_api;   // the device's Vulkan version (DM_VK_API=11 / 12 tries an older device's path on a newer one)
 static PFN_vkVoidFunction vk_dev_fn(const char *name) {   // a device function; before 1.3 the KHR / EXT name of a promoted one (dynamic rendering, timeline semaphores, extended dynamic state)
     char alt[128];
     if (g_api < VK_API_VERSION_1_3) for (int k = 0; k < 2; k++) { snprintf(alt, sizeof alt, "%s%s", name, k ? "EXT" : "KHR"); PFN_vkVoidFunction f = vkGetDeviceProcAddr(g_dev, alt); if (f) return f; }
-    return vkGetDeviceProcAddr(g_dev, name);
+    PFN_vkVoidFunction f = vkGetDeviceProcAddr(g_dev, name); if (f) return f;
+    for (int k = 0; k < 2; k++) { snprintf(alt, sizeof alt, "%s%s", name, k ? "EXT" : "KHR"); if ((f = vkGetDeviceProcAddr(g_dev, alt))) return f; }   // (a core name the driver withholds: its extension name)
+    return NULL;
 }
 #define VK_LOAD_D(f) f = (PFN_##f)vk_dev_fn(#f);
 const char *nvn_vk_gpu_name(void) { return g_dev ? g_props.deviceName : NULL; }   // android_main.c boot_guard
@@ -152,7 +156,11 @@ void mtl_init(void) {
     uint32_t instance_api = VK_API_VERSION_1_0;
     PFN_vkEnumerateInstanceVersion enumerate_instance_version = (PFN_vkEnumerateInstanceVersion)vkGetInstanceProcAddr(NULL, "vkEnumerateInstanceVersion");
     if (enumerate_instance_version && enumerate_instance_version(&instance_api) != VK_SUCCESS) instance_api = VK_API_VERSION_1_0;
-    if (instance_api > VK_API_VERSION_1_3) instance_api = VK_API_VERSION_1_3;
+    // A 1.1+ loader takes any apiVersion: 1.3 is asked for, so the device's own version decides. Android's loader answers 1.1 on older Android releases, and an instance
+    //   made at 1.1 made Turnip (strict) give out no 1.2 / 1.3 function: vkWaitSemaphores came back NULL and the first wait jumped to address 0 (#58, Adreno 640,
+    //   every version from 0.36); Qualcomm's own driver hands them out anyway
+    if (instance_api >= VK_API_VERSION_1_1) instance_api = VK_API_VERSION_1_3;
+    g_instance_api = instance_api;
     VkApplicationInfo ai = { .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "nxnative", .apiVersion = instance_api };
     uint32_t nie = 0; vkEnumerateInstanceExtensionProperties(NULL, &nie, NULL);
     VkExtensionProperties *ie = calloc(nie ? nie : 1, sizeof *ie); vkEnumerateInstanceExtensionProperties(NULL, &nie, ie);
@@ -179,7 +187,7 @@ void mtl_init(void) {
     uint32_t nde = 0; vkEnumerateDeviceExtensionProperties(g_pd, NULL, &nde, NULL);
     VkExtensionProperties *de = calloc(nde ? nde : 1, sizeof *de); vkEnumerateDeviceExtensionProperties(g_pd, NULL, &nde, de);
     const char *dext[24]; uint32_t ndext = 0;
-    g_api = g_props.apiVersion;
+    g_api = g_props.apiVersion < g_instance_api ? g_props.apiVersion : g_instance_api;   // (the version the driver hands out functions for: the lower of the two)
     if (getenv("DM_VK_API")) { int a = atoi(getenv("DM_VK_API")); uint32_t f = a == 11 ? VK_API_VERSION_1_1 : a == 12 ? VK_API_VERSION_1_2 : g_api; if (f < g_api) g_api = f; }
     int old = g_api < VK_API_VERSION_1_3, old11 = g_api < VK_API_VERSION_1_2;
     if (old) {   // what Vulkan 1.3 has built in, as extensions (Vulkan 1.1 / 1.2 drivers: older Mali, PowerVR, Adreno 6xx stock drivers)
@@ -225,11 +233,14 @@ void mtl_init(void) {
     // A driver that crashed allocating exportable memory (Xclipse 540, driver 0x6000230: a segfault inside vkAllocateMemory on the first pool, #45) left the marker
     // fd_export_mark sets around that first allocation: this start moves the driver's mappings instead (DM_VK_FDMAP=1 tries the fd route again)
     int fd_crashed = fd_export_mark(0) && !(getenv("DM_VK_FDMAP") && atoi(getenv("DM_VK_FDMAP")));
-    if (fd_crashed) VLOG("[RED] memory pools: the driver crashed exporting or importing shared memory last time (or a submission failed with it): moving its mappings instead (mremap)");
-    if (!g_host_import && !fd_crashed && has_ext(de, nde, "VK_KHR_external_memory_fd") && !(getenv("DM_VK_NO_FDMAP") && atoi(getenv("DM_VK_NO_FDMAP")))) {
+    if (fd_crashed) VLOG("[RED] memory pools: the driver crashed exporting its memory last time: no export this start");
+    // the heap route's own marker (heap_import_mark): set by a crash importing the first dma-buf or a failed submission with them; DM_VK_DMAHEAP=1 tries it again
+    int heap_crashed = heap_import_mark(0) && !(getenv("DM_VK_DMAHEAP") && atoi(getenv("DM_VK_DMAHEAP")));
+    if (heap_crashed) VLOG("[RED] memory pools: importing dma-bufs failed last time: not this start");
+    if (!g_host_import && (!fd_crashed || !heap_crashed) && has_ext(de, nde, "VK_KHR_external_memory_fd") && !(getenv("DM_VK_NO_FDMAP") && atoi(getenv("DM_VK_NO_FDMAP")))) {
         VkExternalMemoryHandleTypeFlagBits cand[2] = { VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
         int dmabuf = has_ext(de, nde, "VK_EXT_external_memory_dma_buf") && !(getenv("DM_VK_NO_DMABUF") && atoi(getenv("DM_VK_NO_DMABUF")));
-        for (int i = dmabuf ? 0 : 1; i < 2 && !g_fdmap; i++) {
+        for (int i = dmabuf ? 0 : 1; i < 2 && !g_fdmap && !fd_crashed; i++) {
             if (!vkGetPhysicalDeviceExternalBufferProperties) { g_fdmap = -1; break; }   // (a 1.0 instance: the opaque fd, tried as before)
             VkPhysicalDeviceExternalBufferInfo xi = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO, .usage = BUF_ALL, .handleType = cand[i] };
             VkExternalBufferProperties xp = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES };
@@ -242,7 +253,10 @@ void mtl_init(void) {
         //   (fd_export_mark) each fall back to moving the driver's mappings, as today
         // A dma-buf the driver imports, from Android's heap (uncached first: the GPU then sees the game's writes without cache upkeep): Mali, which imports but does not
         //   export (#47: the forced export failed, errno 2), or any GPU with DM_VK_DMAHEAP=1
-        {   const char *he = getenv("DM_VK_DMAHEAP"), *sh = getenv("DM_VK_POOL_SHADOW"); int want = he ? atoi(he) : (!g_fdmap && g_props.vendorID == 0x13B5);
+        // Samsung Xclipse without export (its export crashed the driver: Xclipse 530 / 540, #45 / #57 / #59) took the mremap route, where its driver handed out
+        //   mappings the pools had taken and the game crashed on scene changes: it takes the heap route too
+        {   const char *he = getenv("DM_VK_DMAHEAP"), *sh = getenv("DM_VK_POOL_SHADOW");
+            int want = he ? atoi(he) : (!g_fdmap && !heap_crashed && (g_props.vendorID == 0x13B5 || g_props.vendorID == 0x144D));
             if (sh && atoi(sh)) want = 0;   // (a forced mirror leaves it out too)
             VkPhysicalDeviceExternalBufferInfo xi = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_BUFFER_INFO, .usage = BUF_ALL, .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT };
             VkExternalBufferProperties xp = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES };
@@ -255,7 +269,7 @@ void mtl_init(void) {
                 else VLOG("memory pools: no dma-buf heap could be opened (errno %d)", errno);
             } else if (want) VLOG("memory pools: the driver does not import dma-buf buffers (features %#x)", (unsigned)xp.externalMemoryProperties.externalMemoryFeatures);
         }
-        if (!g_fdmap && !g_heapmap && dmabuf && g_props.vendorID == 0x13B5) { g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT; g_fdmap = -1;
+        if (!g_fdmap && !g_heapmap && !fd_crashed && dmabuf && g_props.vendorID == 0x13B5) { g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT; g_fdmap = -1;
             VLOG("memory pools: Mali lists no exportable buffer: the dma-buf route tried anyway (it falls back by itself)"); }
         if (g_heapmap) { dext[ndext++] = "VK_KHR_external_memory_fd"; dext[ndext++] = "VK_EXT_external_memory_dma_buf"; }
         else if (g_fdmap) { dext[ndext++] = "VK_KHR_external_memory_fd"; if (g_fdtype == VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) dext[ndext++] = "VK_EXT_external_memory_dma_buf"; }
@@ -512,7 +526,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
         if (g_heapmap) {
             static PFN_vkGetMemoryFdPropertiesKHR fdprops; if (!fdprops) fdprops = (PFN_vkGetMemoryFdPropertiesKHR)vkGetDeviceProcAddr(g_dev, "vkGetMemoryFdPropertiesKHR");
             size_t pgs = (size_t)getpagesize(); VkDeviceSize hn = ((rq.size > n ? rq.size : n) + pgs - 1) & ~(VkDeviceSize)(pgs - 1);
-            int first = g_heapmap < 0; if (first) fd_export_mark(1);   // a crash inside the driver importing the first one: the next start leaves this route out
+            int first = g_heapmap < 0; if (first) heap_import_mark(1);   // a crash inside the driver importing the first one: the next start leaves this route out
             int fd = heap_alloc(hn), vfd = -1, why = 0; void *tmp = MAP_FAILED;
             VkMemoryFdPropertiesKHR fp = { .sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR };
             if (fd < 0) why = 1;
@@ -532,7 +546,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
                 void *q = mmap((void *)a, n, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);   // the pool's pages become the dma-buf, in one step
                 munmap(tmp, n); close(fd);
                 if (q != (void *)a) VDIE("memory pool %p+%#llx: mapping the dma-buf over it failed (errno %d)", mem, (unsigned long long)size, errno);
-                e.fdmapped = 1; if (first) fd_export_mark(-1);
+                e.fdmapped = 1; if (first) heap_import_mark(-1);
                 if (g_heapmap < 0) { g_heapmap = 1; VLOG("memory pools: dma-bufs from %s imported into the driver and mapped over the pools' pages", g_heapname); }
                 goto bind;
             }
@@ -543,7 +557,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
             vkDestroyBuffer(g_dev, e.buf, NULL); bi.pNext = NULL; VKCHECK(vkCreateBuffer(g_dev, &bi, NULL, &e.buf)); vkGetBufferMemoryRequirements(g_dev, e.buf, &rq);
             ded.buffer = e.buf; mai.allocationSize = rq.size > n ? rq.size : n;
             static const char *whys[] = { "", "allocating it", "mapping it", "reading its memory types", "no memory type both accept", "dup", "importing it" };
-            if (first) fd_export_mark(-1);
+            if (first) heap_import_mark(-1);
             if (g_heapmap < 0) { g_heapmap = 0; VLOG("[RED] memory pools: the dma-buf heap route failed (%s, errno %d): moving the driver's mappings instead", whys[why], err); }
             else RED_ONCE(106, "memory pool %p+%#llx: dma-buf failed (%s, errno %d): this pool and any other that fails go the mremap route", mem, (unsigned long long)size, whys[why], err);
         }
@@ -903,6 +917,17 @@ static int host_import_mark(int set) {
     FILE *f = fopen(m, "w"); if (f) { fputs("vkQueueSubmit failed with imported host memory: the next start moves driver memory onto the pools instead\n", f); fclose(f); }
     return f != NULL;
 }
+static int mark_file(const char *name, const char *what, int op) {   // a marker next to the pipeline cache: op 1 writes it, -1 removes it, 0 tells whether it is there
+    const char *pc = getenv("DM_VK_PCACHE"); if (!pc) return 0;
+    char m[1100]; snprintf(m, sizeof m, "%s", pc); char *sl = strrchr(m, '/'); if (!sl) return 0; snprintf(sl + 1, sizeof m - (size_t)(sl + 1 - m), "%s", name);
+    if (op < 0) return unlink(m) == 0;
+    if (!op) return access(m, F_OK) == 0;
+    FILE *f = fopen(m, "w"); if (f) { fputs(what, f); fclose(f); }
+    return f != NULL;
+}
+static int heap_import_mark(int op) {
+    return mark_file("heap_import_crashed", "importing a dma-buf for the first pool, or a submission with dma-buf pools; if this file is still here that failed, and the next start leaves the route out\n", op);
+}
 // The marker of a driver that crashed exporting its memory (see mtl_init): op 1 writes it, -1 removes it, 0 tells whether it is there
 static int fd_export_mark(int op) {
     const char *pc = getenv("DM_VK_PCACHE"); if (!pc) return 0;
@@ -919,7 +944,7 @@ static void queue_submit(VkCommandBuffer *cbs, uint32_t n, uint64_t signal) {
     if (!mirror_ordered()) shadow_sync();   // (ordered: the submission's own command buffer copies them, shadow_sync_ordered)
     pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, VK_NULL_HANDLE); pthread_mutex_unlock(&g_qmu);
     if (r && g_host_import && host_import_mark(1)) VLOG("[RED] vkQueueSubmit failed with imported host memory: the next start will not import it");
-    if (r && g_heapmap > 0 && fd_export_mark(1)) VLOG("[RED] vkQueueSubmit failed with dma-buf pools: the next start moves the driver's mappings instead");
+    if (r && g_heapmap > 0 && heap_import_mark(1)) VLOG("[RED] vkQueueSubmit failed with dma-buf pools: the next start moves the driver's mappings instead");
     if (r) VDIE("vkQueueSubmit failed: %d", r);
 }
 // Fence values are handed out under g_cmu so the present thread's submissions (screenshots) and the game's stay in order on the timeline
