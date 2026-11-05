@@ -39,3 +39,5 @@ uint32_t *spv_int_outputs(const uint32_t *code, size_t words, uint32_t umask, ui
 uint32_t *spv_tf_variant(const uint32_t *code, size_t words, const int tf[4][2], uint32_t binding0, size_t *out_words);
 // A copy that declares StorageImageWriteWithoutFormat / StorageImageReadWithoutFormat where the shader writes / reads a storage image of format Unknown without them. NULL if none is missing
 uint32_t *spv_image_caps(const uint32_t *code, size_t words, size_t *out_words);
+// A copy whose 2D / 2D-array texture gathers have their coordinate nudged by 1/512 of a texel (the host picks Maxwell's 2x2 block on a texel centre: Adreno). NULL if none
+uint32_t *spv_gather_bias(const uint32_t *code, size_t words, size_t *out_words);

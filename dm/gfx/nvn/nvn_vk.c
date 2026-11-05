@@ -1717,12 +1717,16 @@ static vshader *shader_load(const uint8_t key[8], int st) {
     if (s->shift) spv_rebind(code, ns / 4, s->shift);
     ns = spv_strip_unused(code, ns / 4) * 4;   // capabilities declared but unused (Float64, fragment interlock): strict drivers refuse or mis-handle them
     { size_t nw; uint32_t *c2 = spv_image_caps(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // and the format-less storage image ones they need
+    // Adreno picks another 2x2 block than Maxwell for a gather on a texel centre: its gathers are nudged by 1/512 of a texel (spv_gather_bias). DM_VK_GATHER_BIAS=0 / 1 decides
+    static int gbias = -1; if (gbias < 0) { const char *e = getenv("DM_VK_GATHER_BIAS"); gbias = e ? atoi(e) != 0 : g_props.vendorID == 0x5143; if (gbias) VLOG("texture gathers nudged by 1/512 of a texel (Adreno rounding)"); }
+    if (gbias) { size_t nw; uint32_t *c2 = spv_gather_bias(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }
     if (spst == 0 || spst == 2) { size_t nw; uint32_t *c2 = spv_init_outputs(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // outputs start at (0, 0, 0, 1) as on the hardware
     if (st == 0 && glcode) {
         size_t nw;
         if (s->shift) spv_rebind(glcode, ngl / 4, s->shift);
         ngl = spv_strip_unused(glcode, ngl / 4) * 4;
         uint32_t *c2 = spv_image_caps(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
+        if (gbias && (c2 = spv_gather_bias(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
         c2 = spv_init_outputs(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
         VkShaderModuleCreateInfo gci = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = ngl, .pCode = glcode };
         VkResult gr = vkCreateShaderModule(g_dev, &gci, NULL, &s->glmod);
