@@ -1,0 +1,343 @@
+#version 450
+// BC blocks decoded / transcoded on the GPU (bc_gpu.h): the same algorithms as the CPU's ../bc_decode.c and ../etc_encode.c, line for line, so a texture comes out
+// the same whichever does it (ETC2 / EAC / BC6H bit for bit; ASTC, whose CPU encoder works in doubles, here in floats: valid blocks, near the same error).
+// One invocation per 4x4 block. mode 0: texels (BC1 / 2 / 3 / 7 RGBA8, BC4 R8, BC5 RG8, BC6H RGBA16F), rows of 4 * bw texels; mode 1: ETC2 + EAC (BC1-3),
+// EAC R11 (BC4), EAC RG11 (BC5), B10G11R11 texels (BC6H unsigned), ASTC 4x4 (BC7). Kinds as bc_decode.h: 1..7, -4 / -5 / -6 signed
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(std430, binding = 0) readonly buffer In { uint src[]; };
+layout(std430, binding = 1) writeonly buffer Out { uint dst[]; };
+layout(push_constant) uniform P { int kind; uint mode, bw, bh, nz, in_off, in_row, in_slice, out_off, out_row, out_slice, w, h; } pc;
+#include "bc_gpu_tables.glsl"
+
+uvec4 B;   // the block, little-endian words
+uint bits(int pos, int n) {   // n (<= 32) bits of the 128-bit block from pos, LSB first
+    if (n == 0) return 0u;
+    int wi = pos >> 5, sh = pos & 31; uint v = B[wi] >> sh;
+    if (sh + n > 32 && wi < 3) v |= B[wi + 1] << (32 - sh);
+    return n == 32 ? v : v & ((1u << n) - 1u);
+}
+int rdpos; uint rd(int n) { uint v = bits(rdpos, n); rdpos += n; return v; }
+int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
+int divtz(int a, int b) { int q = abs(a) / abs(b); return (a < 0) != (b < 0) ? -q : q; }   // C's truncating division
+uint rgba(int r, int g, int b, int a) { return uint(r & 255) | uint(g & 255) << 8 | uint(b & 255) << 16 | uint(a & 255) << 24; }
+int ch(uint p, int c) { return int(p >> (8 * c) & 255u); }
+
+// ---------- BC1–BC5 ----------
+uint T[16];        // texels: RGBA8 (BC1-3, BC7), R8 / RG8 (BC4 / BC5, signed as two's-complement bytes) in the low bytes
+uint H0[16], H1[16];   // BC6H: RGBA16F as (r | g << 16), (b | a << 16)
+uint e565(uint c) { int r = int(c >> 11 & 31u), g = int(c >> 5 & 63u), b = int(c & 31u); return rgba(r << 3 | r >> 2, g << 2 | g >> 4, b << 3 | b >> 2, 255); }
+void bc1_color(uint w0, uint w1, bool four) {
+    uint c0 = w0 & 0xffffu, c1 = w0 >> 16, p[4]; p[0] = e565(c0); p[1] = e565(c1);
+    if (c0 > c1 || four) {
+        p[2] = rgba((2 * ch(p[0], 0) + ch(p[1], 0)) / 3, (2 * ch(p[0], 1) + ch(p[1], 1)) / 3, (2 * ch(p[0], 2) + ch(p[1], 2)) / 3, 255);
+        p[3] = rgba((ch(p[0], 0) + 2 * ch(p[1], 0)) / 3, (ch(p[0], 1) + 2 * ch(p[1], 1)) / 3, (ch(p[0], 2) + 2 * ch(p[1], 2)) / 3, 255);
+    } else { p[2] = rgba((ch(p[0], 0) + ch(p[1], 0)) / 2, (ch(p[0], 1) + ch(p[1], 1)) / 2, (ch(p[0], 2) + ch(p[1], 2)) / 2, 255); p[3] = 0u; }
+    for (int i = 0; i < 16; i++) T[i] = p[w1 >> (2 * i) & 3u];
+}
+// one BC4 channel from the 64-bit half (lo, hi); the value of texel i (a byte; signed: two's complement)
+int V4[8];
+void bc4_values(uint lo, bool sgn) {
+    if (!sgn) {
+        int r0 = int(lo & 255u), r1 = int(lo >> 8 & 255u); V4[0] = r0; V4[1] = r1;
+        if (r0 > r1) for (int i = 1; i <= 6; i++) V4[i + 1] = ((7 - i) * r0 + i * r1) / 7;
+        else { for (int i = 1; i <= 4; i++) V4[i + 1] = ((5 - i) * r0 + i * r1) / 5; V4[6] = 0; V4[7] = 255; }
+    } else {
+        int raw0 = int(lo << 24) >> 24, raw1 = int(lo << 16) >> 24, r0 = raw0 == -128 ? -127 : raw0, r1 = raw1 == -128 ? -127 : raw1; V4[0] = r0; V4[1] = r1;
+        if (raw0 > raw1) for (int i = 1; i <= 6; i++) V4[i + 1] = divtz((7 - i) * r0 + i * r1, 7);
+        else { for (int i = 1; i <= 4; i++) V4[i + 1] = divtz((5 - i) * r0 + i * r1, 5); V4[6] = -127; V4[7] = 127; }
+    }
+}
+uint bc4_index(uint lo, uint hi, int i) { int p = 16 + 3 * i; uint v = p >= 32 ? hi >> (p - 32) : (lo >> p) | (p > 29 ? hi << (32 - p) : 0u); return v & 7u; }
+
+// ---------- BC6H / BC7 shared ----------
+const uint W2[4] = uint[](0u, 21u, 43u, 64u), W3[8] = uint[](0u, 9u, 18u, 27u, 37u, 46u, 55u, 64u), W4[16] = uint[](0u, 4u, 9u, 13u, 17u, 21u, 26u, 30u, 34u, 38u, 43u, 47u, 51u, 55u, 60u, 64u);
+int wt(int b, int i) { return int(b == 2 ? W2[i] : b == 3 ? W3[i] : W4[i]); }
+int subset_of(int ns, int part, int i) { return ns == 1 ? 0 : ns == 2 ? int(PART2[part] >> i & 1u) : int(PART3[part] >> (2 * i) & 3u); }
+int is_anchor(int ns, int part, int i) { return (i == 0 || (ns == 2 && uint(i) == ANCHOR2[part]) || (ns == 3 && (uint(i) == ANCHOR3A[part] || uint(i) == ANCHOR3B[part]))) ? 1 : 0; }
+
+// ---------- BC7 ----------
+const int NS[8] = int[](3, 2, 3, 2, 1, 1, 1, 2), PB[8] = int[](4, 6, 6, 6, 0, 0, 0, 6), RB[8] = int[](0, 0, 0, 0, 2, 2, 0, 0), ISB[8] = int[](0, 0, 0, 0, 1, 0, 0, 0),
+          CB[8] = int[](4, 6, 5, 7, 5, 7, 7, 5), AB[8] = int[](0, 0, 0, 0, 6, 8, 7, 5), EPB[8] = int[](1, 0, 0, 1, 0, 0, 1, 1), SPB[8] = int[](0, 1, 0, 0, 0, 0, 0, 0),
+          IB[8] = int[](3, 3, 2, 2, 2, 2, 4, 2), IB2[8] = int[](0, 0, 0, 0, 3, 2, 0, 0);
+void bc7() {
+    int m = 0; while (m < 8 && (B.x >> m & 1u) == 0u) m++;
+    if (m == 8) { for (int i = 0; i < 16; i++) T[i] = 0u; return; }
+    rdpos = m + 1;
+    int ns = NS[m], part = int(rd(PB[m])), rot = int(rd(RB[m])), isb = int(rd(ISB[m]));
+    int ep[6][4];
+    for (int c = 0; c < 3; c++) for (int i = 0; i < 2 * ns; i++) ep[i][c] = int(rd(CB[m]));
+    for (int i = 0; i < 2 * ns; i++) ep[i][3] = AB[m] != 0 ? int(rd(AB[m])) : 255;
+    int pb[6] = int[](0, 0, 0, 0, 0, 0);
+    if (EPB[m] != 0) for (int i = 0; i < 2 * ns; i++) pb[i] = int(rd(1));
+    if (SPB[m] != 0) for (int k = 0; k < ns; k++) { int v = int(rd(1)); pb[2 * k] = v; pb[2 * k + 1] = v; }
+    int haspb = EPB[m] != 0 || SPB[m] != 0 ? 1 : 0;
+    for (int i = 0; i < 2 * ns; i++)
+        for (int c = 0; c < 4; c++) {
+            if (c == 3 && AB[m] == 0) continue;
+            int nb = (c < 3 ? CB[m] : AB[m]) + haspb, v = haspb != 0 ? (ep[i][c] << 1 | pb[i]) : ep[i][c];
+            v <<= 8 - nb; ep[i][c] = v | v >> nb;
+        }
+    int idx[16], idx2[16];
+    for (int i = 0; i < 16; i++) idx[i] = int(rd(IB[m] - is_anchor(ns, part, i)));
+    if (IB2[m] != 0) for (int i = 0; i < 16; i++) idx2[i] = int(rd(IB2[m] - (i == 0 ? 1 : 0)));
+    for (int i = 0; i < 16; i++) {
+        int sub = subset_of(ns, part, i), ci = idx[i], ai = idx[i], cb = IB[m], ab = IB[m];
+        if (IB2[m] != 0) { if (isb != 0) { ci = idx2[i]; cb = IB2[m]; } else { ai = idx2[i]; ab = IB2[m]; } }
+        int wc = wt(cb, ci), wa = wt(ab, ai), px[4];
+        for (int c = 0; c < 3; c++) px[c] = (ep[2 * sub][c] * (64 - wc) + ep[2 * sub + 1][c] * wc + 32) >> 6;
+        px[3] = (ep[2 * sub][3] * (64 - wa) + ep[2 * sub + 1][3] * wa + 32) >> 6;
+        if (rot != 0) { int t = px[3]; px[3] = px[rot - 1]; px[rot - 1] = t; }
+        T[i] = rgba(px[0], px[1], px[2], px[3]);
+    }
+}
+
+// ---------- BC6H ----------
+int sext(int v, int b) { return (v & (1 << (b - 1))) != 0 ? v - (1 << b) : v; }
+int unq(int v, int b, bool sgn) {
+    if (!sgn) {
+        if (b >= 15 || v == 0) return v;
+        if (v == (1 << b) - 1) return 0xFFFF;
+        return ((v << 16) + 0x8000) >> b;
+    }
+    if (b >= 16) return v;
+    bool neg = v < 0; if (neg) v = -v; int u;
+    if (v == 0) u = 0; else if (v >= (1 << (b - 1)) - 1) u = 0x7FFF; else u = ((v << 15) + 0x4000) >> (b - 1);
+    return neg ? -u : u;
+}
+uint finish(int c, bool sgn) {
+    if (!sgn) return uint((c * 31) >> 6) & 0xffffu;
+    return c < 0 ? (0x8000u | uint((-c * 31) >> 5)) & 0xffffu : uint((c * 31) >> 5) & 0xffffu;
+}
+void bc6h(bool sgn) {
+    rdpos = 0; int mb = int(rd(2)), mode;
+    if (mb < 2) mode = mb + 1;
+    else {
+        mb |= int(rd(3)) << 2;
+        mode = mb == 2 ? 3 : mb == 6 ? 4 : mb == 10 ? 5 : mb == 14 ? 6 : mb == 18 ? 7 : mb == 22 ? 8 : mb == 26 ? 9 : mb == 30 ? 10 : mb == 3 ? 11 : mb == 7 ? 12 : mb == 11 ? 13 : mb == 15 ? 14 : 0;
+    }
+    if (mode == 0) { for (int i = 0; i < 16; i++) { H0[i] = 0u; H1[i] = 0u; } return; }
+    int e[12] = int[](0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    for (uint f = BC6START[mode - 1]; f < BC6START[mode]; f++) {
+        uint fv = BC6F[f]; int v = int(fv & 255u), lo = int(fv >> 8 & 255u), n = int(fv << 8) >> 24;
+        if (n > 0) e[v] |= int(rd(n)) << lo;
+        else for (int k = -n - 1; k >= 0; k--) e[v] |= int(rd(1)) << (lo + k);
+    }
+    uint inf = BC6INFO[mode - 1]; int ns = int(inf & 15u), xf = int(inf >> 4 & 15u), eb = int(inf >> 8 & 255u);
+    int db[3] = int[](int(inf >> 16 & 15u), int(inf >> 20 & 15u), int(inf >> 24 & 15u));
+    int part = ns == 2 ? int(rd(5)) : 0;
+    int ep[4][3];
+    for (int c = 0; c < 3; c++) {
+        ep[0][c] = sgn ? sext(e[c], eb) : e[c];
+        for (int k = 1; k < 2 * ns; k++) {
+            int v = e[3 * k + c];
+            if (xf != 0) { v = sext(v, db[c]); v = (e[c] + v) & ((1 << eb) - 1); if (sgn) v = sext(v, eb); }
+            else if (sgn) v = sext(v, eb);
+            ep[k][c] = v;
+        }
+        for (int k = 0; k < 2 * ns; k++) ep[k][c] = unq(ep[k][c], eb, sgn);
+    }
+    int ib = ns == 2 ? 3 : 4;
+    for (int i = 0; i < 16; i++) {
+        int sub = subset_of(ns, part, i), ix = int(rd(ib - is_anchor(ns, part, i))), w = wt(ib, ix); uint px[3];
+        for (int c = 0; c < 3; c++) px[c] = finish((ep[2 * sub][c] * (64 - w) + ep[2 * sub + 1][c] * w + 32) >> 6, sgn);
+        H0[i] = px[0] | px[1] << 16; H1[i] = px[2] | 0x3C00u << 16;
+    }
+}
+
+// ---------- ETC2 colour (ETC1 individual / differential), EAC: ../etc_encode.c ----------
+uint bswap(uint v) { return (v >> 24) | (v >> 8 & 0xff00u) | (v << 8 & 0xff0000u) | (v << 24); }
+int etc_sub(int x, int y, int flip) { return flip != 0 ? (y >= 2 ? 1 : 0) : (x >= 2 ? 1 : 0); }
+int fit_t; uint fit_m, fit_l;
+int etc_fit(int flip, int s, ivec3 c) {
+    int best = 1 << 30;
+    for (int t = 0; t < 8; t++) {
+        int err = 0; uint m = 0u, l = 0u;
+        for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) {
+            if (etc_sub(x, y, flip) != s) continue;
+            uint p = T[y * 4 + x]; int be = 1 << 30, bi = 0;
+            for (int i = 0; i < 4; i++) {
+                int mod = ((i & 1) != 0 ? ETC_TAB[t * 2 + 1] : ETC_TAB[t * 2]) * ((i & 2) != 0 ? -1 : 1), e = 0;
+                for (int k = 0; k < 3; k++) { int d = clampi(c[k] + mod, 0, 255) - ch(p, k); e += d * d; }
+                if (e < be) { be = e; bi = i; }
+            }
+            err += be; int n = x * 4 + y; if ((bi & 2) != 0) m |= 1u << n; if ((bi & 1) != 0) l |= 1u << n;
+        }
+        if (err < best) { best = err; fit_t = t; fit_m = m; fit_l = l; }
+    }
+    return best;
+}
+uvec2 etc2_encode_rgb() {   // (the block's two words as stored: bytes most significant first)
+    uint bh = 0u, bl = 0u; int best = 0x7fffffff;
+    for (int flip = 0; flip < 2; flip++) {
+        int avg[2][3] = int[2][3](int[3](0, 0, 0), int[3](0, 0, 0));
+        for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) for (int k = 0; k < 3; k++) avg[etc_sub(x, y, flip)][k] += ch(T[y * 4 + x], k);
+        for (int s = 0; s < 2; s++) for (int k = 0; k < 3; k++) avg[s][k] = (avg[s][k] + 4) / 8;
+        for (int diff = 0; diff < 2; diff++) {
+            int q[2][3], c[2][3]; bool ok = true;
+            for (int s = 0; s < 2; s++) for (int k = 0; k < 3; k++) {
+                if (diff != 0) { q[s][k] = clampi((avg[s][k] * 31 + 127) / 255, 0, 31); c[s][k] = (q[s][k] << 3) | (q[s][k] >> 2); }
+                else { q[s][k] = clampi((avg[s][k] * 15 + 127) / 255, 0, 15); c[s][k] = (q[s][k] << 4) | q[s][k]; }
+            }
+            if (diff != 0) for (int k = 0; k < 3; k++) { int d = q[1][k] - q[0][k]; if (d < -4 || d > 3) ok = false; }
+            if (!ok) continue;
+            int e0 = etc_fit(flip, 0, ivec3(c[0][0], c[0][1], c[0][2])); int t0 = fit_t; uint m0 = fit_m, l0 = fit_l;
+            int e1 = etc_fit(flip, 1, ivec3(c[1][0], c[1][1], c[1][2])); int t1 = fit_t; uint m1 = fit_m, l1 = fit_l;
+            int err = e0 + e1;
+            if (err >= best) continue;
+            uint h = 0u;
+            if (diff != 0) for (int k = 0; k < 3; k++) h |= uint(q[0][k]) << (27 - 8 * k) | uint((q[1][k] - q[0][k]) & 7) << (24 - 8 * k);
+            else for (int k = 0; k < 3; k++) h |= uint(q[0][k]) << (28 - 8 * k) | uint(q[1][k]) << (24 - 8 * k);
+            h |= uint(t0) << 5 | uint(t1) << 2 | uint(diff) << 1 | uint(flip);
+            best = err; bh = h; bl = ((m0 | m1) & 0xffffu) << 16 | ((l0 | l1) & 0xffffu);
+        }
+    }
+    return uvec2(bswap(bh), bswap(bl));
+}
+int EV[16];   // EAC targets in the decoder's range, texel y * 4 + x
+uvec2 eac_encode(int mode) {   // mode 0 alpha (0..255), 1 R11 (0..2047), 2 R11 signed (-1023..1023)
+    int lo = EV[0], hi = EV[0]; for (int i = 1; i < 16; i++) { lo = min(lo, EV[i]); hi = max(hi, EV[i]); }
+    int best = 0x7fffffff; uint bh = 0u, bl = 0u; bool r11 = mode != 0; int scale = r11 ? 8 : 1, bot = mode == 2 ? -1023 : 0, top = mode == 1 ? 2047 : mode == 2 ? 1023 : 255;
+    int bmin = mode == 2 ? -127 : 0, bmax = mode == 2 ? 127 : 255, off = mode == 1 ? 4 : 0;
+    for (int t = 0; t < 16; t++) {
+        int tmin = EAC_TAB[t * 8 + 3], tmax = EAC_TAB[t * 8 + 7], span = tmax - tmin;
+        int m0 = (hi - lo + (span * scale) / 2) / (span * scale); if (m0 < 1) m0 = 1;
+        for (int m = m0 - 1; m <= m0 + 1; m++) {
+            if (m < (r11 ? 0 : 1) || m > 15) continue;
+            int unit = m != 0 ? m * scale : 1;
+            int mid = divtz(lo + hi, 2) - divtz((tmin + tmax) * unit, 2), b0 = r11 ? (mid - off + 4) >> 3 : mid;
+            for (int b = b0 - 1; b <= b0 + 1; b++) {
+                if (b < bmin || b > bmax) continue;
+                int err = 0; uint ih = 0u, il = 0u;
+                for (int p = 0; p < 16 && err < best; p++) {
+                    int x = p >> 2, y = p & 3, want = EV[y * 4 + x], be = 1 << 30, bi = 0;
+                    for (int i = 0; i < 8; i++) { int got = clampi((r11 ? b * 8 + off : b) + EAC_TAB[t * 8 + i] * unit, bot, top), d = got - want; d *= d; if (d < be) { be = d; bi = i; } }
+                    err += be; int s = 45 - 3 * p;
+                    if (s >= 32) ih |= uint(bi) << (s - 32); else { il |= uint(bi) << s; if (s > 29) ih |= uint(bi) >> (32 - s); }
+                }
+                if (err < best) { best = err; bh = uint(b & 255) << 24 | uint(m) << 20 | uint(t) << 16 | (ih & 0xffffu); bl = il; }
+            }
+        }
+    }
+    return uvec2(bswap(bh), bswap(bl));
+}
+
+// ---------- ASTC 4x4 (LDR, one partition, one weight plane): ../etc_encode.c astc_encode_rgba, in floats ----------
+const int AW8[8] = int[](0, 9, 18, 27, 37, 46, 55, 64), AW6[6] = int[](0, 64, 12, 52, 25, 39);
+uvec4 A;
+void bput(int pos, int n, uint v, bool rev) { for (int i = 0; i < n; i++) if ((v >> i & 1u) != 0u) { int b = rev ? 127 - (pos + i) : pos + i; A[b >> 5] |= 1u << (b & 31); } }
+int AWI[16];
+int alv(bool alpha, int j) { return alpha ? AW6[j] : AW8[j]; }
+int astc_fit(int nc, ivec4 e0, ivec4 e1, bool alpha) {
+    int nl = alpha ? 6 : 8, err = 0;
+    for (int i = 0; i < 16; i++) {
+        int be = 0x7fffffff, bi = 0;
+        for (int j = 0; j < nl; j++) {
+            int d2 = 0, lv = alv(alpha, j);
+            for (int c = 0; c < nc; c++) { int got = ((e0[c] * 257) * (64 - lv) + (e1[c] * 257) * lv + 32) >> 14, d = got - ch(T[i], c); d2 += d * d; }
+            if (d2 < be) { be = d2; bi = j; }
+        }
+        err += be; AWI[i] = bi;
+    }
+    return err;
+}
+uvec4 astc_encode_rgba() {
+    bool alpha = false; for (int i = 0; i < 16; i++) alpha = alpha || ch(T[i], 3) != 255;
+    int nc = alpha ? 4 : 3;
+    vec4 mean = vec4(0.0); mat4 cov = mat4(0.0); vec4 ax = vec4(1.0);
+    for (int i = 0; i < 16; i++) for (int c = 0; c < nc; c++) mean[c] += float(ch(T[i], c)) / 16.0;
+    for (int i = 0; i < 16; i++) for (int a = 0; a < nc; a++) for (int b = 0; b < nc; b++) cov[a][b] += (float(ch(T[i], a)) - mean[a]) * (float(ch(T[i], b)) - mean[b]);
+    for (int it = 0; it < 8; it++) {
+        vec4 n = vec4(0.0); float l = 0.0; for (int a = 0; a < nc; a++) for (int b = 0; b < nc; b++) n[a] += cov[a][b] * ax[b];
+        for (int a = 0; a < nc; a++) l += n[a] * n[a];
+        if (l < 1e-9) break;
+        l = sqrt(l); for (int a = 0; a < nc; a++) ax[a] = n[a] / l;
+    }
+    float tlo = 0.0, thi = 0.0; for (int i = 0; i < 16; i++) { float t = 0.0; for (int c = 0; c < nc; c++) t += (float(ch(T[i], c)) - mean[c]) * ax[c]; tlo = min(tlo, t); thi = max(thi, t); }
+    ivec4 e0 = ivec4(0, 0, 0, 255), e1 = ivec4(0, 0, 0, 255);
+    for (int c = 0; c < nc; c++) { e0[c] = clampi(int(floor(mean[c] + tlo * ax[c] + 0.5)), 0, 255); e1[c] = clampi(int(floor(mean[c] + thi * ax[c] + 0.5)), 0, 255); }
+    int best = astc_fit(nc, e0, e1, alpha); ivec4 b0 = e0, b1 = e1; int bw[16]; for (int i = 0; i < 16; i++) bw[i] = AWI[i];
+    for (int it = 0; it < 2; it++) {
+        float s00 = 0.0, s01 = 0.0, s11 = 0.0; vec4 r0 = vec4(0.0), r1 = vec4(0.0);
+        for (int i = 0; i < 16; i++) { float f = float(alv(alpha, AWI[i])) / 64.0, g = 1.0 - f; s00 += g * g; s01 += g * f; s11 += f * f; for (int c = 0; c < nc; c++) { r0[c] += g * float(ch(T[i], c)); r1[c] += f * float(ch(T[i], c)); } }
+        float det = s00 * s11 - s01 * s01; if (abs(det) < 1e-6) break;
+        for (int c = 0; c < nc; c++) { e0[c] = clampi(int(floor((r0[c] * s11 - r1[c] * s01) / det + 0.5)), 0, 255); e1[c] = clampi(int(floor((r1[c] * s00 - r0[c] * s01) / det + 0.5)), 0, 255); }
+        int err = astc_fit(nc, e0, e1, alpha); if (err >= best) break;
+        best = err; b0 = e0; b1 = e1; for (int i = 0; i < 16; i++) bw[i] = AWI[i];
+    }
+    if (b1[0] + b1[1] + b1[2] < b0[0] + b0[1] + b0[2]) { ivec4 t = b0; b0 = b1; b1 = t; for (int i = 0; i < 16; i++) bw[i] = alpha ? bw[i] ^ 1 : 7 - bw[i]; }
+    A = uvec4(0u);
+    bput(0, 11, alpha ? 0x43u : 0x53u, false);
+    bput(13, 4, alpha ? 12u : 8u, false);
+    for (int c = 0; c < nc; c++) { bput(17 + 16 * c, 8, uint(b0[c]), false); bput(25 + 16 * c, 8, uint(b1[c]), false); }
+    if (!alpha) { for (int i = 0; i < 16; i++) bput(3 * i, 3, uint(bw[i]), true); return A; }
+    const int SQ0[10] = int[](-1, 0, -1, 2, -1, 4, -1, 5, -1, 7), SQ1[10] = int[](0, 2, 1, 2, 2, 1, 3, 2, 4, 1);
+    int pos = 0;
+    for (int g = 0; g < 4; g++) {
+        int t = 0, k = 1, m[5] = int[](0, 0, 0, 0, 0);
+        for (int j = 0; j < 5 && g * 5 + j < 16; j++) { int v = bw[g * 5 + j]; m[j] = v & 1; t += (v >> 1) * k; k *= 3; }
+        k = int(TRIT_ENC[t]);
+        for (int q = 0; q < 10 && pos < 42; q++) {
+            if (SQ0[q] < 0) { bput(pos, 1, uint(m[SQ1[q]]), true); pos++; }
+            else { int n = SQ1[q]; if (pos + n > 42) n = 42 - pos; bput(pos, n, uint(k >> SQ0[q]), true); pos += n; }
+        }
+    }
+    return A;
+}
+uint h2uf(uint h, int mb) {
+    if ((h & 0x8000u) != 0u) return 0u;
+    if ((h >> 10 & 31u) == 31u) return (31u << mb) | ((h & 0x3ffu) != 0u ? 1u : 0u);
+    uint v = (h + (1u << (9 - mb))) >> (10 - mb);
+    return v >> mb >= 31u ? (30u << mb) | ((1u << mb) - 1u) : v;
+}
+
+void main() {
+    uvec3 g = gl_GlobalInvocationID; if (g.x >= pc.bw || g.y >= pc.bh || g.z >= pc.nz) return;
+    int k = pc.kind, nbw = (k == 1 || k == 4 || k == -4) ? 2 : 4;
+    uint ib = pc.in_off + g.z * pc.in_slice + g.y * pc.in_row + g.x * uint(nbw);
+    B = uvec4(src[ib], src[ib + 1u], nbw == 4 ? src[ib + 2u] : 0u, nbw == 4 ? src[ib + 3u] : 0u);
+    // decode into T / H0 H1 (BC4 / BC5 into T's low bytes)
+    if (k == 1) bc1_color(B.x, B.y, false);
+    else if (k == 2) { bc1_color(B.z, B.w, true); for (int i = 0; i < 16; i++) T[i] = (T[i] & 0xffffffu) | (((i < 8 ? B.x : B.y) >> (4 * (i & 7)) & 15u) * 17u) << 24; }
+    else if (k == 3) { bc1_color(B.z, B.w, true); bc4_values(B.x, false); for (int i = 0; i < 16; i++) T[i] = (T[i] & 0xffffffu) | uint(V4[bc4_index(B.x, B.y, i)] & 255) << 24; }
+    else if (k == 4 || k == -4) { bc4_values(B.x, k < 0); for (int i = 0; i < 16; i++) T[i] = uint(V4[bc4_index(B.x, B.y, i)] & 255); }
+    else if (k == 5 || k == -5) {
+        bc4_values(B.x, k < 0); for (int i = 0; i < 16; i++) T[i] = uint(V4[bc4_index(B.x, B.y, i)] & 255);
+        bc4_values(B.z, k < 0); for (int i = 0; i < 16; i++) T[i] |= uint(V4[bc4_index(B.z, B.w, i)] & 255) << 8;
+    }
+    else if (k == 6 || k == -6) bc6h(k < 0);
+    else if (k == 7) bc7();
+    uint ob = pc.out_off + g.z * pc.out_slice;
+    if (pc.mode == 0u) {   // texels: rows of 4 * bw texels (tb bytes each), the block's 4x4 at (4 g.x, 4 g.y)
+        for (int y = 0; y < 4; y++) {
+            uint row = ob + (g.y * 4u + uint(y)) * pc.out_row;
+            if (k == 4 || k == -4) dst[row + g.x] = T[y * 4] | T[y * 4 + 1] << 8 | T[y * 4 + 2] << 16 | T[y * 4 + 3] << 24;
+            else if (k == 5 || k == -5) { dst[row + g.x * 2u] = (T[y * 4] & 0xffffu) | T[y * 4 + 1] << 16; dst[row + g.x * 2u + 1u] = (T[y * 4 + 2] & 0xffffu) | T[y * 4 + 3] << 16; }
+            else if (k == 6 || k == -6) for (int x = 0; x < 4; x++) { dst[row + g.x * 8u + uint(x) * 2u] = H0[y * 4 + x]; dst[row + g.x * 8u + uint(x) * 2u + 1u] = H1[y * 4 + x]; }
+            else for (int x = 0; x < 4; x++) dst[row + g.x * 4u + uint(x)] = T[y * 4 + x];
+        }
+        return;
+    }
+    if (k >= 1 && k <= 3) {   // EAC alpha, then ETC2 colour
+        for (int i = 0; i < 16; i++) EV[i] = ch(T[i], 3);
+        uvec2 a = eac_encode(0), c = etc2_encode_rgb(); uint o = ob + g.y * pc.out_row + g.x * 4u;
+        dst[o] = a.x; dst[o + 1u] = a.y; dst[o + 2u] = c.x; dst[o + 3u] = c.y;
+    } else if (k == 4 || k == 5) {
+        uint o = ob + g.y * pc.out_row + g.x * uint(k == 4 ? 2 : 4);
+        for (int c = 0; c < k - 3; c++) { for (int i = 0; i < 16; i++) EV[i] = (ch(T[i], c) * 2047 + 127) / 255; uvec2 e = eac_encode(1); dst[o + uint(2 * c)] = e.x; dst[o + uint(2 * c) + 1u] = e.y; }
+    } else if (k == -4 || k == -5) {
+        uint o = ob + g.y * pc.out_row + g.x * uint(k == -4 ? 2 : 4);
+        for (int c = 0; c < -k - 3; c++) {
+            for (int i = 0; i < 16; i++) { int s = int(uint(ch(T[i], c)) << 24) >> 24; s = s < -127 ? -127 : s; EV[i] = divtz(s * 1023 + (s < 0 ? -63 : 63), 127); }
+            uvec2 e = eac_encode(2); dst[o + uint(2 * c)] = e.x; dst[o + uint(2 * c) + 1u] = e.y;
+        }
+    } else if (k == 6) {   // B10G11R11 texels, rows of pc.out_row words; edge texels outside w x h left alone
+        for (int y = 0; y < 4; y++) for (int x = 0; x < 4; x++) {
+            uint tx = g.x * 4u + uint(x), ty = g.y * 4u + uint(y); if (tx >= pc.w || ty >= pc.h) continue;
+            uint r = H0[y * 4 + x] & 0xffffu, gg = H0[y * 4 + x] >> 16, b = H1[y * 4 + x] & 0xffffu;
+            dst[ob + ty * pc.out_row + tx] = h2uf(r, 6) | h2uf(gg, 6) << 11 | h2uf(b, 5) << 22;
+        }
+    } else if (k == 7) {
+        uvec4 a = astc_encode_rgba(); uint o = ob + g.y * pc.out_row + g.x * 4u;
+        dst[o] = a.x; dst[o + 1u] = a.y; dst[o + 2u] = a.z; dst[o + 3u] = a.w;
+    }
+}
