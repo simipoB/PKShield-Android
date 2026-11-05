@@ -1,52 +1,54 @@
-# Handoff: Galar Native and Paldea Native
+# Handoff: Galar Native, Paldea Native and the Arceus port
 
-State as of 2026-11-04. All testing was on one phone: a Galaxy S25+ (Adreno 830, Android with 4 KB pages). No Mali, Xclipse or second device was tested in this round.
+State as of 2026-11-04, late evening. All testing was on one phone: a Galaxy S25+ (Snapdragon 8 Elite, Adreno 830). No Mali, Xclipse or second device was tested.
 
 **The bar:** a locked 30 fps is the minimum, for every supported phone, in gameplay (menus don't count).
 
 ## Taking over: start here
 
-1. **Get the code.** Clone `simipoB/Galar-Native-Android` and check out `violet`. That branch is the shared tree for both apps. Add the Paldea repo as a second remote:
+1. **Get the code.** Clone `simipoB/Galar-Native-Android` and check out `violet`: the shared tree for both apps. Add the Paldea repo as a second remote:
    `git remote add paldea https://github.com/simipoB/Paldea-Native-Android.git` (private: ask the owner for access).
-2. **Know the branch rule.** Work on `violet`. Push it to `origin violet` and to `paldea main`. Merge it into Galar's `main` keeping Galar's own `README.md` (`git checkout origin/main -- README.md` before committing the merge).
-3. **Set up the build.** Follow [BUILDING.md](BUILDING.md), then the "Build and run" section below. Build one engine per game pair: `01008DB008C2C000` for Galar, `01008F6008C5E000` for Paldea.
-4. **Get game data.** You need your own dumps and `prod.keys`; none are in the repo. The supported route is the app's own setup on a phone. Ask the owner for file paths: do not scan their Downloads.
-5. **Check the current release.** Galar Native **v0.40** was published, then **pulled** after about 20 minutes: its split submissions made Sword flash white. v0.39 is Latest again; releases kept are v0.39 and v0.38, and the v0.40 tag remains. Some players may have v0.40 (versionCode 40), so the next release must be **v0.41 or later**, release key `a5f49b44…`. Never publish until a build has passed on a phone, and only when the owner says so.
-6. **Learn the measuring tools before changing performance code:**
-   - `DM_VK_PROF=1` in `env.txt` logs replay time per draw, other ops, and how long the game waits on the GPU.
-   - `DM_VK_GPU_TIME=1` adds GPU time to the "timing up to frame" lines.
-   - Always read `/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq` (and cpu7) with every result. A hot or fast-charging phone halves its clocks, and the numbers are meaningless without them.
-   - Clear these switches from `env.txt` after testing.
-7. **Use a save past the opening.** The owner's Scarlet save (`Downloads\pkmnscarlet_100\main`, ask first) loads outdoors in the academy plaza. That is the reference scene for open-world speed: it now runs 33.3 ms a frame. Violet has no such save yet; ask for one.
-8. **Pick up the open work in this order:**
-   1. Check 30 fps holds in battles, other towns and long play on Scarlet, and on Violet outdoors (problem 1).
-   2. Find Sword and Shield's YEBIS shaders during setup, so fresh players aren't missing effects (problem 3).
-   3. Violet's black enrollment photo (problem 2).
-   4. Sword and Shield sharing game files, to save about 10 GB (section 6).
-   5. Translations for the new launcher and background-play strings (section 6).
-9. **Update this file** when you finish something or rule something out. Write what you measured, not what you expect.
+2. **Branch rule.** Work on `violet`. Copy each commit to Galar's `main` (`git cherry-pick`), and push `violet` to `paldea main`. Galar's `main` keeps its own `README.md`.
+3. **Build.** See [BUILDING.md](BUILDING.md) and "Build and run" below. One engine per game pair: `01008DB008C2C000` for Galar, `01008F6008C5E000` for Paldea.
+4. **Game data.** You need your own dumps and `prod.keys`; none are in the repo. Ask the owner for file paths: do not scan their Downloads.
+5. **Read "Release status"** before publishing anything. Nothing goes out until it has passed on a phone and the owner says so.
+6. **Measure before changing performance code:** `DM_VK_PROF=1`, `DM_VK_GPU_TIME=1`, and always read `/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq` and `cpu6` with every result. A phone charging over USB while warm caps every core at 1.7-2.2 GHz (normal 3.53 / 4.47) even at thermal status 0. Use adb over Wi-Fi (`adb tcpip 5555`, `adb connect <ip>:5555`) and unplug before measuring.
+7. **Pick up the open work in the order of "Open problems".**
+8. **Update this file** when you finish or rule something out. Write what you measured.
+
+## Release status
+
+Nothing was published tonight. Built, signed with the release key (`a5f49b44…`) and not debuggable:
+
+| App | Version | Package | Notes |
+|---|---|---|---|
+| Galar Native | v0.41 (versionCode 41) | `com.nxnative.pokemonshield` | Auto 30 fps; split submissions off by default for Sword / Shield; setup and launcher fixes |
+| Paldea Native | v0.42 (versionCode 42) | `com.nxnative.pokemonviolet` | First release of this app. 42 because the owner's phone has a versionCode 41 test build |
+
+- The APKs were in the session scratchpad (`rel/`), which is temporary: rebuild with the command below without `--debuggable`.
+- **The owner chose to fix Violet's black enrollment photo before releasing Paldea** (problem 1).
+- Before publishing, install each release build over the phone's test build and boot all four games. Galar: delete old release pages except the last 2 (keep the tags). Galar v0.40 was published and pulled (white flashes in Sword); the next Galar release must be v0.41 or later.
 
 ## Where things are
 
 | | |
 |---|---|
-| Galar Native (Sword, Shield) | `simipoB/Galar-Native-Android`, branch `main`. Package `com.nxnative.pokemonshield` |
-| Paldea Native (Scarlet, Violet) | `simipoB/Paldea-Native-Android` (private), branch `main`, the same code as branch `violet` of the Galar repo. Package `com.nxnative.pokemonviolet` |
-| Shared code | Both apps are the same tree. Develop on `violet`, then merge to Galar's `main` keeping Galar's own `README.md` |
-| Game profiles | Violet `dm/games/01008F6008C5E000`, Scarlet `0100A3D008C5C000`, Shield `01008DB008C2C000`, Sword `0100ABF008968000` |
+| Galar Native (Sword, Shield) | `simipoB/Galar-Native-Android`, `main`. Package `com.nxnative.pokemonshield` |
+| Paldea Native (Scarlet, Violet) | `simipoB/Paldea-Native-Android` (private), `main` = branch `violet` here. Package `com.nxnative.pokemonviolet` |
+| Arceus port | `simipoB/androidswithy`, branch `arceus-windows`, checkout `C:\Users\daniel\androidswithy`. **Holds the owner's own uncommitted work**: see problem 4 |
+| Game profiles | Violet `dm/games/01008F6008C5E000`, Scarlet `0100A3D008C5C000`, Shield `01008DB008C2C000`, Sword `0100ABF008968000`, Arceus `01001F5010DFA000` (androidswithy) |
+| Handoff files | [docs/handoff/](handoff/): the uncommitted Arceus changes as patches, and the test scripts used tonight |
 
 Rules for this project:
 
 - No AI co-author lines in commits or PRs.
-- Sign releases with `dm/android/probe/out/debug.keystore` from the `PKShield-Android` checkout (cert `a5f49b44…`).
-- Publish no release until it has passed on a phone. The owner decides when. When releasing, delete old release pages except the last 2 (keep their git tags).
-- Do not install over, or change, the user's own `com.nxnative.shield` and `com.nxnative.arceus`. The first keeps its game data inside its APK splits, so its nearly empty files folder is normal. It was last updated Nov 2 at 22:30, probably by an earlier step of this work; it still runs and its save is intact.
-- Do not scan the user's Downloads. Ask for paths.
-- Check what is in the foreground before driving the phone. Input sent over adb goes to whatever is on screen, and it has landed in other apps before.
+- Sign releases with `dm/android/probe/out/debug.keystore` from the `PKShield-Android` checkout (cert `a5f49b44…`). It exists only on the owner's PC.
+- Do not install over, or change, the owner's `com.nxnative.shield` and `com.nxnative.arceus`. Test Arceus with the separate test app (problem 3).
+- Do not scan the owner's Downloads. Ask for paths.
+- **Check the foreground app before every adb input.** The owner uses the phone between tests (calls, Reddit, other games); input lands in whatever is on screen.
+- The phone has about 4 GB free.
 
 ## Build and run
-
-Windows, engine plus APK:
 
 ```
 cd dm/android && python tools/win_build_lib.py <GAME_ID>
@@ -54,122 +56,109 @@ cp out/host-<GAME_ID>-vulkan/lib/libnxnative.so <libs folder>/
 cd ../.. && STRICT_16K=1 python dm/android/tools/build_apk.py --game <GAME_ID> --version <n> \
   --libs <libs folder> --pylib <...>/aot/pyandroid/prefix/lib/python3.14 \
   --capstone-py <...>/aot/capsrc/capstone-5.0.7/bindings/python/capstone \
-  --ks <keystore> --debuggable --out <file>.apk
+  --ks <keystore> [--debuggable] --out <file>.apk
 ```
 
-- Use `C:/...` paths for Python and adb from Git Bash. `/c/...` fails when `MSYS_NO_PATHCONV=1` is set.
-- Use `--game 01008F6008C5E000` for Paldea and `--game 01008DB008C2C000` for Galar. Each game pair builds its own `libnxnative.so`.
-- All helper libraries in WSL's `~/psa-build/libs` are now 16 KB aligned. The full rebuild is `scripts/build_apk_pc.sh`.
-  - It needs `cmake` and `ninja` in WSL. They were installed with `pip install --user`, so put `~/.local/bin` on PATH.
-  - Delete `libadrenotools/build` when changing linker flags. CMake otherwise reuses the old link.
-- The owner's phone has **debuggable test builds** of both apps. Android 15+ shows its 16 KB notice only for debuggable apps. A release must drop `--debuggable`, and v0.40 was built without it.
+- Use `C:/...` paths for Python and adb from Git Bash with `MSYS_NO_PATHCONV=1`.
+- The NSP extractor for Android is built in WSL: `bash dm/android/extract_aot/build_extract_aot.sh`, output `dm/android/extract_aot/out/libnx_extract.so` (put it in the libs folder).
+- Built-in code mods: `python dm/tools/builtin_mods.py <decompressed main> dm/host/builtin_mods.h name=<pchtxt>[,<extra build id>] ...` regenerates the table `loader.c` applies.
+- Debug switches go in the game's `env.txt` (`Android/data/<package>/files/[<title id>/]env.txt`) and persist between runs. **Clear them after testing.**
 
-Game data on the phone goes in the first game's files folder, and the second game goes in a subfolder named after its ID. `ready` must hold the shader chain: `bebeadf4ac3b` for Galar, `b72f9b70ebb2` for Paldea. Prepared data from this round is in the session scratchpad (`violet/`, `scarlet/`, `swphone/`, `shphone/`, `swsetup/`), which is temporary. If it is gone, rebuild from the dumps; the app's own setup is the supported route.
+## Done today (2026-11-04)
 
-## What works
-
-| Game | Seen on the S25+ |
-|---|---|
-| Violet | Language, look and name screens, enrollment form, and the 3D classroom and library scenes |
-| Scarlet | Boots; 3D scenes of its opening (Clavell in the white room, the library) |
-| Sword | New-game intro and the trainer confirm screen with the 3D trainer, 30 fps, no missing shaders |
-| Shield | Boots to the language screen, 30 fps, no missing shaders |
-
-None of the four new-app copies has been played past these screens. That means no overworld and no battles.
-
-Done in this round:
-
-- 3D render targets render all their slices (`att_view`, layered `pass_begin`). This was the cause of all-black 3D on Scarlet and Violet: their 32x32x32 colour-grading table is filled in one instanced draw using `gl_Layer`.
-- The upscaler's oversized triangle is scissored to the picture box. This fixed the off-centre picture and the diagonal cut corner.
-- Shared font as the TTF itself, and an offline Bluetooth LE layer (`hle_sdk16.c`). Both were boot crashes on Violet.
-- One game launcher per app (`SetupActivity.launcher`). Its Play button goes through `pendingWork`, so captured shaders are merged first.
-- Background play, on by default: settings panel, System, Leaving the game (`DM_BACKGROUND=off`).
-- Main and presenting threads pinned to the cores with the highest current clock limit, rechecked every 5 s (`pin_update`, `DM_CPU_PIN=off`).
+Galar and Paldea (both apps, `violet` and `main`):
+- **Setup screen**: a first install opens a three-step setup (game files, keys, set up) in the launcher's style instead of the launcher. Picked files are checked (NSP/XCI only, NSZ refused, NSPs cut short refused, keys told apart by content, files of two different games refused), Clear button, unfinished copies reused, Back returns to the launcher.
+- **Setup script** (`setup_game.py`): no longer deletes the other game's DLC; the `ready` file is removed before the game folder changes; free space checked first; plain explanations of unpacker failures; "Set up anyway" (`--allow-damaged`) offered for damaged dumps.
+- **NSP extractor** (`dm/tools/nx_extract/Program.cs`): finds NSPs cut short from their PFS0 header; names the damaged file (base or update) when the RomFS header fails its hash; `LinkedListEmpty` counted as damage.
+- **Scarlet / Violet built-in mods** (Fl4sh): Frame rate 60 applies Dynamic FPS (ASM), Shadows Sharp applies 2K Shadows; Auto picks 2K shadows on top phones only. Sources in `dm/games/0100A3D008C5C000/builtin_mods/`. Violet's main is the same code at every patched site.
+- **60 fps**: a frame-rate guard (`android_main.c graphics_auto`) drops to 720p when the target is missed, back to 1080p after a calm minute. The frame step's cost now uses the game's measured work (it held 30 fps forever before: `hle_nvn.c vstep_tick`). Sword then held 60 fps (16.7 ms) on the S25+.
+- **Galar Auto frame rate is 30** again (`GameSettings.AUTO_60 = false`): see problem 2. Sword and Shield no longer use split submissions by default (`GameActivity`: `DM_VK_SPLIT=0` unless `env.txt` sets it), because with them Sword flashed white.
+- Diagnostics added: `DM_VK_LOG_ALIAS`, `DM_VK_LOG_COPY` (nvn_vk.c), `DM_NVN_REPORT_INTERVAL=<n>` (hle_nvn.c).
 
 ## Open problems
 
-### 1. Locked 30 fps on Scarlet and Violet
+### 1. Violet's enrollment photo is black (blocks the Paldea release)
 
-**Update 2026-11-04: fixed for the scene measured.** Scarlet outdoors (the academy plaza, the user's own save) went from 66-76 ms to 33.3 ms a frame, p95 34.4-35.6 ms, on a hot phone capped at 1.55-1.69 GHz.
-- The cause: the game submits a frame and then waits for that very submission (`DM_VK_PROF`: "sync waits by submissions behind the newest: 0"). The replay translated the whole frame before the GPU got any of it, so the game waited for replay plus GPU, one after the other.
-- The fix: `sub_split` in `nvn_vk.c` sends the submission to the GPU every 150 draws while the rest is still replayed. It is on by default; `DM_VK_SPLIT=<draws>` changes the size, `DM_VK_SPLIT=0` turns it off. Sword boots and runs 30 fps with it.
-- Only the plaza was checked. Battles, other towns and long play are not, and neither is any other phone.
-- **It made Sword flash white** (seen by the owner; gone with `DM_VK_SPLIT=0`). The first version cut inside a render pass and opened the pass again. Since `f4f9f1c` the cut waits for the next change of render target instead. **Not tested yet:** check that Sword no longer flashes and that Scarlet outdoors still holds 33 ms. The owner's phone still has `DM_VK_SPLIT=0` in Galar Native's `env.txt` files (both games); remove it for that test.
+The photo frame on the Uva Academy enrollment form is solid black; on the Switch it shows the player's character (the owner has a reference picture). The form appears right after a new game's language and name, so it is quick to reach: start Violet with no save and press A.
 
-The notes below are from before this fix.
+Measured tonight (frame dump with `DM_NVN_TEXDUMP_NOW`):
+- The form's frame renders a character into a 1920x1080 G-buffer at 2/3 scale (viewport `0,0 1280x720`, shader constants `0.666667 0.666667 1.5 1.5`). Only the legs are in it, at the top. The earlier note says that framing is the camera's, not a viewport bug, and tonight's viewport log agrees: every viewport is full-target or `1280x720` at 0,0.
+- A separate **1280x840 render target** is drawn at some point (`viewport 0,0 1280x840 on a 1280x840 target`). It was not drawn in the dumped frame. It is the most likely photo.
+- `DM_VK_LOG_ALIAS=1` logged no texture created over a render target's memory at the same offset, so the form does not read the photo through a second texture object at the same address.
+- No readback or copy lines appeared without `DM_VK_LOG_COPY`, which was only just added.
 
+Next steps:
+1. Run Violet with `DM_VK_LOG_COPY=1` (and keep `DM_VK_LOG_VP=1`) through the name screen to the form. See whether the 1280x840 target is copied to a texture (`copy texture→texture`) or a buffer (`texture→buffer`), and whether the copy finds both images.
+2. If it goes to a buffer and is read on the CPU (the photo is kept in the save), check that the GPU's copy is complete and visible before the CPU reads (`copy_b2t`, the submission fence).
+3. If no copy appears, dump the frame where the 1280x840 viewport is used. `DM_NVN_TEXDUMP_NOW` dumps the next frame after the trigger file appears; set the trigger right as the name is confirmed.
 
-Violet's busy scenes measured 37-41 ms a frame with pinning, about 48 ms before it, with about 484 draws a frame. Each run was on a phone at a different temperature, so treat the before/after as indicative only.
+### 2. Sword / Shield at 60 fps: the stadium crowd flickers
 
-- Game thread frame: game logic plus the NVN-to-Vulkan replay, run one after the other. Replay CPU was 21 ms before pinning, 13-14 ms after.
-- `DM_VK_PROF=1` breakdown per frame, measured before pinning: pass + pipeline lookup 4-4.5 ms, dynamic state 0.3, descriptors 1.1-1.3, flush + draw 2.1-2.3, target changes 2.3-2.7, state ops 1.4-1.7, queue submit 0.1. That is about 13 of the 19-21 ms measured; **the other 6-8 ms is unaccounted for**. Candidates are the timers' own overhead, and Vulkan driver time outside the timed ops.
-- GPU (`DM_VK_GPU_TIME=1`): 21-30 ms at 1920x1080. There is little margin, so the replay thread alone may not hold 30 fps in busy scenes.
-- Handheld mode (`DM_OPMODE=0`) did not help: GPU stayed about 21 ms and frames were slower. That run was one noisy comparison. The render targets were not confirmed to shrink, so check whether the game really changes resolution before relying on this.
-- **Measurements are affected by heat.** While fast-charging at a 41-42 °C battery, the phone capped cores at 1.55-1.69 GHz (normal 3.53 and 4.47). Read `scaling_max_freq` with every measurement, and test on a cool phone on USB only.
-- CPU profiling with `simpleperf` is blocked on this phone without root (perf events not supported). So is `debuggerd`.
+At 60 fps the crowd in Rose's stadium (the new-game intro) alternates between two pictures every couple of frames. The swsh-recomp project (`raulzrrs/swsh-recomp`, known issue G3) has the same bug, unsolved: "an animation counted in frames".
 
-**Next step: `DM_NVN_ASYNC=1`,** the replay on its own thread (`hle_nvn.c`: `rq_push`, `rq_main`, `rq_drain`). It is implemented and off by default.
+- The crowd is models `ob0041`-`ob0044` (`stadiumcrowda`-`d`), skinned (bone matrices in `vp_c4`), with a pixel shader that picks one of 16 rows of a texture sheet: `fma(c5[5].y, -0.0625, 0.9688)`. The CPU writes the row index.
+- Recordings (`docs/handoff/crowdtest.sh`, `flick2.py`): no flicker at the game's own 30 fps (TV or handheld); flicker with the 60 fps patch whenever the step holds 2 or 3 slots (and in swsh-recomp at a real 60).
+- `DM_NVN_REPORT_INTERVAL=2` (the game reads interval 2 back while the window presents at 1) cut the jumps from 79 to 12 frames in 160, not to 0.
+- Sword's crowd code: the manager is built at `main+0x969e20` (references the four names); the per-model class constructor is `main+0x9abd10` (fields `+0x4c0`-`+0x508`; `+0x4d0` is a speed/alpha float passed to `0x59c550`, `+0x4d4 = 15`). The row counter was not found yet.
+- Until fixed, Auto stays at 30 for Sword / Shield; 60 is a menu choice.
 
-- One run reached the look screen with no hang and no errors, at frame time p50 33-41 ms, p95 43-45 ms.
-- **The A/B comparison against it being off was never finished**, because the run was interrupted. So there is no evidence yet that it helps.
-- It has not been tested past that screen. Risks to test: objects changed while commands that name them are queued (only texture, program and pool finalize/initialize drain the queue), window teardown, and app suspend.
-- A wait over 5 s logs itself as `[RED] ... has waited 5 s on the replay thread`.
+### 3. Arceus: shadowed areas are purple
 
-Other ideas not tried: fewer render-pass changes (about 117 target sets a frame; "kept the open pass" is always 0), and a safe pipeline shortcut. A simple last-key cache in `pso_get` was tried and reverted: a GPU device loss happened on the run that had it, and pipelines can be replaced and destroyed later (`DF_PIPELINE`). The cause was not proven beyond that one run.
+In the field (the owner's save, the camp), every shadowed area is purple: under tents, crates, NPC shadows.
 
-### 2. Violet's enrollment photo is black
+Ruled out on the phone: POTATO's Low Shadows (shadows change, purple stays), No Shadows (purple gone, because nothing is in shadow), the no-reflections mod, `DM_VK_NO_FMT_SWZ`, `DM_VK_NO_FMT_LIST`, `DM_VK_NO_BC`, and the colour-grading LUT (Galar's layered-3D fix ported: no change).
 
-The photo box on the enrollment form is black. Nobody has compared this with a Switch, so confirm it is really wrong first.
+Found with a frame dump (`DM_NVN_TEXDUMP=2600:...`) and `DM_VK_TRACE_RT=3877`:
+- The albedo target (ser 3873) has no purple; the lit HDR target (ser 3877, R11G11B10) has it. So the lighting pass adds it.
+- Draws into the lit target: `ha_sky` (65ef28e5…), **`ha_light.bnsh` var72 (73f1192e…) and var77 (fa3842a1…)**, `ha_water`, particles.
+- Var77 samples the shadow-map array `fp_t_tcb_28` (`texture(...).x` with a bias), and cube maps `fp_t_tcb_36` (with LOD: reflections) and `fp_t_tcb_34` (LOD 0: diffuse ambient). Shadowed pixels get only ambient, so a wrong ambient input explains purple there only.
+- The engine's comment says Arceus's ambient-occlusion pass never runs on this host, and the profile key `tex_unwritten_one` (fragment key:binding pairs sampled as 1) exists for that, **but Arceus's `game.tsv` has never listed any**. A texture nothing writes is read as whatever memory it has. **Leading suspect.**
 
-Ruled out:
-- Missing shaders: no `SPIR-V missing` lines and no captures on Violet or Scarlet.
-- Viewport offset: viewports are all full-target. The "character shifted up" reading of a frame dump was wrong; it was the camera framing.
-- A second texture object over the render target's memory: a fallback for this never fired, and was removed.
-- `tex_flush_upload` / `tex_dirty_upload`: tried, no effect on the black 3D, removed.
+Next steps:
+1. `DM_VK_DRAWLOG=<present>` on the test app logs every texture bound per draw for that frame. Find the textures bound to var72 / var77 that no pass writes (compare with the dumped render targets).
+2. Try `DM_VK_TEXOVR=73f1192ee209ab42:<binding>=1,fa3842a1714385d7:<binding>=1` for those bindings. If the purple goes, add the pairs to `tex_unwritten_one` in the Arceus `game.tsv`.
 
-Leads: two 256x256 render targets (VkFormat 78) were black in a frame dump and no draw used a 256x256 viewport, so they may be cleared and never drawn. The dumped frame may not have been the photo's frame. The screen appears briefly and is awkward to reach.
+**The Arceus test app** (`com.nxnative.arceut`): the owner's Arceus base APK with the new engine and its package name changed (same length, UTF-16 in the manifest), signed with the release key. It reads the game data from the owner's installed Arceus through `DM_APK_DIR=<that app's /data/app/... folder>` in its `env.txt`. The phone has too little space for a second 4 GB copy. Its save is a copy of the owner's (`save_import`).
+- adb-made files in its folder are not readable by the app: `chmod 666 env.txt` (and `chmod -R a+rwX save_import`) after writing them. It is not debuggable, so `run-as` does not work.
+- Build: `python dm/android/tools/apk_swap.py a.apk u.apk lib/arm64-v8a/libnxnative.so=<lib> AndroidManifest.xml=<renamed manifest>`, `zipalign -f -p 16384`, `apksigner sign`.
+- `docs/handoff/arun.sh <tag> <env lines>` restarts an Arceus app with extra env lines, loads the save and screenshots.
 
-Tool: `DM_NVN_TEXDUMP_NOW=<trigger file>:<path with %d>.png` dumps the next frame after the trigger file appears, and logs each pass, draw, texture and buffer as `[trace]`. `DM_NVN_TEXDUMP_ALPHA=1` keeps real alpha. The dump cannot show integer formats (they read as zero), and the alpha option showed the UI layer's alpha is a see-through mask, not a fault.
+### 4. Arceus: uncommitted work in `androidswithy`
 
-### 3. Sword and Shield shaders are only complete after they have been captured
+That checkout already had the owner's uncommitted work (touch menu, gestures, `game.tsv` entries and more). Tonight's changes there are **not committed**, so as not to sweep that work in:
+- `nvn_vk.c`: the layered 3D render targets and the shared image for a render target read through a second texture object, both from Galar / Paldea ([handoff/arceus-layered-3d-only.patch](handoff/arceus-layered-3d-only.patch) is exactly these).
+- **Lower specs** (the POTATO mod, for low-end phones; off by default): a choice in `Settings.java` (Off / On / Lowest, `DM_LOWSPEC=1|2`) and `lowspec()` in `android_main.c`, which writes the three files from `lowspec_files.h` to `<files>/lowspec/romfs` and puts that first in `DM_ROMFS_OVERLAY`. Files: [handoff/arceus-lowspec-android_main.c](handoff/arceus-lowspec-android_main.c), [handoff/arceus-lowspec_files.h](handoff/arceus-lowspec_files.h), the source `.bin` files in [handoff/arceus-lowspec-bins](handoff/arceus-lowspec-bins). Not checked against the game's own files (no Arceus RomFS on the PC); the overlay itself was confirmed working on the phone.
+- Ask the owner before committing in that repo.
 
-46 shaders are in no game file. The splitter has no `.tfxo` reader, so they are not in a fresh pack; the Mac note attributes shaders like these to YEBIS, stored in a zlib stream in `main`. Today they are saved when the game first uses them and merged on the next Play.
+### 5. Requested, not started
 
-- Shield's pack has 38,546 of 38,547 and Sword's 38,539. Each new player sees those effects missing until they have been captured.
-- A proper fix is porting the Mac's `tfxo_streams` / `tfxo_shaders` into `dm/gfx/tools/shader_split.py`, so setup finds them all. Verify the zlib stream location on these builds first.
-- Separately, Sword's setup used a shader map with Shield's rows at build time. Sword and Shield hold the same 38,547 keys in that map, but they were compared only through these maps.
+- **Arceus UI**: the owner wants Arceus's settings to match Scarlet / Violet's (the in-game panel `GameMenu.java`, the launcher and setup screens). Arceus has only a simple settings dialog (`Settings.java`, a NativeActivity app with no setup screen).
+- **Fill-the-screen picture for Scarlet / Violet**: Fl4sh's 21:9 Ultrawide patch follows a formula. With `r = (screen width / height) / (16/9)`: HUD width `1920/r`, `1080`, offset `(1920 - 1920/r)/2`, FOV scale `r` (21:9 gives 1428.84, 1080, 245.58, 1.34375). A per-phone patch plus `DM_ASPECT=fill` would fill any screen.
+- **Measure Scarlet / Violet at 60 fps**, indoors and outdoors, on a cool unplugged phone.
 
-### 4. Remaining red log lines
+### 6. Other open items
 
-- `nvnDeviceGetWindowOriginMode` and `nvnDeviceGetDepthMode` are unimplemented stubs, seen on Sword and Shield. The Mac project implements them. Easy.
-- `no render target could be attached`, once per run on Sword and Shield, cause unknown. Also present in the user's working Shield app.
-- `storage buffer ... is not 64-aligned: bound as a snapshot` on Violet. A snapshot reads guest memory at replay time and misses GPU writes earlier in the submission. `DM_VK_SSBO_GPU_COPY=1` copies on the GPU instead, but a device loss happened on a run using it, cause not proven. It did not fix any visible problem.
+- **Sword's 24-second freeze** loading after Rose's speech (game thread work 24 s, no frames). Not investigated.
+- **Sword / Shield YEBIS shaders**: 46 shaders are in no game file (no `.tfxo` reader in `shader_split.py`); they are captured and merged on the next Play.
+- **Violet outdoors** never measured: no Violet save past the opening.
+- Unimplemented stubs `nvnDeviceGetWindowOriginMode` / `nvnDeviceGetDepthMode`; `no render target could be attached` once per run.
+- Not tested: Mali / Xclipse / PanVK phones in this round (PanVK cannot run on the owner's Adreno phone), multiplayer, Bink video, long background play.
+- Sword / Shield share no game files (about 13 GB twice).
 
-### 5. Not tested at all
+## Phone state left behind
 
-- Real Bink video (`demo/movie/*.bk2`) after the texture tracking settings were removed. The Mac note says the movie module's imports are supplied by the host. If videos are black, look there first.
-- Sound by ear on Scarlet and Violet. The log shows callbacks running, and `audren: ... 0 of them not silent` on one output. The game may simply use the other one; verify.
-- Multiplayer: same-Wi-Fi (`hle_ldn.c`) and room server (`hle_relay.c`, `dm/server`) have never run between two devices.
-- Mali, Xclipse, PowerVR, PanVK, 4 GB phones, in this round.
-- 60 fps option, and pacing on 60/90/120 Hz screens.
-- App icon returning to a running game (`GameActivity.alive`) is built but untested.
-- Background play was checked on Scarlet only, for sound and frame counters over about 25 s. There is no foreground service, so Android may stop the game after longer.
-- Pinning was measured on Violet only, and it has not been judged on phones with other core layouts. Sword and Shield ran with it without problems on these screens.
-- Mods, saves import/export and the settings panel on the new builds.
-
-### 6. Not done
-
-- Sword and Shield sharing identical game files. Only shaders are reused today (`setup_game.py` donor). The phone holds two copies of about 13 GB and had about 4.7 GB free.
-- Translations for the new strings: "Background", "Leaving the game", "Keep playing", "Pause", "Set up or manage a game", "Set up". Add them to `dm/android/tools/lang_src.py` and run `lang_check.py`.
-- The user asked for a "rebuild" button "by the side, or both in the middle". What it should do was not settled. A "Rebuild shaders" action on each game's setup screen was proposed; ask.
-- From the older list: water rendering darker than on the Switch, Galar 1.0 release (delete old releases except the last 2), a compatibility spreadsheet.
+- Galar Native: debuggable test build (versionCode 30); both games' `env.txt` have `DM_FPS_TARGET=30`, Sword's also `DM_VK_SPLIT=0`. No saves (the test names "Player" are from automated runs).
+- Paldea Native: debuggable test build (versionCode 42) with the alias diagnostic. Violet's `env.txt` still has `DM_NVN_TEXDUMP_NOW`, `DM_VK_LOG_VP` and `DM_VK_LOG_ALIAS` for problem 1; remove them when done.
+- Arceus test app `com.nxnative.arceut` installed (see problem 3). The owner's `com.nxnative.arceus` is unchanged: its `env.txt` was restored from `/data/local/tmp/arceus_env_backup.txt` and the mod test folders deleted.
+- adb is on Wi-Fi (`10.0.0.178:5555`) until the phone restarts.
 
 ## Things that wasted time
 
-- **`g_rmu` is held for all of `push_stage`.** The comments say "caller holds g_rmu". Adding locks in functions called from there deadlocks the replay before the first frame, as a blue or black screen.
-- **Compare shader sets by key, not by a column that happens to match.** A check on the package column wrongly said two packs were the same.
-- A frame dump shows one frame. Confirm which screen it is from before drawing conclusions.
-- After launching the launcher, wait for the rotation to landscape (about 7 s) before tapping. An early tap lands on the phone's home screen.
-- In-game taps at A's position type into the name keyboard when it is open. The test saves on the phone have junk names; they are not the user's saves.
-- The phone's `sed` does not support `\|`. Use `grep -v -E` to edit `env.txt`.
-- Debug switches in `env.txt` persist between runs. Clear them after testing. They were all cleared when this was written.
+- **`g_rmu` is held for all of `push_stage`.** Adding locks in functions called from there deadlocks the replay (blue or black screen).
+- **Charging hides performance.** The S25+ capped all cores at 1.7-2.2 GHz while charging warm, with thermal status 0. Results taken like that are meaningless.
+- **A Python script named `dis.py`** shadows the standard library's `dis` (capstone imports it). Name scripts otherwise.
+- **Patch scripts with `\n` in Git Bash heredocs**: the heredoc kept them, but in non-raw Python strings they became newlines in C source. Use raw strings or the file tool.
+- A frame dump shows one frame. Confirm which screen it is from.
+- In-game taps at A's position type into Sword's name keyboard when it is open.
+- The phone's `sed` lacks `\|`; use `grep -v -E`.
+- `screenrecord` keeps only frames that change (about 17-20 a second). Single-frame flashes can be missed; compare against both neighbours and against pairs.

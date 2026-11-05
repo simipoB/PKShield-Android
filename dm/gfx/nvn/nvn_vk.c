@@ -1208,6 +1208,17 @@ static vtex *tex_res(const tex_t *t) {
     }
     alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = (uint64_t)(uintptr_t)t->pool; ak.off = t->off; ak.d = t->d;
     vtex *shared = nvn_hm_get(&g_alias, &ak);
+    // DM_VK_LOG_ALIAS (diagnosis): a new texture over the start of memory a render target already uses, but not matched above: both descriptions (the black ID photo)
+    if (!shared) { static int on = -1, n; if (on < 0) on = getenv("DM_VK_LOG_ALIAS") != NULL;
+        if (on && n < 40) for (uint32_t i = 0; i < g_alias.cap; i++) {
+            if (!g_alias.vals[i]) continue;
+            alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
+            if (k.pool != ak.pool || k.off != ak.off) continue;
+            vtex *c = (vtex *)g_alias.vals[i]; n++;
+            VLOG("alias miss: new %ux%ux%u target %d format %#x flags %#x levels %u ser %llu over render target %ux%ux%u target %d format %#x flags %#x levels %u (usage %#x)",
+                 t->d.width, t->d.height, t->d.depth, t->d.target, t->d.format, t->d.flags, t->d.levels, (unsigned long long)t->serial,
+                 k.d.width, k.d.height, k.d.depth, k.d.target, k.d.format, k.d.flags, k.d.levels, (unsigned)c->usage);
+        } }
     if (shared) { serial_put(t->serial, shared); pthread_mutex_unlock(&g_smu); return shared; }
     vtex *x = tex_new(t, 0);
     if (!x) { pthread_mutex_unlock(&g_smu); return NULL; }
@@ -2461,8 +2472,12 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
 }
 
 // ================= Texture copies and clears =================
+static int log_copy(void) { static int on = -1, n; if (on < 0) on = getenv("DM_VK_LOG_COPY") != NULL; return on && n++ < 80; }   // DM_VK_LOG_COPY (diagnosis): the first copies
 static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
-    vtex *x = tex_res(c->tex); if (!x || !x->img) return;
+    vtex *x = tex_res(c->tex);
+    if (log_copy()) VLOG("copy %s: texture ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d, buffer %#llx%s", to_buffer ? "texture→buffer" : "buffer→texture", (unsigned long long)c->tex->serial,
+                         c->tex->d.width, c->tex->d.height, c->tex->d.format, c->tex->d.flags, c->r.xoffset, c->r.yoffset, c->r.width, c->r.height, (unsigned long long)c->src, x && x->img ? "" : " (no image)");
+    if (!x || !x->img) return;
     if (x->drop) { RED_ONCE(104, "a texture kept at half quality copied %s a buffer: left out (DM_VK_TEX_QUALITY=full to compare)", to_buffer ? "to" : "from"); return; }
     int bw, bh, bpb = nvn_fmt_bpb(c->tex->d.format, &bw, &bh); if (!bpb) return;
     unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0, layer0 = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
@@ -2488,7 +2503,11 @@ static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
 }
 static void copy_t2t(const p_copy_t2t *c) {
     pass_flush();
-    vtex *s = tex_res(c->src), *d = tex_res(c->dst); if (!s || !d || !s->img || !d->img) return;
+    vtex *s = tex_res(c->src), *d = tex_res(c->dst);
+    if (log_copy()) VLOG("copy texture→texture: ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d → ser %llu %ux%u format %#x flags %#x region %d,%d %dx%d%s", (unsigned long long)c->src->serial,
+                         c->src->d.width, c->src->d.height, c->src->d.format, c->src->d.flags, c->sr.xoffset, c->sr.yoffset, c->sr.width, c->sr.height, (unsigned long long)c->dst->serial,
+                         c->dst->d.width, c->dst->d.height, c->dst->d.format, c->dst->d.flags, c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height, s && d && s->img && d->img ? "" : " (an image missing)");
+    if (!s || !d || !s->img || !d->img) return;
     if (s->drop || d->drop) { RED_ONCE(105, "a texture kept at half quality in a texture copy: left out (DM_VK_TEX_QUALITY=full to compare)"); return; }
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;

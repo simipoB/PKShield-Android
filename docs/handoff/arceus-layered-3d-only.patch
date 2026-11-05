@@ -1,0 +1,100 @@
+--- /tmp/nvn_vk_arceus_before.c	2026-11-04 20:44:31.472247600 -0600
++++ dm/gfx/nvn/nvn_vk.c	2026-11-04 20:45:08.673009700 -0600
+@@ -1101,7 +1101,7 @@
+     ci.extent = (VkExtent3D){ t->d.width ? t->d.width : 1, t->d.height ? t->d.height : 1, 1 };
+     switch (t->d.target) {
+         case 0: ci.extent.height = 1; break;                                                   // 1D as one-row 2D (as nvn_mtl.m)
+-        case 2: ci.imageType = VK_IMAGE_TYPE_3D; ci.extent.depth = t->d.depth ? t->d.depth : 1; ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT; x->is3d = 1; break;
++        case 2: ci.imageType = VK_IMAGE_TYPE_3D; ci.extent.depth = t->d.depth ? t->d.depth : 1; ci.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT; x->is3d = 1; break;   // (2D-array compatible: rendered into slice by slice, att_view; from the Galar / Paldea engine)
+         case 3: ci.arrayLayers = t->d.height ? t->d.height : 1; ci.extent.height = 1; break;
+         case 4: ci.arrayLayers = t->d.depth ? t->d.depth : 1; break;
+         case 5: ci.samples = (VkSampleCountFlagBits)(t->d.samples ? t->d.samples : 1); ci.mipLevels = 1; break;
+@@ -1149,6 +1149,7 @@
+     pthread_mutex_lock(&t->vmu);
+     for (int i = 0; i < t->nviews; i++) if (!memcmp(&t->views[i].k, &k, sizeof k)) { VkImageView v = t->views[i].v; pthread_mutex_unlock(&t->vmu); return v; }
+     VkImageViewUsageCreateInfo uci = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO, .usage = t->usage };
++    if (t->is3d && (vt == VK_IMAGE_VIEW_TYPE_2D || vt == VK_IMAGE_VIEW_TYPE_2D_ARRAY)) uci.usage &= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;   // a 2D(-array) view of a 3D image is for rendering only
+     // a view in a format whose features lack some of the image's usages (sRGB views of a storage image): the view only gets what its format supports
+     if (fmt != t->fmt) { VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_pd, fmt, &fp); VkFormatFeatureFlags ff = fp.optimalTilingFeatures;
+         if (!(ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) uci.usage &= ~VK_IMAGE_USAGE_STORAGE_BIT;
+@@ -1291,6 +1292,15 @@
+     }
+     alias_key ak; memset(&ak, 0, sizeof ak); ak.pool = (uint64_t)(uintptr_t)t->pool; ak.off = t->off; ak.d = t->d;
+     vtex *shared = nvn_hm_get(&g_alias, &ak);
++    // No exact match: a texture object over the same memory with the same size and format but other flags / levels (a render target sampled through a second texture object
++    //   made without the render-target flags: as a new image it read black; Violet's 3D scene and ID photo, the Galar / Paldea engine)
++    if (!shared) for (uint32_t i = 0; i < g_alias.cap && !shared; i++) {
++        if (!g_alias.vals[i]) continue;
++        alias_key k; memcpy(&k, g_alias.keys + (size_t)i * g_alias.klen, sizeof k);
++        if (k.pool != ak.pool || k.off != ak.off || k.d.width != t->d.width || k.d.height != t->d.height || k.d.depth != t->d.depth || k.d.format != t->d.format || k.d.target != t->d.target) continue;
++        vtex *c = (vtex *)g_alias.vals[i]; if (!(c->usage & VK_IMAGE_USAGE_SAMPLED_BIT)) continue;
++        shared = c; static int said; if (!said++) VLOG("texture over a render target's memory with other flags (%#x vs %#x, %ux%u format %#x): sharing its image", t->d.flags, k.d.flags, t->d.width, t->d.height, t->d.format);
++    }
+     if (shared) { serial_put(t->serial, shared); pthread_mutex_unlock(&g_smu); return shared; }
+     vtex *x = tex_new(t, 0);
+     if (!x) { pthread_mutex_unlock(&g_smu); return NULL; }
+@@ -1830,12 +1840,13 @@
+     return 0;
+ }
+ // the attachment view of a render target: one level, one layer (3D: one depth slice through a 2D-array view is not available, the slice is taken as layer 0 — first case reported)
++static uint32_t g_att_layers = 1;   // att_view: how many layers the view it returned has (a 3D target's slices)
+ static VkImageView att_view(const tex_t *t, const view_t *v, int has_v, vtex **out, uint32_t *w, uint32_t *h) {
+     vtex *x = tex_res(t); *out = x; if (!x || !x->img) return VK_NULL_HANDLE;
+     if (!(x->usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))) { RED_ONCE(19, "render target ser=%llu format %#x cannot be attached (Vulkan format %d)", (unsigned long long)t->serial, t->d.format, x->fmt); return VK_NULL_HANDLE; }
+     uint32_t lv = has_v && v->set_levels ? v->base_level : 0, ly = has_v && v->set_layers ? v->min_layer : 0;
+-    if (x->is3d) { if (ly) RED_ONCE(20, "render target is a slice of a 3D texture: not supported yet"); ly = 0; }
+-    if (lv >= x->levels || ly >= x->layers) return VK_NULL_HANDLE;
++    g_att_layers = 1;
++    if (lv >= x->levels || (!x->is3d && ly >= x->layers)) return VK_NULL_HANDLE;
+     if (x->cube_ok) { static uint64_t said[32]; static int nsaid; int seen = 0; uint64_t key = t->serial << 8 | ly << 4 | lv;
+         for (int q = 0; q < nsaid; q++) if (said[q] == key) seen = 1;
+         if (!seen && nsaid < 32) { said[nsaid++] = key; VLOG("render target: cube texture ser %llu level %u layer %u, view layers %u (set %d)", (unsigned long long)t->serial, lv, ly,
+@@ -1843,7 +1854,13 @@
+     VkFormat f = x->fmt;
+     if (has_v && v->set_format) { uint32_t vf = 0; uint8_t s[4]; if (nvn_fmt_to_vk(v->format, &vf, s) && vf) f = (VkFormat)vf; }
+     *w = x->w >> lv ? x->w >> lv : 1; *h = x->h >> lv ? x->h >> lv : 1;
+-    return view_get(x, x->is3d ? VK_IMAGE_VIEW_TYPE_3D : VK_IMAGE_VIEW_TYPE_2D, f, lv, 1, ly, 1, SW_ID, x->aspect);
++    // A 3D target: all its slices at that level as a 2D array, the pass layered over them (the shader picks the slice with gl_Layer). The colour-grading table is filled so,
++    //   in one instanced draw; a 3D view is no attachment, and with slice 0 alone the other slices stay zero (Violet: every 3D scene black; the Galar / Paldea engine)
++    static int flat = -1; if (flat < 0) flat = getenv("DM_VK_NO_LAYERED_3D") != NULL;   // DM_VK_NO_LAYERED_3D: the old view (to compare)
++    if (x->is3d && flat) return view_get(x, VK_IMAGE_VIEW_TYPE_3D, f, lv, 1, ly, 1, SW_ID, x->aspect);
++    if (x->is3d) { uint32_t dz = x->d >> lv ? x->d >> lv : 1; if (ly >= dz) return VK_NULL_HANDLE; g_att_layers = dz - ly;
++        return view_get(x, VK_IMAGE_VIEW_TYPE_2D_ARRAY, f, lv, 1, ly, dz - ly, SW_ID, x->aspect); }
++    return view_get(x, VK_IMAGE_VIEW_TYPE_2D, f, lv, 1, ly, 1, SW_ID, x->aspect);
+ }
+ // DM_NVN_TEXDUMP=frame:path (as nvn_mtl.m): every colour render target that frame uses, saved once the frame is over as <path with %d = index * 100 + level> (PNG, clamped to [0,1])
+ static long g_td_frame = -2; static const char *g_td_path; static int g_td_done;
+@@ -1894,7 +1911,7 @@
+     if (P.open) return 1;
+     if (!R.has_rt) { RED_ONCE(21, "draw with no render target set"); return 0; }
+     VkRenderingAttachmentInfo ca[8]; VkRenderingAttachmentInfo da = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }, sa = da;
+-    memset(&P, 0, sizeof P); uint32_t tw = 16384, th = 16384; int any = 0, ncol = 0; uint64_t dkey = 0, skey = 0; int dnone = 0, snone = 0;
++    memset(&P, 0, sizeof P); uint32_t tw = 16384, th = 16384, nlay = 0; int any = 0, ncol = 0; uint64_t dkey = 0, skey = 0; int dnone = 0, snone = 0;   // nlay: the fewest layers of the attachments (a layered pass over a 3D target)
+     for (int i = 0; i < 8; i++) { ca[i] = (VkRenderingAttachmentInfo){ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; }
+     {   // this pass's key for the store learning (sk_attach): its render targets and how many times they were set before in this frame
+         static struct { uint64_t sig; uint32_t n; } occ[256]; static uint64_t occ_frame = ~0ull;
+@@ -1911,6 +1928,7 @@
+         if (!R.rt.color[i] || rt_dup_slot(&R.rt, i)) continue;
+         vtex *x; uint32_t w, h; VkImageView v = att_view(R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i], &x, &w, &h);
+         if (!v || !(x->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) continue;
++        if (!nlay || g_att_layers < nlay) nlay = g_att_layers;
+         ca[i].imageView = v; ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+         ca[i].storeOp = sk_attach(x, R.rt.has_cview[i] && R.rt.cview[i].set_levels ? R.rt.cview[i].base_level : 0, R.rt.has_cview[i] && R.rt.cview[i].set_layers ? R.rt.cview[i].min_layer : 0, 1, i, R.clear_c[i])
+                         ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE;
+@@ -1922,6 +1940,7 @@
+     if (R.rt.depth) {
+         vtex *x; uint32_t w, h; VkImageView v = att_view(R.rt.depth, &R.rt.dview, R.rt.has_dview, &x, &w, &h);
+         if (v && (x->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
++            if (!nlay || g_att_layers < nlay) nlay = g_att_layers;
+             uint32_t dl = R.rt.has_dview && R.rt.dview.set_levels ? R.rt.dview.base_level : 0, dy = R.rt.has_dview && R.rt.dview.set_layers ? R.rt.dview.min_layer : 0;
+             if (x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) { da.imageView = v; da.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+                 da.storeOp = sk_attach(x, dl, dy, 2, 8, R.clear_d) ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE; dkey = g_sk_last;
+@@ -1947,7 +1966,7 @@
+     else if (g_after_pass && !g_game_bar && barrier_relaxed()) { barrier_pass(CB()); g_bar_narrow++; }
+     else { barrier_all(CB()); g_bar_full++; }
+     g_game_bar = 0; g_bar_clean = g_after_pass = 0;
+-    VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {tw, th}}, .layerCount = 1, .colorAttachmentCount = (uint32_t)ncol, .pColorAttachments = ca,
++    VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {tw, th}}, .layerCount = nlay ? nlay : 1, .colorAttachmentCount = (uint32_t)ncol, .pColorAttachments = ca,
+                            .pDepthAttachment = P.hd ? &da : NULL, .pStencilAttachment = P.hs ? &sa : NULL };
+     vkCmdBeginRendering(CB(), &ri); g_stat_begins++;
+     memset(R.clear_c, 0, sizeof R.clear_c); R.clear_d = R.clear_s = 0;
