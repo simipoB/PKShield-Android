@@ -42,10 +42,26 @@ public final class SaveImportTest {
                 if (new File(root, "escape.sav").exists())
                     throw new AssertionError("archive wrote outside save storage");
             }
+            // a save zipped inside its folder, with macOS's junk: the folder holding main becomes the root, the junk is left out
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            try (ZipOutputStream zip = new ZipOutputStream(bytes)) {
+                for (String n : new String[] { "Pokemon Shield/2026-11-05/main", "Pokemon Shield/2026-11-05/backup", "__MACOSX/Pokemon Shield/._main", "Pokemon Shield/.DS_Store" }) {
+                    zip.putNextEntry(new ZipEntry(n)); zip.write(n.getBytes(StandardCharsets.UTF_8)); zip.closeEntry(); }
+            }
+            count = SaveImport.install(new ByteArrayInputStream(bytes.toByteArray()), target);
+            if (count != 2 || !new File(target, "main").isFile() || !new File(target, "backup").isFile() || new File(target, "Pokemon Shield").exists())
+                throw new AssertionError("a wrapped save was not lifted to the root: " + count + " " + String.join(",", target.list()));
+            if (!SaveImport.lastFiles.equals("backup, main")) throw new AssertionError("wrong file list: " + SaveImport.lastFiles);
+            // a bare save file (JKSV's main), not a ZIP
+            count = SaveImport.install(new ByteArrayInputStream("raw save".getBytes(StandardCharsets.UTF_8)), target, "main");
+            if (count != 1 || !"raw save".equals(new String(Files.readAllBytes(new File(target, "main").toPath()), StandardCharsets.UTF_8)))
+                throw new AssertionError("a bare save file was not imported");
+            try { SaveImport.install(new ByteArrayInputStream("x".getBytes(StandardCharsets.UTF_8)), target, "broken.zip"); throw new AssertionError("a broken .zip was taken as a save file"); }
+            catch (IOException expected) { }
         } finally {
             delete(root);
         }
-        System.out.println("Save ZIP import preserves nested paths and rejects traversal without replacing staged data.");
+        System.out.println("Save ZIP import preserves nested paths, lifts a save out of its folder, takes a bare save file and rejects traversal without replacing staged data.");
     }
 
     private static void delete(File file) {
