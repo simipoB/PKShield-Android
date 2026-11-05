@@ -392,6 +392,23 @@ static int pool_mem_put(VkDeviceSize n, VkBuffer buf, VkDeviceMemory m, void *p)
     pthread_mutex_unlock(&g_pmmu); return ok;
 }
 #endif
+#ifdef __linux__
+// The texture tracking's write protection splits a moved pool's range into several mappings, and a driver whose mappings cannot merge again keeps them split (Xclipse 940,
+//   #54: every give-back of a texture pool failed with errno 14, then the game crashed next to such a pool). Each piece goes back on its own, to its place in the driver's
+//   range (and a cached allocation given back so goes onto the next pool the same way); only when the pieces cover the range exactly and none reaches outside it (a neighbour's mapping is never moved)
+static void *move_pieces(uintptr_t base, size_t size, void *to) {
+    enum { MAXP = 256 }; uintptr_t s[MAXP], t[MAXP]; int k = 0, ok = 1; FILE *mf = fopen("/proc/self/maps", "r"); char ln[512];
+    while (ok && mf && fgets(ln, sizeof ln, mf)) { unsigned long s0, e0;
+        if (sscanf(ln, "%lx-%lx", &s0, &e0) != 2 || e0 <= base || s0 >= base + size) continue;
+        if (k == MAXP || s0 < base || e0 > base + size || s0 != (k ? t[k - 1] : base)) ok = 0; else { s[k] = s0; t[k] = e0; k++; } }
+    if (mf) fclose(mf);
+    if (!ok || k < 2 || t[k - 1] != base + size) return MAP_FAILED;
+    for (int i = 0; i < k; i++) { char *d = (char *)to + (s[i] - base);
+        if (mremap((void *)s[i], t[i] - s[i], t[i] - s[i], MREMAP_MAYMOVE | MREMAP_FIXED, d) != d) return MAP_FAILED; }
+    static int said; if (!said++) VLOG("memory pools: a pool's GPU memory moved in %d pieces (its mapping had been split)", k);
+    return to;
+}
+#endif
 void mtl_pool_add(const void *mem, uint64_t size) {
     mtl_init();
     uintptr_t pg = (uintptr_t)(g_host_import ? g_host_align : (VkDeviceSize)getpagesize()), lo = (uintptr_t)mem, hi = lo + size;
@@ -523,13 +540,15 @@ reuse:
         else {
             static int said; if (!said++) VLOG("pool memory: MREMAP_DONTUNMAP refused (errno %d), moving without it", errno);
             q = mremap(p, n, n, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)a);
+            if (q != (void *)a) q = move_pieces((uintptr_t)p, n, (void *)a);
             if (q != (void *)a) {
                 int err = errno;
                 VLOG("[RED] memory pool %p+%#llx: moving the GPU memory onto it failed (errno %d): mirrored instead", mem, (unsigned long long)size, err);
+                // a refused MREMAP_FIXED unmaps its target before it looks at the source: the pool's pages can be gone here; they come back from the copy made above
+                mmap((void *)a, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0); memcpy((void *)a, p, n);
                 e.shadow = p; atomic_fetch_add(&g_nshadow, 1);
                 if (!nvn_dirty_tracked((void *)a, n)) { nvn_dirty_add_range((void *)a, n); e.tracked_here = 1; }
                 e.stamp = nvn_dirty_now(); nvn_dirty_protect((void *)a, n);
-                memcpy(p, (void *)a, n);
                 goto bind;
             }
             mmap(p, n, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
@@ -576,7 +595,12 @@ void mtl_pool_del(const void *mem) {
             mprotect((void *)e.base, e.size, PROT_READ | PROT_WRITE);
             void *q = mremap((void *)e.base, e.size, e.size, MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP, e.moved_from);
             if (q != e.moved_from) q = mremap((void *)e.base, e.size, e.size, MREMAP_MAYMOVE | MREMAP_FIXED, e.moved_from);   // (then the gap below is filled at once)
-            if (q != e.moved_from) { VLOG("[RED] memory pool %p: the GPU memory could not go back to the driver (errno %d): kept, not freed", (void *)e.base, errno); keep_mem = 1; }
+            if (q != e.moved_from) q = move_pieces(e.base, e.size, e.moved_from);
+            if (q != e.moved_from) {
+                VLOG("[RED] memory pool %p: the GPU memory could not go back to the driver (errno %d): kept, not freed", (void *)e.base, errno); keep_mem = 1;
+                // the refused moves unmapped the placeholder first: it goes back, so nothing else lands where the driver believes its mapping is
+                mmap(e.moved_from, e.size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+            }
             else mprotect(e.moved_from, e.size, PROT_READ | PROT_WRITE);   // pages the texture tracking had write-protected come back writable
 #endif
             mmap((void *)e.base, e.size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
