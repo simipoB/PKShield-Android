@@ -1257,7 +1257,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     { static int all = -1; if (all < 0) { const char *e = getenv("DM_NVN_ACQUIRE_FENCE"); all = e && !strcmp(e, "all"); }
       if (s && !all && !rq_on() && *idx < 4 && o->pfence[*idx]) { ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = o->pfence[*idx]; }
       else if (s) sync_fence_now((sync_t *)s); }
-    if (0)   // The swapchain texture becomes available once the commits before this point have completed
+    // (the swapchain texture is available once the work fenced above is done; an `if (0)` left here made the frame-start line below dead code)
     if (!g_fs_start) { g_fs_start = now_ns(); g_fs_wait = pace_ns; }   // the frame starts when the first acquire after a present returns: on a display-link tick when on time
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
 }
@@ -1498,6 +1498,9 @@ static _Atomic int g_fs_k;   // the hold presentation follows (0 = not decided y
 // Shield's high frame rate (loader.c fps_patch, DM_FPS_TARGET): the same controller with slots of 1 / dm_step_hz, the step going into the game's own step word
 __attribute__((weak)) int dm_step_hz; __attribute__((weak)) uint8_t *dm_step_word;   // graphics unit tests have no loader
 static int vstep_on(void) { return &dm_step_hz && dm_step_hz > 0 && &dm_step_word && dm_step_word && !dm_detclock_enabled(); }
+// Scarlet / Violet's built-in Dynamic FPS (loader.c dm_dynfps): the game steps by the time each frame took, so only presentation is paced, in whole vsyncs of 60 Hz
+__attribute__((weak)) int dm_dynfps;
+static int dyn_on(void) { return &dm_dynfps && dm_dynfps; }
 // The display link runs at 30 Hz at a 30 cap, except while the game fixes its own step at 1 (BotW's VFR override)
 int nvn_game_fps(void) { int c = fps_step_cap(); if (c) return c == 30 && atomic_load(&g_fs_k) == 1 && fstep_on() ? 60 : c; uint64_t s = atomic_load(&g_itv2_since); return g_hz > 0 && !g_display_mode && s && now_ns() - s >= 1000000000ull ? 30 : 60; }
 static void present_cfg(const win_t *o) {
@@ -1514,7 +1517,7 @@ static void present_cfg(const win_t *o) {
     LOG("[nvn] present tick %d Hz, interval mode %s (%s; present interval set by the game %d; %s)", g_hz, g_display_mode ? "display (one frame per tick, a cut)" : "game (original semantics)",
         m ? "DM_PRESENT_INTERVAL" : "game profile present_interval", o->interval, scr > 0 ? "window, fixed 60 Hz" : "no window, fixed 60 Hz");
 }
-static int present_itv(const win_t *o) { int c = fps_step_cap(), k = atomic_load(&g_fs_k); if (!c && vstep_on()) return k ? k : 1; return c ? (k && fstep_on() ? k : 60 / c) : g_display_mode ? 1 : o->interval > 0 ? o->interval : 1; }   // vsyncs per frame that presentation follows
+static int present_itv(const win_t *o) { int c = fps_step_cap(), k = atomic_load(&g_fs_k); if (!c && (vstep_on() || dyn_on())) return k ? k : 1; return c ? (k && fstep_on() ? k : 60 / c) : g_display_mode ? 1 : o->interval > 0 ? o->interval : 1; }   // vsyncs per frame that presentation follows
 static uint64_t present_period(const win_t *o) {
     present_cfg(o);
     int was = atomic_load(&g_game_itv), want = o->interval > 0 ? o->interval : 1;
@@ -1577,7 +1580,8 @@ static void vstep_tick(const win_t *o) {
     //   (Sword on a Galaxy S25+: 3 ms of work a frame, held at 30 fps for the whole run)
     { extern _Atomic uint64_t g_nvn_game_work_ns; double w = atomic_load(&g_nvn_game_work_ns) / v; if (w > 0 && w < cpu) cpu = w; }
     double cost = cpu > gpu ? cpu : gpu;
-    int k0 = g_vs.k, n = nvn_fstep_next(&g_vs, shown, cost, 1, FSTEP_MAX, 0);
+    // at most 2 slots: 30 fps is the floor, 60 when frames fit (a 3-slot hold, 20 fps, swung the picture between 20 and 60)
+    int k0 = g_vs.k, n = nvn_fstep_next(&g_vs, shown, cost, 1, 2, 0);
     uint32_t ns = (uint32_t)(((uint64_t)n * 1000000000ull + (uint64_t)dm_step_hz - 1) / (uint64_t)dm_step_hz);
     dm_guest_write_prepare(dm_step_word, 4); __atomic_store_n((uint32_t *)dm_step_word, ns, __ATOMIC_RELAXED);
     atomic_store(&g_fs_k, g_vs.k); held[g_vs.k]++;
@@ -1586,11 +1590,26 @@ static void vstep_tick(const win_t *o) {
     if (o->presents % 1800 == 0) { LOG("[nvn] frame step: held 1 / 2 / 3 slots %llu / %llu / %llu frames, %llu late", (unsigned long long)held[1], (unsigned long long)held[2],
                                        (unsigned long long)held[3], (unsigned long long)g_vs.late); memset(held, 0, sizeof held); }
 }
+// Scarlet / Violet at 60 (Dynamic FPS): the same controller as vstep_tick, for presentation only: 2 vsyncs (30 fps) while frames do not fit in one, 1 (60 fps) after a run
+//   that fits, never 3. Frames steady at 30 rather than swinging between 24 and 50 as each one finished
+static void dyn_tick(const win_t *o) {
+    static uint64_t prev; static nvn_fstep vs; static int nlog;
+    const double v = 1e9 / 60;
+    uint64_t st = g_fs_start ? g_fs_start : now_ns(), pw = g_fs_wait; g_fs_start = g_fs_wait = 0;
+    double shown = prev ? (st - prev) / v : 0, gpu = 0; prev = st;
+    for (uint64_t f = g_frame; f-- > 0 && g_frame - f <= 8;) { double g = mtl_gpu_ms(f); if (g >= 0) { gpu = g * 1e6 / v; break; } }
+    double cpu = shown - pw / v;
+    { extern _Atomic uint64_t g_nvn_game_work_ns; double w = atomic_load(&g_nvn_game_work_ns) / v; if (w > 0 && w < cpu) cpu = w; }
+    double cost = cpu > gpu ? cpu : gpu;
+    int k0 = vs.k; nvn_fstep_next(&vs, shown, cost, 1, 2, 0);
+    atomic_store(&g_fs_k, vs.k);
+    if (k0 && vs.k != k0 && nlog < 40) LOG("[nvn] dynamic fps: %d fps at present %llu (cost %.2f slots of 16.67 ms, GPU %.2f)%s", 60 / vs.k, (unsigned long long)o->presents, cost, gpu, ++nlog == 40 ? "; further changes not logged" : "");
+}
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     (void)q; win_t *o = (win_t *)w; o->presents++;
     dm_fps_lock_tick();
     if (dm_fps_state) { static int was; int c = fps_step_cap(); if (c != was) { LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, c == 30 && was == 60 ? " (prerendered movie)" : ""); was = c; } }
-    if (fstep_on()) fstep_tick(o); else if (vstep_on()) vstep_tick(o);
+    if (fstep_on()) fstep_tick(o); else if (vstep_on()) vstep_tick(o); else if (dyn_on()) dyn_tick(o);
     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
     present_cfg(o);
     {
