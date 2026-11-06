@@ -291,7 +291,9 @@ static int set_guest_name(const char *hp, const char *path) {
     memcpy(guest, start, k); guest[k] = 0;
     const char *physical = strrchr(hp, '/') + 1;
     if (strcmp(physical, guest)) return setxattr(hp, FS_GUEST_NAME, guest, strlen(guest), 0, XATTR_NOFOLLOW);
-    if (!removexattr(hp, FS_GUEST_NAME, XATTR_NOFOLLOW) || errno == ENOATTR) return 0;
+    // nothing to clear: no such attribute, or a file system without extended attributes at all (Android's shared storage on some phones answers EOPNOTSUPP: every
+    //   save file the game created was deleted again as a failure, and the game started over at every launch, #70 on an SD865)
+    if (!removexattr(hp, FS_GUEST_NAME, XATTR_NOFOLLOW) || errno == ENOATTR || errno == EOPNOTSUPP || errno == ENOTSUP) return 0;
     return -1;
 }
 static Result err_res(const char *op, const char *path) {

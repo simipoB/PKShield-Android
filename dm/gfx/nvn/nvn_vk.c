@@ -3627,7 +3627,11 @@ _Atomic uint64_t g_nvn_game_work_ns;   // hle_nvn.c: the game thread's time per 
 uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     uint64_t n = atomic_fetch_add(&g_present_n, 1) + 1;
     cap_present(n);
-    if (g_heap_pending && n >= 600) { g_heap_pending = 0; heap_import_mark(-1); VLOG("memory pools: 20 s of play on dma-bufs from the heap: the route is kept"); }
+    // the heap route's crash marker goes after 20 s of play on it: 600 presents, or 20 s of wall time and 60 presents (a hot Xclipse 530 building 2,000 pipelines on the
+    //   way into Motostoke drew about 300 frames in a minute; the player closed it as stuck, the marker stayed, and the next start took the mirrored route and crashed, #74)
+    { static uint64_t t0; if (g_heap_pending && !t0) t0 = mono_ns();
+      if (g_heap_pending && (n >= 600 || (n >= 60 && mono_ns() - t0 >= 20000000000ull))) { g_heap_pending = 0; heap_import_mark(-1);
+          VLOG("memory pools: 20 s of play on dma-bufs from the heap (%llu presents): the route is kept", (unsigned long long)n); } }
     if (VPROF_ON && n % 300 == 0 && g_vp_n) { double f = 300.0 * 1e6;
         VLOG("[prof] replay per frame: %.0f draws; pass + pipeline %.2f ms, dynamic state + vertex %.2f ms, descriptors %.2f ms, flush + draw %.2f ms (%.1f us a draw)", g_vp_n / 300.0,
              g_vp_t[0] / f, g_vp_t[1] / f, g_vp_t[2] / f, g_vp_t[3] / f, (g_vp_t[0] + g_vp_t[1] + g_vp_t[2] + g_vp_t[3]) / 1e3 / (double)g_vp_n);
