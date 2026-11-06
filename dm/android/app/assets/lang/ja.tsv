@@ -253,3 +253,12 @@ Capture a frame	1 フレームを記録
 Close this menu within 3 seconds and stay where the problem shows: the next frame is saved, step by step, as pictures and notes in Download (a ZIP ending in frame-capture.zip). Attach it to your issue.	3 秒以内にこのメニューを閉じ、問題が見える場所にいてください。次のフレームが段階ごとの画像とメモとして Download に保存されます (frame-capture.zip で終わる ZIP)。報告に添付してください。
 Capturing in 3 seconds: close the menu.	3 秒後に記録します。メニューを閉じてください。
 Not used:	使用されません:
+White screen tests (Mali)	白い画面のテスト (Mali)
+Try one at a time, restart the game, and tell us on GitHub whether the picture changed (a capture helps).	1つずつ試してゲームを再起動し、画面が変わったかGitHubで教えてください（キャプチャがあると助かります）。
+Copy the game's uniform data	ゲームのユニフォームデータをコピー
+On: each draw's uniform data is copied when it is recorded, instead of the GPU reading the game's memory directly	オン：各描画のユニフォームデータを記録時にコピーし、GPUがゲームのメモリを直接読まないようにします
+Exact infinities in shaders	シェーダーで無限大を正確に扱う
+Auto: on with ARM's driver (v0.52)	自動：ARMのドライバーでオン (v0.52)
+Off: the shaders as before v0.52	オフ：v0.52以前のシェーダー
+Merge render passes	レンダーパスを統合
+Off: every render target change starts a new pass	オフ：レンダーターゲットを変えるたびに新しいパスを開始
