@@ -158,6 +158,19 @@ public final class GameActivity extends NativeActivity implements InputManager.I
             StringBuilder hz = new StringBuilder(); for (float r : GameSettings.refreshRates(this)) hz.append(hz.length() > 0 ? "," : "").append(Math.round(r));
             android.system.Os.setenv("DM_DISPLAY_HZ", hz.toString(), true);
         } catch (Exception e) { }
+        // The Chinese / Korean shared-font stand-in (hle_sdk16.c, #62: a game set to Chinese drew none of its text) into the game's font/, for setups made before it
+        //   shipped; the APK carries it (build_apk.py), copied when missing or of another size
+        try {
+            File fd = new File(GameSettings.dir(this), "font"); File cjk = new File(fd, "cjk.ttf");
+            android.content.res.AssetFileDescriptor afd = null; long want = -1;
+            try { afd = getAssets().openFd("cjk_fallback.ttf"); want = afd.getLength(); } catch (java.io.IOException ignored) { } finally { if (afd != null) afd.close(); }
+            if (fd.isDirectory() && (!cjk.isFile() || (want > 0 && cjk.length() != want))) {
+                File tmp = new File(fd, "cjk.ttf.part");
+                try (java.io.InputStream in = getAssets().open("cjk_fallback.ttf"); java.io.OutputStream out = new java.io.FileOutputStream(tmp)) {
+                    byte[] b = new byte[1 << 16]; int n; while ((n = in.read(b)) > 0) out.write(b, 0, n); }
+                if (!tmp.renameTo(cjk)) tmp.delete();
+            }
+        } catch (Exception e) { }
         // Why Android ended the previous run (Android 11+): a game that vanished with no crash in its log was killed from outside (memory, heat, the phone's own
         //   game manager: #57's log simply stops). Said at the top of the new log (android_main.c boot lines)
         if (android.os.Build.VERSION.SDK_INT >= 30) try {

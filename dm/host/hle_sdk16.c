@@ -95,7 +95,12 @@ static font_t font_get(int type) {
                      if (!std_f.p) LOG("[RED] cannot open the standard shared font (point DM_SHARED_FONT or DM_FONT_DIR/standard.ttf at a TTF)"); }
     if (type == 5 && !ext_done) { ext_done = 1; ext_f = font_first("DM_SHARED_FONT_EXT", "nintendo_ext.ttf", NULL);
                                   if (!ext_f.p) LOG("[YELLOW] Nintendo extended shared font missing (dm/tools/make_ext_font.py generates nintendo_ext.ttf): button icons will be drawn as '?'"); }
-    font_t f = type == 5 && ext_f.p ? ext_f : std_f;
+    // Chinese (1 Simplified, 2 its extension, 3 Traditional) and Korean (4): DM_SHARED_FONT_CJK or $DM_FONT_DIR/cjk.ttf (the app's DM CJK Fallback: NanumGothic +
+    //   Droid Sans Fallback, glyf outlines), else the standard stand-in, which has no CJK: a game set to Chinese drew none of its text (#62)
+    static font_t cjk_f; static int cjk_done;
+    if (type >= 1 && type <= 4 && !cjk_done) { cjk_done = 1; cjk_f = font_first("DM_SHARED_FONT_CJK", "cjk.ttf", NULL);
+                                                if (!cjk_f.p) LOG("[YELLOW] Chinese / Korean shared font stand-in missing (font/cjk.ttf): those languages' shared-font text uses the standard font"); }
+    font_t f = type == 5 && ext_f.p ? ext_f : type >= 1 && type <= 4 && cjk_f.p ? cjk_f : std_f;
     pthread_mutex_unlock(&mu);
     return f;
 }
