@@ -103,6 +103,7 @@ static void completion_start(void);
 static void dummies_init(void);
 static int host_import_mark(int set);   // (queue_submit)
 static int fd_export_mark(int op);   // (mtl_init, mtl_pool_add)
+static int mark_file(const char *name, const char *what, int op);
 static int heap_import_mark(int op);   // the same for the dma-buf heap route (its own file: a crash of one route does not close the other)
 static void pcache_open(void); static void *prewarm_main(void *arg);   // pipeline list and cache (below)
 // The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (a driver package chosen on the setup screen: Mesa Turnip for Adreno, Mesa PanVK for Mali) is opened through
@@ -255,7 +256,16 @@ void mtl_init(void) {
     if (fd_crashed) VLOG("[RED] memory pools: the driver crashed exporting its memory last time: no export this start");
     // the heap route's own marker (heap_import_mark): set by a crash importing the first dma-buf or a failed submission with them; DM_VK_DMAHEAP=1 tries it again
     int heap_crashed = heap_import_mark(0) && !(getenv("DM_VK_DMAHEAP") && atoi(getenv("DM_VK_DMAHEAP")));
-    if (heap_crashed) VLOG("[RED] memory pools: importing dma-bufs failed last time: not this start");
+    // The marker only proves something while the route without it does better: a start that skipped the heap route and crashed anyway (after the device came up) sends
+    //   the next start back to it. Without this a marker left by a run closed as stuck kept every later start on the mirrored route, which crashed an Xclipse 530 at
+    //   every start (#76); a phone whose heap route really crashes (#63) stays off it as long as the other route holds
+    if (heap_crashed && mark_file("heap_route_skipped", "", 0) && getenv("DM_LAST_CRASH_DEVICE")) {
+        heap_import_mark(-1); mark_file("heap_route_skipped", "", -1); heap_crashed = 0;
+        VLOG("[RED] memory pools: the last start went without the dma-buf heap route and crashed too: the heap route again");
+    }
+    if (heap_crashed) { mark_file("heap_route_skipped", "a start that left the dma-buf heap route out (heap_import_crashed); if it crashes too, the next start uses the route again\n", 1);
+        VLOG("[RED] memory pools: importing dma-bufs failed last time: not this start"); }
+    else mark_file("heap_route_skipped", "", -1);
     if (!g_host_import && (!fd_crashed || !heap_crashed) && has_ext(de, nde, "VK_KHR_external_memory_fd") && !(getenv("DM_VK_NO_FDMAP") && atoi(getenv("DM_VK_NO_FDMAP")))) {
         VkExternalMemoryHandleTypeFlagBits cand[2] = { VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT };
         int dmabuf = has_ext(de, nde, "VK_EXT_external_memory_dma_buf") && !(getenv("DM_VK_NO_DMABUF") && atoi(getenv("DM_VK_NO_DMABUF")));

@@ -323,6 +323,7 @@ static void boot_guard(const char *mods) {
         int had_mods = strstr(prev, "mods 0") == NULL && strstr(prev, "mods ") != NULL, device = strstr(prev, "device") != NULL;
         const char *drv = getenv("DM_VK_DRIVER"); int stock = !drv || !*drv;
         fprintf(stderr, "boot: the last run crashed (%s)\n", device ? "after the graphics device came up" : "before the graphics device came up");
+        if (device) setenv("DM_LAST_CRASH_DEVICE", "1", 1);   // (nvn_vk.c: a start that went without the dma-buf heap route and crashed anyway sends the next one back to it)
         if (had_mods) { int n = mods_off(mods); if (n) { char t[200]; snprintf(t, sizeof t, "The game closed while %d mod%s were on, so they are switched off. Switch them back on in the menu, Mods.", n, n == 1 ? "" : "s"); notice("mods", t); } }
         else if (stock && !strstr(prev, "playing") && !strstr(prev, "in the game's code")) {   // (a crash in the game's own code is the engine's to fix, not the driver's: no driver dialog)
             char gpu[256] = ""; char gp[1200]; snprintf(gp, sizeof gp, "%s/gpu.txt", g_files); FILE *g = fopen(gp, "r"); if (g) { if (!fgets(gpu, sizeof gpu, g)) gpu[0] = 0; fclose(g); }
