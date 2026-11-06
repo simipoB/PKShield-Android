@@ -428,6 +428,18 @@ public final class GameMenu {
         action(a, t(a, "Capture a frame"), t(a, "Close this menu within 3 seconds and stay where the problem shows: the next frame is saved, step by step, as pictures and notes in Download (a ZIP ending in frame-capture.zip). Attach it to your issue."),
                () -> { try (java.io.FileWriter w = new java.io.FileWriter(new File(GameSettings.dir(a), "capture.req"))) { w.write("90"); } catch (IOException e) { }
                        android.widget.Toast.makeText(a, t(a, "Capturing in 3 seconds: close the menu."), android.widget.Toast.LENGTH_LONG).show(); });
+        // Mali's white scenes (#47 #53 #64 #68 #69 #72 #75): switches the engine has for narrowing it down, which players could only set by editing env.txt; each one a
+        //   tester tries (with a capture) rules a cause in or out. Shown on Mali phones only
+        if (DriverPackages.gpu(a).contains("mali")) {
+            heading(a, t(a, "White screen tests (Mali)"));
+            note(a, t(a, "Try one at a time, restart the game, and tell us on GitHub whether the picture changed (a capture helps)."));
+            choice(a, "DM_VK_UBO_SNAPSHOT", t(a, "Copy the game's uniform data"), new String[][] { { "", t(a, "Off"), "" },
+                { "1", t(a, "On"), t(a, "On: each draw's uniform data is copied when it is recorded, instead of the GPU reading the game's memory directly") } });
+            choice(a, "DM_VK_FLOAT_CONTROLS", t(a, "Exact infinities in shaders"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: on with ARM's driver (v0.52)") },
+                { "0", t(a, "Off"), t(a, "Off: the shaders as before v0.52") } });
+            choice(a, "DM_VK_NO_PASS_MERGE", t(a, "Merge render passes"), new String[][] { { "", t(a, "On"), "" },
+                { "1", t(a, "Off"), t(a, "Off: every render target change starts a new pass") } });
+        }
     }
     // the graphics driver: the phone's own, an installed package (Turnip, PanVK...), a new package from the file picker, or the releases page for this GPU; from the next start
     private static void driver(Activity a) {

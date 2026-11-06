@@ -347,6 +347,10 @@ void mtl_init(void) {
     p_hostprops = (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_dev, "vkGetMemoryHostPointerPropertiesEXT");
     // the BC layer (gfx/tex/bc_gpu.c) where the GPU has no BC textures (Mali, PowerVR): uploads and copies of BC blocks converted on the GPU, each kind only once it
     //   came out the same as the CPU's on this GPU; the rest on the CPU as before (DM_VK_BC_GPU=0: all of it)
+    { const VkPhysicalDeviceLimits *L = &g_props.limits;   // the limits that differ between vendors and decide what a read past a binding returns (Mali white: #53)
+      VLOG("limits: uniform range %u (align %llu), storage range %u (align %llu), push constants %u, vertex attribute offset %u, stride %u, bindings %u, texel buffer %u",
+           L->maxUniformBufferRange, (unsigned long long)L->minUniformBufferOffsetAlignment, L->maxStorageBufferRange, (unsigned long long)L->minStorageBufferOffsetAlignment,
+           L->maxPushConstantsSize, L->maxVertexInputAttributeOffset, L->maxVertexInputBindingStride, L->maxVertexInputBindings, L->maxTexelBufferElements); }
     // Float controls (spv_float_controls): ARM's own Mali driver gets every shader with SignedZeroInfNanPreserve, where it supports it. Without it the lit scene came out
     //   at the format's maximum on Mali-G615 / G720 / G925 (#47 #53 #64 #68 #69 #72); PanVK on the same GPUs drew it right. DM_VK_FLOAT_CONTROLS=0 / 1 decides on any driver
     if (g_api >= VK_API_VERSION_1_2 || g_fctl_ext) {   // (Vulkan 1.1: through the extensions, same structures)

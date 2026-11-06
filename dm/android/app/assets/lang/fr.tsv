@@ -253,3 +253,12 @@ Capture a frame	Capturer une image
 Close this menu within 3 seconds and stay where the problem shows: the next frame is saved, step by step, as pictures and notes in Download (a ZIP ending in frame-capture.zip). Attach it to your issue.	Fermez ce menu dans les 3 secondes et restez là où le problème se voit : l'image suivante est enregistrée, étape par étape, en images et en notes dans Download (un ZIP qui finit par frame-capture.zip). Joignez-le à votre signalement.
 Capturing in 3 seconds: close the menu.	Capture dans 3 secondes : fermez le menu.
 Not used:	Non utilisé :
+White screen tests (Mali)	Tests de l'écran blanc (Mali)
+Try one at a time, restart the game, and tell us on GitHub whether the picture changed (a capture helps).	Essayez-en un à la fois, redémarrez le jeu et dites-nous sur GitHub si l'image a changé (une capture aide).
+Copy the game's uniform data	Copier les données uniformes du jeu
+On: each draw's uniform data is copied when it is recorded, instead of the GPU reading the game's memory directly	Activé : les données uniformes de chaque dessin sont copiées à l'enregistrement, au lieu que le GPU lise directement la mémoire du jeu
+Exact infinities in shaders	Infinis exacts dans les shaders
+Auto: on with ARM's driver (v0.52)	Auto : activé avec le pilote d'ARM (v0.52)
+Off: the shaders as before v0.52	Désactivé : les shaders comme avant la v0.52
+Merge render passes	Fusionner les passes de rendu
+Off: every render target change starts a new pass	Désactivé : chaque changement de cible de rendu commence une nouvelle passe
