@@ -435,7 +435,8 @@ public final class GameMenu {
         heading(a, t(a, "Graphics driver"));
         if (RESTART.contains("driver")) note(a, t(a, "The new driver is used from the next start."));
         driverRow(a, t(a, "The phone's own driver"), cur.isEmpty(), () -> DriverPackages.useSystem(a));
-        for (String[] p : pk) driverRow(a, p[0], p[1].equals(cur), () -> DriverPackages.use(a, new File(p[1])));
+        for (String[] p : pk) driverRow(a, p[0], p[1].equals(cur), () -> { String why = DriverPackages.mismatch(a, new File(p[1]));
+            if (why != null) android.widget.Toast.makeText(a, t(a, "Not used:") + " " + why, android.widget.Toast.LENGTH_LONG).show(); else DriverPackages.use(a, new File(p[1])); });
         LinearLayout r = new LinearLayout(a); body.addView(r);
         button(a, r, t(a, "Install a driver package (.zip)"), true, () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_DRIVER));
         if (src != null) button(a, r, src[0], false, () -> a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(src[1]))));
