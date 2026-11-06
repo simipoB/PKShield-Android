@@ -965,6 +965,13 @@ void mtl_sub_begin(void) {
     g_sub = s;
     static int inited; if (!inited) { inited = 1; state_reset(); }
 }
+// The end of a submission: everything the GPU wrote made visible to the CPU (Vulkan asks for this barrier before the fence / semaphore wait the CPU reads after;
+//   without it the GPU's writes may still sit in its caches). Adreno and lavapipe showed the data anyway; on Mali the game read back stale data from the pools, the
+//   shaders' buffer writes, texture copies to buffers and the mirrored pools' copies back (the scene correct for the first frames, then white: #47)
+static void barrier_host(VkCommandBuffer cb) {
+    VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+}
 static void barrier_all(VkCommandBuffer cb) {
     VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
@@ -1059,6 +1066,7 @@ uint64_t mtl_sub_commit(void) {
     pass_end();
     shadow_sync_ordered(s);   // (into the upload command buffer, which runs before this submission's work)
     if (g_tsq) vkCmdWriteTimestamp(s->cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_tsq, (uint32_t)(s - g_subs) * 2 + 1);
+    barrier_host(s->cb);
     VKCHECK(vkEndCommandBuffer(s->cb));
     VkCommandBuffer cbs[2]; uint32_t n = 0;
     if (s->ucb_open) { barrier_all(s->ucb); VKCHECK(vkEndCommandBuffer(s->ucb)); cbs[n++] = s->ucb; s->ucb_open = 0; }
@@ -1085,7 +1093,7 @@ static VkCommandBuffer once_begin(void) {
     return cb;
 }
 static void once_end(VkCommandBuffer cb) {   // ordered after everything submitted so far (same queue, full barriers), waited for here
-    barrier_all(cb); VKCHECK(vkEndCommandBuffer(cb));
+    barrier_all(cb); barrier_host(cb); VKCHECK(vkEndCommandBuffer(cb));
     VkFenceCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO }; VkFence f; VKCHECK(vkCreateFence(g_dev, &fi, NULL, &f));
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb };
     shadow_sync();
