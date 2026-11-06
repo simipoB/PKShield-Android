@@ -75,6 +75,11 @@ static VkExternalMemoryHandleTypeFlagBits g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_T
 // exports none (Mali-G615 / G720 / G57: external memory features 0x4, its export failing; its pools mirrored, the game's pictures white: #47, #53, #55). 1 working,
 // -1 until the first pool tries it, 0 off. DM_VK_DMAHEAP=1 tries it on any GPU, 0 never
 static int g_heapmap = 0, g_heapfd = -1; static const char *g_heapname;
+// the heap route's crash marker stays set until 600 presents (20 s at 30 fps) went by with it: a driver that crashed a few frames in (Mali-G615 MC2, #63: on the
+//   third frame at every start) sends the next start back to moving the driver's mappings, not only one that crashed importing the first dma-buf
+static int g_heap_pending;
+static int heap_import_mark(int op);
+void nvn_vk_heap_alive(void) { if (g_heap_pending) { g_heap_pending = 0; heap_import_mark(-1); } }   // the app went to the background: not a crash (android_main.c APP_CMD_PAUSE)
 #ifdef __linux__
 #include <sys/ioctl.h>
 struct dm_heap_alloc { uint64_t len; uint32_t fd, fd_flags; uint64_t heap_flags; };
@@ -546,7 +551,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
                 void *q = mmap((void *)a, n, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);   // the pool's pages become the dma-buf, in one step
                 munmap(tmp, n); close(fd);
                 if (q != (void *)a) VDIE("memory pool %p+%#llx: mapping the dma-buf over it failed (errno %d)", mem, (unsigned long long)size, errno);
-                e.fdmapped = 1; if (first) heap_import_mark(-1);
+                e.fdmapped = 1; if (first) g_heap_pending = 1;   // (the marker stays until 20 s of play went by: mtl_present)
                 if (g_heapmap < 0) { g_heapmap = 1; VLOG("memory pools: dma-bufs from %s imported into the driver and mapped over the pools' pages", g_heapname); }
                 goto bind;
             }
@@ -3537,6 +3542,7 @@ _Atomic uint64_t g_nvn_game_work_ns;   // hle_nvn.c: the game thread's time per 
 uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     uint64_t n = atomic_fetch_add(&g_present_n, 1) + 1;
     cap_present(n);
+    if (g_heap_pending && n >= 600) { g_heap_pending = 0; heap_import_mark(-1); VLOG("memory pools: 20 s of play on dma-bufs from the heap: the route is kept"); }
     if (VPROF_ON && n % 300 == 0 && g_vp_n) { double f = 300.0 * 1e6;
         VLOG("[prof] replay per frame: %.0f draws; pass + pipeline %.2f ms, dynamic state + vertex %.2f ms, descriptors %.2f ms, flush + draw %.2f ms (%.1f us a draw)", g_vp_n / 300.0,
              g_vp_t[0] / f, g_vp_t[1] / f, g_vp_t[2] / f, g_vp_t[3] / f, (g_vp_t[0] + g_vp_t[1] + g_vp_t[2] + g_vp_t[3]) / 1e3 / (double)g_vp_n);

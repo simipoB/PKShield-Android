@@ -765,6 +765,7 @@ static void *swapin_main(void *p) {
 }
 static void swapin_start(void) { if (kb_of("/proc/self/status", "VmSwap:") < 32 * 1024) return; pthread_t t; if (!pthread_create(&t, NULL, swapin_main, NULL)) pthread_detach(t); }
 __attribute__((weak)) void nvn_vk_cache_save(void);
+__attribute__((weak)) void nvn_vk_heap_alive(void);   // nvn_vk.c: the dma-buf heap route lived to the background, so its crash marker goes
 __attribute__((weak)) void nvn_vk_window_term(void);   // releases the swapchain while the window still exists (nvn_vk.c)   // the pipeline cache file (nvn_vk.c), written when the app goes to the background
 static void on_cmd(struct android_app *app, int32_t cmd) {
     switch (cmd) {
@@ -774,7 +775,7 @@ static void on_cmd(struct android_app *app, int32_t cmd) {
         // In the background (recents, home, another app) the game keeps running with its sound, as a Switch game does under the HOME menu with a suspend-free
         //   setting: it is not told it lost focus (it would pause itself), and frames are simply not shown while there is no window. DM_BACKGROUND=off pauses it as before
         case APP_CMD_LOST_FOCUS: if (g_started && !bg_play()) { dm_focus_set(2); } break;
-        case APP_CMD_PAUSE: if (g_started) { if (!bg_play()) { dm_focus_set(3); dm_audio_suspend(1); } if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;
+        case APP_CMD_PAUSE: if (g_started && nvn_vk_heap_alive) nvn_vk_heap_alive(); if (g_started) { if (!bg_play()) { dm_focus_set(3); dm_audio_suspend(1); } if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;
         case APP_CMD_RESUME: if (g_started) { dm_focus_set(1); dm_audio_suspend(0); swapin_start(); } break;
     }
 }
