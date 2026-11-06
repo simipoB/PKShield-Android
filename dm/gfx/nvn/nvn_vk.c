@@ -181,9 +181,18 @@ void mtl_init(void) {
     if (getenv("DM_VK_VALIDATION")) layers[nlayers++] = "VK_LAYER_KHRONOS_validation";
     VkInstanceCreateInfo ici = { .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .flags = ifl, .pApplicationInfo = &ai, .enabledExtensionCount = niext, .ppEnabledExtensionNames = iext,
                                  .enabledLayerCount = nlayers, .ppEnabledLayerNames = layers };
-    VKCHECK(vkCreateInstance(&ici, NULL, &g_inst));
-    VK_INSTANCE(VK_LOAD_I)
-    uint32_t npd = 0; vkEnumeratePhysicalDevices(g_inst, &npd, NULL); if (!npd) VDIE("no Vulkan device");
+    VkResult ir = vkCreateInstance(&ici, NULL, &g_inst); uint32_t npd = 0;
+    if (ir == VK_SUCCESS) { VK_INSTANCE(VK_LOAD_I) vkEnumeratePhysicalDevices(g_inst, &npd, NULL); }
+    if (!npd) {   // a driver package for another GPU (Turnip, Adreno only, chosen on a Mali-G615: "no Vulkan device" at every start, #71): this start goes on with the phone's own driver
+        const char *drv = getenv("DM_VK_DRIVER");
+        if (drv && *drv) {
+            VLOG("[RED] the chosen Vulkan driver %s found no GPU on this phone (instance %d): the phone's own driver is used (Settings: graphics driver)", drv, (int)ir);
+            if (ir == VK_SUCCESS) { PFN_vkDestroyInstance di = (PFN_vkDestroyInstance)vkGetInstanceProcAddr(g_inst, "vkDestroyInstance"); if (di) di(g_inst, NULL); }
+            g_inst = VK_NULL_HANDLE; unsetenv("DM_VK_DRIVER"); vkGetInstanceProcAddr = NULL; mtl_init(); return;
+        }
+        if (ir != VK_SUCCESS) VDIE("vkCreateInstance failed: %d", (int)ir);
+        VDIE("no Vulkan device");
+    }
     VkPhysicalDevice pds[8]; if (npd > 8) npd = 8; vkEnumeratePhysicalDevices(g_inst, &npd, pds); g_pd = pds[0];
     vkGetPhysicalDeviceProperties(g_pd, &g_props); vkGetPhysicalDeviceMemoryProperties(g_pd, &g_memp);
     uint32_t nq = 0; vkGetPhysicalDeviceQueueFamilyProperties(g_pd, &nq, NULL); VkQueueFamilyProperties qp[16]; if (nq > 16) nq = 16; vkGetPhysicalDeviceQueueFamilyProperties(g_pd, &nq, qp);
