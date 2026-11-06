@@ -75,6 +75,8 @@ void crash_off(const char *tag, uint64_t a) {   // Also used by diag.c
     Dl_info di;
     if (m) fprintf(stderr, " %s%s%s+%#llx", tag, *tag ? "=" : "", m->name, a - (uint64_t)m->base);
     else if (dladdr((void *)a, &di) && di.dli_sname) fprintf(stderr, " %s%s%s+%#lx", tag, *tag ? "=" : "", di.dli_sname, (unsigned long)(a - (uint64_t)di.dli_saddr));
+    else if (dladdr((void *)a, &di) && di.dli_fname && di.dli_fbase) {   // a stripped library (a GPU driver): its file name and the offset into it
+        const char *b = strrchr(di.dli_fname, '/'); fprintf(stderr, " %s%s%s+%#lx", tag, *tag ? "=" : "", b ? b + 1 : di.dli_fname, (unsigned long)(a - (uint64_t)di.dli_fbase)); }
     else fprintf(stderr, " %s%s%#llx", tag, *tag ? "=" : "", a);
 }
 // Frame pointer backtrace: x29 chain [fp]=previous frame's fp, [fp+8]=return address; only 8-byte aligned, monotonically increasing frames are walked
