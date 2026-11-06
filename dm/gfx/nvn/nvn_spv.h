@@ -41,3 +41,5 @@ uint32_t *spv_tf_variant(const uint32_t *code, size_t words, const int tf[4][2],
 uint32_t *spv_image_caps(const uint32_t *code, size_t words, size_t *out_words);
 // A copy whose 2D / 2D-array texture gathers have their coordinate nudged by 1/512 of a texel (the host picks Maxwell's 2x2 block on a texel centre: Adreno). NULL if none
 uint32_t *spv_gather_bias(const uint32_t *code, size_t words, size_t *out_words);
+// A copy whose entry points ask for SignedZeroInfNanPreserve on 32-bit floats (SPV_KHR_float_controls): drivers keep infinities and NaN as they are. NULL if not patched
+uint32_t *spv_float_controls(const uint32_t *code, size_t words, size_t *out_words);

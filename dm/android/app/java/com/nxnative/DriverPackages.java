@@ -89,6 +89,8 @@ final class DriverPackages {
             boolean a8 = gpu.matches(".*adreno[^0-9]*8[0-9][0-9].*");
             return new String[] { "Get Turnip for Adreno (StevenMXZ's releases: pick a " + (a8 ? "\"Turnip Gen8\" build for this Adreno 8xx)" : "\"Turnip v…-R\" build)"), TURNIP_RELEASES }; }
         if (gpu.matches(".*mali-g(57|68|77|78|52|72|76).*")) return new String[] { "Get PanVK for Mali (FristOneRR's releases)", PANVK_RELEASES };
+        // Valhall Mali with ARM's own driver drew the lit scene white (#47 #53 #64 #72); PanVK on the same GPUs drew it (#63's Mali-G57, #71's Mali-G615 ran with it)
+        if (gpu.matches(".*mali-g(610|615|710|715).*")) return new String[] { "Get PanVK for Mali (FristOneRR's releases; experimental on this GPU)", PANVK_RELEASES };
         return null;
     }
     // Mesa Turnip's own switches (TU_DEBUG, read by the driver from the environment: env.txt), offered while a Turnip package is the driver. They do on any Turnip build

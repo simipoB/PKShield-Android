@@ -137,6 +137,7 @@ static void *vk_open(void) {
 #define VK_LOAD_G(f) f = (PFN_##f)vkGetInstanceProcAddr(NULL, #f);
 #define VK_LOAD_I(f) f = (PFN_##f)vkGetInstanceProcAddr(g_inst, #f);
 static int g_bcgpu;   // the BC layer is on (mtl_init)
+static int g_fctl;    // every shader asks for SignedZeroInfNanPreserve (spv_float_controls; mtl_init decides)
 static void vk_logf(const char *f, ...) { va_list a; va_start(a, f); fputs("[dm] [nvn-vk] ", stderr); vfprintf(stderr, f, a); fputc('\n', stderr); va_end(a); }
 static uint32_t g_instance_api = VK_API_VERSION_1_3;   // the instance's apiVersion (mtl_init)
 static uint32_t g_api;   // the device's Vulkan version (DM_VK_API=11 / 12 tries an older device's path on a newer one)
@@ -332,6 +333,17 @@ void mtl_init(void) {
     p_hostprops = (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(g_dev, "vkGetMemoryHostPointerPropertiesEXT");
     // the BC layer (gfx/tex/bc_gpu.c) where the GPU has no BC textures (Mali, PowerVR): uploads and copies of BC blocks converted on the GPU, each kind only once it
     //   came out the same as the CPU's on this GPU; the rest on the CPU as before (DM_VK_BC_GPU=0: all of it)
+    // Float controls (spv_float_controls): ARM's own Mali driver gets every shader with SignedZeroInfNanPreserve, where it supports it. Without it the lit scene came out
+    //   at the format's maximum on Mali-G615 / G720 / G925 (#47 #53 #64 #68 #69 #72); PanVK on the same GPUs drew it right. DM_VK_FLOAT_CONTROLS=0 / 1 decides on any driver
+    if (g_api >= VK_API_VERSION_1_2) {
+        VkPhysicalDeviceDriverProperties dp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
+        VkPhysicalDeviceFloatControlsProperties fc = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES, .pNext = &dp };
+        VkPhysicalDeviceProperties2 pp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &fc }; vkGetPhysicalDeviceProperties2(g_pd, &pp);
+        const char *e = getenv("DM_VK_FLOAT_CONTROLS"); int arm = dp.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+        g_fctl = fc.shaderSignedZeroInfNanPreserveFloat32 && (e ? atoi(e) != 0 : arm);
+        VLOG("driver %s (id %d)%s; shaders keep infinities and NaN (float controls): %s", dp.driverName, (int)dp.driverID, arm ? ", ARM's own" : "",
+             g_fctl ? "asked for" : !fc.shaderSignedZeroInfNanPreserveFloat32 ? "not supported" : "not asked for");
+    }
     if (!f2.features.textureCompressionBC) { bc_gpu_info bi = { g_dev, g_q, g_qf, vkGetDeviceProcAddr, &g_memp, vk_logf }; g_bcgpu = bc_gpu_init(&bi); }
     if (g_host_import) {
         VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT };
@@ -1803,6 +1815,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
     // Adreno picks another 2x2 block than Maxwell for a gather on a texel centre: its gathers are nudged by 1/512 of a texel (spv_gather_bias). DM_VK_GATHER_BIAS=0 / 1 decides
     static int gbias = -1; if (gbias < 0) { const char *e = getenv("DM_VK_GATHER_BIAS"); gbias = e ? atoi(e) != 0 : g_props.vendorID == 0x5143; if (gbias) VLOG("texture gathers nudged by 1/512 of a texel (Adreno rounding)"); }
     if (gbias) { size_t nw; uint32_t *c2 = spv_gather_bias(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }
+    if (g_fctl) { size_t nw; uint32_t *c2 = spv_float_controls(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }
     if (spst == 0 || spst == 2) { size_t nw; uint32_t *c2 = spv_init_outputs(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // outputs start at (0, 0, 0, 1) as on the hardware
     if (st == 0 && glcode) {
         size_t nw;
@@ -1810,6 +1823,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
         ngl = spv_strip_unused(glcode, ngl / 4) * 4;
         uint32_t *c2 = spv_image_caps(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
         if (gbias && (c2 = spv_gather_bias(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
+        if (g_fctl && (c2 = spv_float_controls(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
         c2 = spv_init_outputs(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
         VkShaderModuleCreateInfo gci = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = ngl, .pCode = glcode };
         VkResult gr = vkCreateShaderModule(g_dev, &gci, NULL, &s->glmod);
@@ -1964,9 +1978,9 @@ static int cap_start(void) {
     if (vkCreateBuffer(g_dev, &bi, NULL, &g_cap_buf)) { vkDestroyImage(g_dev, g_cap_img, NULL); vk_free(g_cap_ia); return 0; }
     vkGetBufferMemoryRequirements(g_dev, g_cap_buf, &rq); g_cap_ba = vk_alloc(rq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1); vkBindBufferMemory(g_dev, g_cap_buf, g_cap_ba.b->mem, g_cap_ba.off);
     g_cap_n = 0; g_cap_layout = 0; g_cap_draws = 0; g_cap_ntex = 0; g_cap_len = 0; g_cap_ns = 0; g_cap_dp = 0; g_cap_nd = 0;
-    cap_printf("Frame capture, present %llu. GPU %s (vendor %#x, driver %#x, Vulkan %u.%u). BC textures %s; BC layer %s.\n", (unsigned long long)g_cap_frame, g_props.deviceName, g_props.vendorID,
+    cap_printf("Frame capture, present %llu. GPU %s (vendor %#x, driver %#x, Vulkan %u.%u). BC textures %s; BC layer %s; float controls %s.\n", (unsigned long long)g_cap_frame, g_props.deviceName, g_props.vendorID,
                g_props.driverVersion, VK_API_VERSION_MAJOR(g_props.apiVersion), VK_API_VERSION_MINOR(g_props.apiVersion),
-               nvn_fmt_vk_transcode(0x46) ? "transcoded on upload" : nvn_fmt_vk_decode(0x46) ? "decoded on upload" : "sampled by the GPU", g_bcgpu ? "on" : "off");
+               nvn_fmt_vk_transcode(0x46) ? "transcoded on upload" : nvn_fmt_vk_decode(0x46) ? "decoded on upload" : "sampled by the GPU", g_bcgpu ? "on" : "off", g_fctl ? "on" : "off");
     cap_printf("Formats are Vulkan VkFormat numbers (vk) and NVN format numbers (nvn). Pictures: NNN.png, 320x180, values above 1.0 shown as white.\n\n");
     return 1;
 }
