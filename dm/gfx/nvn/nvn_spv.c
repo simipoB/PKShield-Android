@@ -502,3 +502,35 @@ uint32_t *spv_gather_bias(const uint32_t *code, size_t words, size_t *out_words)
     if (!done) { free(o); return NULL; }
     o[3] = next; *out_words = w; return o;
 }
+
+// Float controls (SPV_KHR_float_controls): a copy whose entry points ask for SignedZeroInfNanPreserve on 32-bit floats. Without it a driver may assume no value is ever
+// infinite or NaN and optimize on that: ARM's Mali driver then drops the translated shaders' NaN guards (mix(x, 0, isnan(x)) before each texture read) and reorders
+// maths that Maxwell evaluates exactly; the lit scene came out at the format's maximum on every Mali-G615 / G720 / G925 with ARM's driver, while PanVK on the same
+// GPUs and every other driver drew it. NULL when the module already asks for it or is not one to patch
+uint32_t *spv_float_controls(const uint32_t *code, size_t words, size_t *out_words) {
+    enum { OpExtension = 10, OpCapability = 17, OpEntryPoint = 15, OpExecutionMode = 16, OpExecutionModeId = 331, OpMemoryModel = 14, OpExtInstImport = 11,
+           CapSZINP = 4466, ModeSZINP = 4461 };
+    if (words < 5 || code[0] != 0x07230203u) return NULL;
+    size_t last_cap = 0, last_ext = 0, last_mode = 0, nep = 0; int has_cap = 0, has_ext = 0;
+    uint32_t ep[16];
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) return NULL; const uint32_t *x = code + i;
+        if (op == OpCapability && n == 2) { last_cap = i + n; if (x[1] == CapSZINP) has_cap = 1; }
+        else if (op == OpExtension) { last_ext = i + n; if (n >= 2 && strstr((const char *)(x + 1), "float_controls")) has_ext = 1; }
+        else if (op == OpEntryPoint && n >= 3) { if (nep < 16) ep[nep++] = x[2]; last_mode = i + n; }
+        else if (op == OpExecutionMode || op == OpExecutionModeId) { if (n >= 4 && x[2] == ModeSZINP) return NULL; last_mode = i + n; }
+        else if (op == 54 /* OpFunction */) break;
+        i += n; }
+    if (!nep || !last_cap || !last_mode) return NULL;
+    static const char ext[] = "SPV_KHR_float_controls"; uint32_t extw = (uint32_t)((sizeof ext + 3) / 4);   // the string with its nul, in whole words
+    int need_ext = !has_ext && code[1] < 0x10400;   // SPIR-V 1.4 has it in the core
+    size_t add = (has_cap ? 0 : 2) + (need_ext ? 1 + extw : 0) + 4 * nep;
+    uint32_t *o = malloc(4 * (words + add)); if (!o) return NULL;
+    size_t w = 0, ins_ext = last_ext > last_cap ? last_ext : last_cap;
+    for (size_t i = 0; i < words;) {
+        size_t n = i < 5 ? 5 : code[i] >> 16; memcpy(o + w, code + i, 4 * n); w += n; i += n;
+        if (i == last_cap && !has_cap) { o[w++] = 2u << 16 | OpCapability; o[w++] = CapSZINP; }
+        if (i == ins_ext && need_ext) { o[w++] = (1 + extw) << 16 | OpExtension; memset(o + w, 0, 4 * extw); memcpy(o + w, ext, sizeof ext); w += extw; }
+        if (i == last_mode) for (size_t k = 0; k < nep; k++) { o[w++] = 4u << 16 | OpExecutionMode; o[w++] = ep[k]; o[w++] = ModeSZINP; o[w++] = 32; }
+    }
+    *out_words = w; return o;
+}
