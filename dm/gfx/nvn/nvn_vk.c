@@ -354,7 +354,7 @@ void mtl_init(void) {
                     .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main" } };
                 tr = vkCreateComputePipelines(g_dev, VK_NULL_HANDLE, 1, &ci, NULL, &pp);
             }
-            if (pp) vkDestroyPipeline(g_dev, pp, NULL); if (pl) vkDestroyPipelineLayout(g_dev, pl, NULL); if (m) vkDestroyShaderModule(g_dev, m, NULL); free(c);
+            if (pp) vkDestroyPipeline(g_dev, pp, NULL); if (pl) { PFN_vkDestroyPipelineLayout dpl = (PFN_vkDestroyPipelineLayout)vkGetDeviceProcAddr(g_dev, "vkDestroyPipelineLayout"); if (dpl) dpl(g_dev, pl, NULL); } if (m) vkDestroyShaderModule(g_dev, m, NULL); free(c);
             if (tr != VK_SUCCESS) { g_fctl = 0; VLOG("[RED] float controls: the driver refused a test shader asking for them (%d): not this start", (int)tr); }
         }
     }
