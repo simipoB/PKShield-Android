@@ -137,6 +137,7 @@ static void *vk_open(void) {
 #define VK_LOAD_G(f) f = (PFN_##f)vkGetInstanceProcAddr(NULL, #f);
 #define VK_LOAD_I(f) f = (PFN_##f)vkGetInstanceProcAddr(g_inst, #f);
 static int g_bcgpu;   // the BC layer is on (mtl_init)
+static int g_fctl_ext, g_drvprops_ext;   // a Vulkan 1.1 driver with VK_KHR_shader_float_controls / VK_KHR_driver_properties (enabled at device creation)
 static int g_fctl;    // every shader asks for SignedZeroInfNanPreserve (spv_float_controls; mtl_init decides)
 static void vk_logf(const char *f, ...) { va_list a; va_start(a, f); fputs("[dm] [nvn-vk] ", stderr); vfprintf(stderr, f, a); fputc('\n', stderr); va_end(a); }
 static uint32_t g_instance_api = VK_API_VERSION_1_3;   // the instance's apiVersion (mtl_init)
@@ -211,6 +212,9 @@ void mtl_init(void) {
         for (unsigned k = 0; k < sizeof need / sizeof *need; k++) { if (!has_ext(de, nde, need[k])) VDIE("Vulkan %u.%u device without %s", VK_API_VERSION_MAJOR(g_api), VK_API_VERSION_MINOR(g_api), need[k]); dext[ndext++] = need[k]; }
         if (old11) for (unsigned k = 0; k < sizeof deps11 / sizeof *deps11; k++) if (has_ext(de, nde, deps11[k])) dext[ndext++] = deps11[k];
         VLOG("Vulkan %u.%u device: dynamic rendering, timeline semaphores and extended dynamic state through their extensions", VK_API_VERSION_MAJOR(g_api), VK_API_VERSION_MINOR(g_api));
+        // float controls and the driver's identity (the Mali white fix, spv_float_controls) are extensions on a Vulkan 1.1 driver: older Mali-G52 / G72 / G76 phones
+        if (old11) { if (has_ext(de, nde, "VK_KHR_shader_float_controls")) { dext[ndext++] = "VK_KHR_shader_float_controls"; g_fctl_ext = 1; }
+                     if (has_ext(de, nde, "VK_KHR_driver_properties")) { dext[ndext++] = "VK_KHR_driver_properties"; g_drvprops_ext = 1; } }
     }
     // DM_VK_AS_MALI=1: this GPU takes the routes a Mali-G615 / G720 takes (no BC textures: transcoded on upload; no push descriptors, depth clip control, vertex divisor
     //   or host import; pools on dma-bufs from Android's heap), so what goes wrong there shows on a phone at hand (#47, #53, #55). Each still has its own DM_VK_ switch
@@ -335,11 +339,13 @@ void mtl_init(void) {
     //   came out the same as the CPU's on this GPU; the rest on the CPU as before (DM_VK_BC_GPU=0: all of it)
     // Float controls (spv_float_controls): ARM's own Mali driver gets every shader with SignedZeroInfNanPreserve, where it supports it. Without it the lit scene came out
     //   at the format's maximum on Mali-G615 / G720 / G925 (#47 #53 #64 #68 #69 #72); PanVK on the same GPUs drew it right. DM_VK_FLOAT_CONTROLS=0 / 1 decides on any driver
-    if (g_api >= VK_API_VERSION_1_2) {
+    if (g_api >= VK_API_VERSION_1_2 || g_fctl_ext) {   // (Vulkan 1.1: through the extensions, same structures)
+        int drvp = g_api >= VK_API_VERSION_1_2 || g_drvprops_ext;
         VkPhysicalDeviceDriverProperties dp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
-        VkPhysicalDeviceFloatControlsProperties fc = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES, .pNext = &dp };
+        VkPhysicalDeviceFloatControlsProperties fc = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES, .pNext = drvp ? &dp : NULL };
         VkPhysicalDeviceProperties2 pp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &fc }; vkGetPhysicalDeviceProperties2(g_pd, &pp);
-        const char *e = getenv("DM_VK_FLOAT_CONTROLS"); int arm = dp.driverID == VK_DRIVER_ID_ARM_PROPRIETARY;
+        if (!drvp) snprintf(dp.driverName, sizeof dp.driverName, "%s", g_props.vendorID == 0x13B5 ? "Mali (no driver properties: taken as ARM's)" : "unknown");
+        const char *e = getenv("DM_VK_FLOAT_CONTROLS"); int arm = drvp ? dp.driverID == VK_DRIVER_ID_ARM_PROPRIETARY : g_props.vendorID == 0x13B5;
         g_fctl = fc.shaderSignedZeroInfNanPreserveFloat32 && (e ? atoi(e) != 0 : arm);
         VLOG("driver %s (id %d)%s; shaders keep infinities and NaN (float controls): %s", dp.driverName, (int)dp.driverID, arm ? ", ARM's own" : "",
              g_fctl ? "asked for" : !fc.shaderSignedZeroInfNanPreserveFloat32 ? "not supported" : "not asked for");
