@@ -1058,6 +1058,7 @@ typedef struct vtex {
 } vtex;
 static _Atomic int g_cap;   // the frame capture's state (Frame capture, before pass_end)
 static void cap_tex(int tid, const tex_t *t, const vtex *x, int vfmt, VkFormat f);
+static void cap_printf(const char *f, ...);
 static pthread_mutex_t g_smu = PTHREAD_MUTEX_INITIALIZER;   // serial / sharing / CPU-written tables
 static nvn_hmap g_by_serial = {.klen = 8}, g_ghost = {.klen = 8}, g_tex_live = {.klen = 8}, g_cpu_tex = {.klen = 8};
 enum { NGHOST = 512 }; static uint64_t g_ghost_ring[NGHOST]; static unsigned g_ghost_next;
@@ -1538,7 +1539,8 @@ static VkImageView tex_view_for(int tid, const spv_res *r, int storage) {
     }
     VkFormat f = x->fmt; uint8_t fsw[4]; memcpy(fsw, x->fswz, 4);
     if (rg.has_v && rg.v.set_format) { uint32_t vf = 0; uint8_t s2[4]; if (nvn_fmt_to_vk(rg.v.format, &vf, s2) && vf) { f = (VkFormat)vf; memcpy(fsw, s2, 4); } }
-    if (atomic_load(&g_cap) == 2 && !storage) cap_tex(tid, &rg.t, x, rg.has_v && rg.v.set_format && rg.v.format != rg.t.d.format ? (int)rg.v.format : 0, f);
+    if (atomic_load(&g_cap) == 2) { if (storage) cap_printf("  writes image %d: nvn %#x, image vk %d %ux%u, viewed as vk %d\n", tid, rg.t.d.format, x->fmt, x->w, x->h, f);
+        else cap_tex(tid, &rg.t, x, rg.has_v && rg.v.set_format && rg.v.format != rg.t.d.format ? (int)rg.v.format : 0, f); }
     uint32_t l0 = rg.has_v && rg.v.set_levels ? rg.v.base_level : 0, nl = rg.has_v && rg.v.set_levels && rg.v.nlevels ? rg.v.nlevels : x->levels + x->drop - (l0 < x->levels + x->drop ? l0 : 0);
     if (x->drop) { uint32_t d = l0 < (uint32_t)x->drop ? l0 : (uint32_t)x->drop; l0 -= d; if (nl > (uint32_t)x->drop - d) nl -= (uint32_t)x->drop - d; }   // the game's level n is the image's n - drop
     uint32_t s0 = rg.has_v && rg.v.set_layers ? rg.v.min_layer : 0, ns = rg.has_v && rg.v.set_layers && rg.v.nlayers ? rg.v.nlayers : x->layers - (s0 < x->layers ? s0 : 0);
@@ -1915,7 +1917,17 @@ static VkCommandBuffer CB(void) { return g_sub->cb; }
 // by the in-game menu (Bug reports: it writes capture.req in the game's folder, holding how many frames to wait first) or DM_VK_CAPTURE_AT=<present number>; written
 // as frame-capture.zip in the game's folder and in Download/. Nothing runs or is kept while not asked for. The Mali white scenes (#47, #53, #56) show no error in the
 // log: the pictures show which pass goes white, the notes what it read
-enum { CAPN = 192, CAPW = 320, CAPH = 180 };
+enum { CAPN = 192, CAPW = 320, CAPH = 180, CAPS = 256, CAPP = 12 };   // CAPS targets sampled, CAPP points each (4 x 3), 16 bytes a point
+static int g_cap_ns; static VkFormat g_cap_sfmt[CAPS]; static char g_cap_slabel[CAPS][40];
+static uint32_t fmt_texel_bytes(VkFormat f) {   // the formats render targets come in here; 0: not sampled
+    switch ((int)f) {
+    case 37: case 43: case 44: case 50: case 64: case 122: case 100: case 98: case 99: case 82: case 83: return 4;   // RGBA8 / BGRA8 (+sRGB), A2B10G10R10, B10G11R11, R32 F / UI / SI, RG16 F / U
+    case 97: case 95: case 96: case 103: case 101: case 102: case 91: return 8;   // RGBA16 F / UI / SI, RG32 F / UI / SI, RGBA16 unorm
+    case 109: case 107: case 108: return 16;   // RGBA32 F / UI / SI
+    case 76: case 75: case 9: case 16: return f == 9 ? 1 : 2;   // R16 F / UNORM, R8, RG8
+    }
+    return 0;
+}
 static _Atomic int g_cap;   // (declared with vtex too) 0 off, 1 armed (g_cap_wait more presents first), 2 recording this frame, 3 recorded: written at the next present
 static int g_cap_wait, g_cap_n, g_cap_layout, g_cap_draws, g_cap_ntex; static int g_cap_tex[64];
 static VkImage g_cap_img; static vmalloc_t g_cap_ia; static VkBuffer g_cap_buf; static vmalloc_t g_cap_ba;
@@ -1930,10 +1942,10 @@ static int cap_start(void) {
         .arrayLayers = CAPN, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT };
     if (vkCreateImage(g_dev, &ci, NULL, &g_cap_img)) return 0;
     VkMemoryRequirements rq; vkGetImageMemoryRequirements(g_dev, g_cap_img, &rq); g_cap_ia = vk_alloc(rq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0); vkBindImageMemory(g_dev, g_cap_img, g_cap_ia.b->mem, g_cap_ia.off);
-    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)CAPN * CAPW * CAPH * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)CAPN * CAPW * CAPH * 4 + (VkDeviceSize)CAPS * CAPP * 16, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
     if (vkCreateBuffer(g_dev, &bi, NULL, &g_cap_buf)) { vkDestroyImage(g_dev, g_cap_img, NULL); vk_free(g_cap_ia); return 0; }
     vkGetBufferMemoryRequirements(g_dev, g_cap_buf, &rq); g_cap_ba = vk_alloc(rq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1); vkBindBufferMemory(g_dev, g_cap_buf, g_cap_ba.b->mem, g_cap_ba.off);
-    g_cap_n = 0; g_cap_layout = 0; g_cap_draws = 0; g_cap_ntex = 0; g_cap_len = 0;
+    g_cap_n = 0; g_cap_layout = 0; g_cap_draws = 0; g_cap_ntex = 0; g_cap_len = 0; g_cap_ns = 0;
     cap_printf("Frame capture, present %llu. GPU %s (vendor %#x, driver %#x, Vulkan %u.%u). BC textures %s; BC layer %s.\n", (unsigned long long)g_cap_frame, g_props.deviceName, g_props.vendorID,
                g_props.driverVersion, VK_API_VERSION_MAJOR(g_props.apiVersion), VK_API_VERSION_MINOR(g_props.apiVersion),
                nvn_fmt_vk_transcode(0x46) ? "transcoded on upload" : nvn_fmt_vk_decode(0x46) ? "decoded on upload" : "sampled by the GPU", g_bcgpu ? "on" : "off");
@@ -1950,6 +1962,17 @@ static void cap_pass(void) {
         VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_pd, x->fmt, &fp);
         const char *skip = x->samples > 1 ? "multisampled" : fmt_int_class(x->fmt) ? "integer format" : !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) ? "format cannot be blitted" : g_cap_n >= CAPN ? "no room left" : NULL;
         cap_printf("  colour %d: vk %d (nvn %#x) %ux%u level %u layer %u%s", i, x->fmt, ct->d.format, x->w, x->h, lv, ly, x->is3d ? " (3D)" : "");
+        {   uint32_t tb = fmt_texel_bytes(x->fmt);
+            if (tb && x->samples <= 1 && g_cap_ns < CAPS) {   // values.txt: the pixels' own numbers (the pictures clamp everything above 1.0 to white)
+                uint32_t sw = x->w >> lv ? x->w >> lv : 1, sh = x->h >> lv ? x->h >> lv : 1; VkBufferImageCopy pc[CAPP];
+                for (int k = 0; k < CAPP; k++) pc[k] = (VkBufferImageCopy){ .bufferOffset = (VkDeviceSize)CAPN * CAPW * CAPH * 4 + ((VkDeviceSize)g_cap_ns * CAPP + (VkDeviceSize)k) * 16,
+                    .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, lv, x->is3d ? 0 : ly, 1 }, .imageOffset = { (int32_t)(sw * (uint32_t)(1 + 2 * (k % 4)) / 8), (int32_t)(sh * (uint32_t)(1 + 2 * (k / 4)) / 6), x->is3d ? (int32_t)ly : 0 },
+                    .imageExtent = { 1, 1, 1 } };
+                barrier_all(cb); vkCmdCopyImageToBuffer(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, g_cap_buf, CAPP, pc); barrier_all(cb);
+                g_cap_sfmt[g_cap_ns] = x->fmt; snprintf(g_cap_slabel[g_cap_ns], sizeof g_cap_slabel[0], skip ? "colour %d of the pass before %03d" : "%03d.png", skip ? i : g_cap_n, g_cap_n);
+                cap_printf(" [values #%d]", g_cap_ns); g_cap_ns++;
+            }
+        }
         if (skip) { cap_printf(", no picture (%s)\n", skip); continue; }
         if (!g_cap_layout) { g_cap_layout = 1;
             VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1984,7 +2007,36 @@ static void cap_write(void) {
     fczip *z = fczip_open(path); int ok = z != NULL;
     if (z) {
         for (int i = 0; i < g_cap_n; i++) { char nm[32]; snprintf(nm, sizeof nm, "%03d.png", i); ok &= fczip_add_png(z, nm, px + (size_t)i * CAPW * CAPH * 4, CAPW, CAPH); }
-        ok &= fczip_add(z, "passes.txt", g_cap_meta ? g_cap_meta : "", g_cap_len); ok &= fczip_close(z);
+        ok &= fczip_add(z, "passes.txt", g_cap_meta ? g_cap_meta : "", g_cap_len);
+        {   // values.txt: each sampled target's 12 points (4 columns x 3 rows, left to right then top to bottom), decoded from its format
+            size_t cap = 4096 + (size_t)g_cap_ns * CAPP * 96, len = 0; char *t = malloc(cap); const uint8_t *sv = px + (size_t)CAPN * CAPW * CAPH * 4;
+            if (t) {
+                len += (size_t)snprintf(t + len, cap - len, "Pixel values at 12 points of each target (4 columns x 3 rows, left to right, top to bottom). inf / nan: not a number.\n");
+                for (int i = 0; i < g_cap_ns && len + 2048 < cap; i++) {
+                    len += (size_t)snprintf(t + len, cap - len, "\n#%d %s, vk %d:\n", i, g_cap_slabel[i], g_cap_sfmt[i]);
+                    for (int k = 0; k < CAPP; k++) {
+                        const uint8_t *q = sv + ((size_t)i * CAPP + (size_t)k) * 16; float v[4] = { 0 }; int nv = 4, isint = 0; uint32_t u[4] = { 0 };
+                        switch ((int)g_cap_sfmt[i]) {
+                        case 122: { uint32_t w; memcpy(&w, q, 4); uint32_t c[3] = { w & 0x7ff, w >> 11 & 0x7ff, w >> 22 }; int mb[3] = { 6, 6, 5 };
+                            for (int j = 0; j < 3; j++) { uint32_t e = c[j] >> mb[j], m = c[j] & ((1u << mb[j]) - 1); v[j] = e == 31 ? (m ? NAN : INFINITY) : e ? ldexpf(1.0f + m / (float)(1u << mb[j]), (int)e - 15) : ldexpf(m / (float)(1u << mb[j]), -14); }
+                            nv = 3; break; }
+                        case 97: case 76: case 83: { int n = g_cap_sfmt[i] == 97 ? 4 : g_cap_sfmt[i] == 83 ? 2 : 1; for (int j = 0; j < n; j++) { uint16_t h; memcpy(&h, q + 2 * j, 2); uint32_t e = h >> 10 & 31, m = h & 1023;
+                            float f = e == 31 ? (m ? NAN : INFINITY) : e ? ldexpf(1.0f + m / 1024.0f, (int)e - 15) : ldexpf(m / 1024.0f, -14); v[j] = h & 0x8000 ? -f : f; } nv = n; break; }
+                        case 100: case 103: case 109: { int n = g_cap_sfmt[i] == 100 ? 1 : g_cap_sfmt[i] == 103 ? 2 : 4; memcpy(v, q, 4 * (size_t)n); nv = n; break; }
+                        case 95: case 96: case 91: { for (int j = 0; j < 4; j++) { uint16_t h; memcpy(&h, q + 2 * j, 2); u[j] = h; } isint = 1; break; }
+                        case 98: case 99: case 107: case 108: case 101: case 102: { int n = g_cap_sfmt[i] >= 107 ? 4 : g_cap_sfmt[i] >= 101 ? 2 : 1; memcpy(u, q, 4 * (size_t)n); nv = n; isint = 1; break; }
+                        case 64: { uint32_t w; memcpy(&w, q, 4); v[0] = (w & 1023) / 1023.0f; v[1] = (w >> 10 & 1023) / 1023.0f; v[2] = (w >> 20 & 1023) / 1023.0f; v[3] = (w >> 30) / 3.0f; break; }
+                        default: { uint32_t tb = fmt_texel_bytes(g_cap_sfmt[i]); nv = (int)tb; for (int j = 0; j < nv && j < 4; j++) v[j] = q[j] / 255.0f; if (nv > 4) nv = 4; }
+                        }
+                        len += (size_t)snprintf(t + len, cap - len, "  (");
+                        for (int j = 0; j < nv; j++) len += isint ? (size_t)snprintf(t + len, cap - len, "%s%u", j ? ", " : "", u[j]) : (size_t)snprintf(t + len, cap - len, "%s%.4g", j ? ", " : "", v[j]);
+                        len += (size_t)snprintf(t + len, cap - len, ")%s", k % 4 == 3 ? "\n" : " ");
+                    }
+                }
+                ok &= fczip_add(z, "values.txt", t, len); free(t);
+            }
+        }
+        ok &= fczip_close(z);
     }
     VLOG("frame capture: %d pictures%s %s", g_cap_n, ok ? ", written to" : ", could NOT be written to", path);
     if (ok) {   // a copy in Download/, where a player finds it (when the app may write there)
@@ -2715,6 +2767,7 @@ static void dispatch(const p_dispatch *dp) {
         nvn_hm_put(&g_cps, &key, p); }
     outside_pass();
     VkCommandBuffer cb = CB();
+    if (atomic_load(&g_cap) == 2) { cap_printf("compute dispatch %ux%ux%u%s: shader %s\n", (unsigned)dp->x, (unsigned)dp->y, (unsigned)dp->z, dp->ind ? " (indirect)" : "", cs->key); g_cap_ntex = 0; }
     g_dispatch_dim[0] = (uint32_t)dp->x; g_dispatch_dim[1] = (uint32_t)dp->y; g_dispatch_dim[2] = (uint32_t)dp->z; g_c0_buf = VK_NULL_HANDLE;
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     push_stage(cs, 5, VK_PIPELINE_BIND_POINT_COMPUTE, pl);
