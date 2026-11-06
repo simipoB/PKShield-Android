@@ -343,6 +343,20 @@ void mtl_init(void) {
         g_fctl = fc.shaderSignedZeroInfNanPreserveFloat32 && (e ? atoi(e) != 0 : arm);
         VLOG("driver %s (id %d)%s; shaders keep infinities and NaN (float controls): %s", dp.driverName, (int)dp.driverID, arm ? ", ARM's own" : "",
              g_fctl ? "asked for" : !fc.shaderSignedZeroInfNanPreserveFloat32 ? "not supported" : "not asked for");
+        if (g_fctl) {   // a self-test: an empty compute shader patched the same way must make a pipeline, else this start goes without (the game's shaders would fail one by one)
+            static const uint32_t tiny[] = { 0x07230203, 0x00010300, 0, 5, 0, 2u << 16 | 17, 1, 3u << 16 | 14, 0, 1, 5u << 16 | 15, 5, 1, 0x6e69616d, 0, 6u << 16 | 16, 1, 17, 1, 1, 1,
+                                             2u << 16 | 19, 2, 3u << 16 | 33, 3, 2, 5u << 16 | 54, 2, 1, 0, 3, 2u << 16 | 248, 4, 1u << 16 | 253, 1u << 16 | 56 };
+            size_t nw; uint32_t *c = spv_float_controls(tiny, sizeof tiny / 4, &nw); VkShaderModule m = VK_NULL_HANDLE; VkPipelineLayout pl = VK_NULL_HANDLE; VkPipeline pp = VK_NULL_HANDLE; VkResult tr = VK_ERROR_UNKNOWN;
+            VkShaderModuleCreateInfo mci = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nw * 4, .pCode = c };
+            VkPipelineLayoutCreateInfo pli = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            if (c && !vkCreateShaderModule(g_dev, &mci, NULL, &m) && !vkCreatePipelineLayout(g_dev, &pli, NULL, &pl)) {
+                VkComputePipelineCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = pl,
+                    .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main" } };
+                tr = vkCreateComputePipelines(g_dev, VK_NULL_HANDLE, 1, &ci, NULL, &pp);
+            }
+            if (pp) vkDestroyPipeline(g_dev, pp, NULL); if (pl) vkDestroyPipelineLayout(g_dev, pl, NULL); if (m) vkDestroyShaderModule(g_dev, m, NULL); free(c);
+            if (tr != VK_SUCCESS) { g_fctl = 0; VLOG("[RED] float controls: the driver refused a test shader asking for them (%d): not this start", (int)tr); }
+        }
     }
     if (!f2.features.textureCompressionBC) { bc_gpu_info bi = { g_dev, g_q, g_qf, vkGetDeviceProcAddr, &g_memp, vk_logf }; g_bcgpu = bc_gpu_init(&bi); }
     if (g_host_import) {
