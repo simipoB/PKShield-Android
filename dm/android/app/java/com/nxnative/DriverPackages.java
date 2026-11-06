@@ -15,6 +15,7 @@ import java.util.zip.ZipInputStream;
 final class DriverPackages {
     private DriverPackages() { }
     static final String TURNIP_RELEASES = "https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases";
+    static final String RADV_XCLIPSE_RELEASES = "https://github.com/JimVulkan/radv-xclipse/releases";
     static final String PANVK_RELEASES = "https://github.com/FristOneRR/FristOneRR-Panvk-Driver/releases";
 
     static File root(Context c) { return new File(c.getFilesDir(), "drivers"); }
@@ -90,6 +91,10 @@ final class DriverPackages {
             return new String[] { "Get Turnip for Adreno (StevenMXZ's releases: pick a " + (a8 ? "\"Turnip Gen8\" build for this Adreno 8xx)" : "\"Turnip v…-R\" build)"), TURNIP_RELEASES }; }
         if (gpu.matches(".*mali-g(57|68|77|78|52|72|76).*")) return new String[] { "Get PanVK for Mali (FristOneRR's releases)", PANVK_RELEASES };
         // (not offered for Valhall, G610 / G615 / G710 / G715: PanVK on a Mali-G615 gave a black picture at 0 fps, #71)
+        // Mesa RADV built for Samsung's Xclipse (JimVulkan's radv-xclipse): Xclipse 920 / 940 / 530 / 540 / 550 / 950 / 960, Android 14 and newer; its zip (meta.json naming
+        //   vulkan.radeon.so) installs as any package here. Not yet tried with this app: offered as experimental (#76 asked for it on an Xclipse 530)
+        if (gpu.matches(".*xclipse[^0-9]*(920|940|530|540|550|950|960).*") && android.os.Build.VERSION.SDK_INT >= 34)
+            return new String[] { "Get RADV for Xclipse (JimVulkan's releases; experimental with this app)", RADV_XCLIPSE_RELEASES };
         return null;
     }
     // Mesa Turnip's own switches (TU_DEBUG, read by the driver from the environment: env.txt), offered while a Turnip package is the driver. They do on any Turnip build
