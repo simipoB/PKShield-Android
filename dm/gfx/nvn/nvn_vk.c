@@ -1935,6 +1935,10 @@ static uint32_t fmt_texel_bytes(VkFormat f) {   // the formats render targets co
 }
 static _Atomic int g_cap;   // (declared with vtex too) 0 off, 1 armed (g_cap_wait more presents first), 2 recording this frame, 3 recorded: written at the next present
 static int g_cap_wait, g_cap_n, g_cap_layout, g_cap_draws, g_cap_ntex; static int g_cap_tex[64];
+// Draw by draw (values.txt): in the frame's first full-screen B10G11R11 pass (the lit scene), colour 0's 12 points after each of its first CAPD draws, and each draw's
+//   fragment shader: on a GPU whose scene comes out white (Mali, #47 / #53 / #64 / #68 / #69) the first draw that leaves them at the format's maximum names the shader
+enum { CAPD = 128 };
+static int g_cap_dp, g_cap_nd; static char g_cap_dkey[CAPD][17];   // g_cap_dp: 0 not chosen yet, 1 in that pass, 2 done
 static VkImage g_cap_img; static vmalloc_t g_cap_ia; static VkBuffer g_cap_buf; static vmalloc_t g_cap_ba;
 static char *g_cap_meta; static size_t g_cap_len, g_cap_size; static uint64_t g_cap_frame;
 static void cap_printf(const char *f, ...) {
@@ -1947,10 +1951,10 @@ static int cap_start(void) {
         .arrayLayers = CAPN, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT };
     if (vkCreateImage(g_dev, &ci, NULL, &g_cap_img)) return 0;
     VkMemoryRequirements rq; vkGetImageMemoryRequirements(g_dev, g_cap_img, &rq); g_cap_ia = vk_alloc(rq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0); vkBindImageMemory(g_dev, g_cap_img, g_cap_ia.b->mem, g_cap_ia.off);
-    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)CAPN * CAPW * CAPH * 4 + (VkDeviceSize)CAPS * CAPP * 16, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
+    VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)CAPN * CAPW * CAPH * 4 + (VkDeviceSize)CAPS * CAPP * 16 + (VkDeviceSize)CAPD * CAPP * 16, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
     if (vkCreateBuffer(g_dev, &bi, NULL, &g_cap_buf)) { vkDestroyImage(g_dev, g_cap_img, NULL); vk_free(g_cap_ia); return 0; }
     vkGetBufferMemoryRequirements(g_dev, g_cap_buf, &rq); g_cap_ba = vk_alloc(rq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1); vkBindBufferMemory(g_dev, g_cap_buf, g_cap_ba.b->mem, g_cap_ba.off);
-    g_cap_n = 0; g_cap_layout = 0; g_cap_draws = 0; g_cap_ntex = 0; g_cap_len = 0; g_cap_ns = 0;
+    g_cap_n = 0; g_cap_layout = 0; g_cap_draws = 0; g_cap_ntex = 0; g_cap_len = 0; g_cap_ns = 0; g_cap_dp = 0; g_cap_nd = 0;
     cap_printf("Frame capture, present %llu. GPU %s (vendor %#x, driver %#x, Vulkan %u.%u). BC textures %s; BC layer %s.\n", (unsigned long long)g_cap_frame, g_props.deviceName, g_props.vendorID,
                g_props.driverVersion, VK_API_VERSION_MAJOR(g_props.apiVersion), VK_API_VERSION_MINOR(g_props.apiVersion),
                nvn_fmt_vk_transcode(0x46) ? "transcoded on upload" : nvn_fmt_vk_decode(0x46) ? "decoded on upload" : "sampled by the GPU", g_bcgpu ? "on" : "off");
@@ -1994,7 +1998,7 @@ static void cap_pass(void) {
         barrier_all(cb);
         cap_printf(" -> %03d.png\n", g_cap_n); g_cap_n++;
     }
-    (void)idx_first; g_cap_draws = 0; g_cap_ntex = 0;
+    (void)idx_first; g_cap_draws = 0; g_cap_ntex = 0; if (g_cap_dp == 1) g_cap_dp = 2;
 }
 // a texture a draw of the recording frame reads: noted once a pass
 static void cap_tex(int tid, const tex_t *t, const vtex *x, int vfmt, VkFormat f) {
@@ -2014,7 +2018,7 @@ static void cap_write(void) {
         for (int i = 0; i < g_cap_n; i++) { char nm[32]; snprintf(nm, sizeof nm, "%03d.png", i); ok &= fczip_add_png(z, nm, px + (size_t)i * CAPW * CAPH * 4, CAPW, CAPH); }
         ok &= fczip_add(z, "passes.txt", g_cap_meta ? g_cap_meta : "", g_cap_len);
         {   // values.txt: each sampled target's 12 points (4 columns x 3 rows, left to right then top to bottom), decoded from its format
-            size_t cap = 4096 + (size_t)g_cap_ns * CAPP * 96, len = 0; char *t = malloc(cap); const uint8_t *sv = px + (size_t)CAPN * CAPW * CAPH * 4;
+            size_t cap = 4096 + (size_t)g_cap_ns * CAPP * 96 + (size_t)CAPD * 640, len = 0; char *t = malloc(cap); const uint8_t *sv = px + (size_t)CAPN * CAPW * CAPH * 4;
             if (t) {
                 len += (size_t)snprintf(t + len, cap - len, "Pixel values at 12 points of each target (4 columns x 3 rows, left to right, top to bottom). inf / nan: not a number.\n");
                 for (int i = 0; i < g_cap_ns && len + 2048 < cap; i++) {
@@ -2036,6 +2040,20 @@ static void cap_write(void) {
                         len += (size_t)snprintf(t + len, cap - len, "  (");
                         for (int j = 0; j < nv; j++) len += isint ? (size_t)snprintf(t + len, cap - len, "%s%u", j ? ", " : "", u[j]) : (size_t)snprintf(t + len, cap - len, "%s%.4g", j ? ", " : "", v[j]);
                         len += (size_t)snprintf(t + len, cap - len, ")%s", k % 4 == 3 ? "\n" : " ");
+                    }
+                }
+                if (g_cap_nd && len + 512 < cap) {   // draw by draw in the first lit pass (cap_draw_values): colour 0 (B10G11R11) after each draw
+                    const uint8_t *dv = sv + (size_t)CAPS * CAPP * 16;
+                    len += (size_t)snprintf(t + len, cap - len, "\nDraw by draw, the frame's first full-screen B10G11R11 pass: its colour 0 at the same 12 points after each of its first %d draws."
+                                                                 "\n'max' counts the points at the format's maximum (65024: overflow); then the fragment shader and the 12 values.\n", g_cap_nd);
+                    for (int d = 0; d < g_cap_nd && len + 1024 < cap; d++) {
+                        float v[CAPP][3]; int nmax = 0;
+                        for (int k = 0; k < CAPP; k++) { uint32_t w; memcpy(&w, dv + ((size_t)d * CAPP + (size_t)k) * 16, 4); uint32_t c[3] = { w & 0x7ff, w >> 11 & 0x7ff, w >> 22 }; int mb[3] = { 6, 6, 5 };
+                            for (int j = 0; j < 3; j++) { uint32_t e = c[j] >> mb[j], m = c[j] & ((1u << mb[j]) - 1); v[k][j] = e == 31 ? (m ? NAN : INFINITY) : e ? ldexpf(1.0f + m / (float)(1u << mb[j]), (int)e - 15) : ldexpf(m / (float)(1u << mb[j]), -14); }
+                            if (v[k][0] >= 6e4f || v[k][1] >= 6e4f || v[k][2] >= 6e4f || isnan(v[k][0]) || isnan(v[k][1]) || isnan(v[k][2])) nmax++; }
+                        len += (size_t)snprintf(t + len, cap - len, "draw %3d, max %2d, fragment %s:", d + 1, nmax, g_cap_dkey[d]);
+                        for (int k = 0; k < CAPP; k++) len += (size_t)snprintf(t + len, cap - len, " (%.3g %.3g %.3g)", v[k][0], v[k][1], v[k][2]);
+                        len += (size_t)snprintf(t + len, cap - len, "\n");
                     }
                 }
                 ok &= fczip_add(z, "values.txt", t, len); free(t);
@@ -2559,7 +2577,14 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
                         // address) reads past the bound size into the memory that follows, and Shield's lighting reads there (bound at the exact size, the scene came out at half brightness)
                         VkDeviceSize want = left, cap = r->kind == SPV_RES_UBO ? g_props.limits.maxUniformBufferRange : g_props.limits.maxStorageBufferRange; (void)size;
                         if (want > left) want = left; if (want > cap) want = cap;
-                        if (po % al == 0) { b = pb; o = po; n = want; }
+                        // DM_VK_UBO_SNAPSHOT=1 (diagnosis, Mali white #47 / #53 / #64 / #68): every uniform buffer copied when its draw is recorded, as Adreno's 64-byte alignment makes
+                        //   most of them, instead of the GPU reading the pool live; the game's bound size + 4 KB (what the lighting reads past it), at most 64 KB
+                        static int ubo_snap = -1; if (ubo_snap < 0) { const char *e = getenv("DM_VK_UBO_SNAPSHOT"); ubo_snap = e && atoi(e); if (ubo_snap) VLOG("DM_VK_UBO_SNAPSHOT: uniform buffers copied at record time"); }
+                        if (ubo_snap && r->kind == SPV_RES_UBO) {
+                            VkDeviceSize m = size ? size + 4096 : 65536; if (m > want) m = want; if (m > 65536) m = 65536;
+                            uint8_t *d = arena_alloc(g_sub, m, &b, &o); memcpy(d, (const void *)(uintptr_t)addr, m); n = m;
+                        }
+                        else if (po % al == 0) { b = pb; o = po; n = want; }
                         else if (r->kind == SPV_RES_UBO) {   // misaligned uniform data: a snapshot in the arena (the GPU-side updates of this submission are in the pool already)
                             if (want > 65536) want = 65536;   // the translated shaders declare 64 KB uniform blocks: never more to copy (MoltenVK reports a range of gigabytes)
                             uint8_t *d = arena_alloc(g_sub, want, &b, &o); memcpy(d, (const void *)(uintptr_t)addr, want); n = want;
@@ -2620,9 +2645,26 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
 static int g_vprof = -1; static uint64_t g_vp_t[4], g_vp_n, g_vp_o[5];
 #define VPROF_ON (g_vprof < 0 ? (g_vprof = getenv("DM_VK_PROF") != NULL) : g_vprof)
 static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark);
+// the frame capture's draw by draw values (g_cap_dp): after a draw of the chosen pass, the pass is ended (without logging it), colour 0's 12 points copied, and the pass
+//   opened again (loading: its clears were taken when it first began). Only in the one captured frame
+static void cap_draw_values(void) {
+    if (!P.open || g_cap_nd >= CAPD) return;
+    const tex_t *ct = R.rt.color[0]; vtex *x = ct ? tex_res(ct) : NULL; if (!x || !x->img || x->samples > 1) return;
+    if (!g_cap_dp) { if (x->fmt != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || P.tw < 640) return; g_cap_dp = 1; }
+    uint32_t lv = R.rt.has_cview[0] && R.rt.cview[0].set_levels ? R.rt.cview[0].base_level : 0, ly = R.rt.has_cview[0] && R.rt.cview[0].set_layers ? R.rt.cview[0].min_layer : 0;
+    uint32_t sw = x->w >> lv ? x->w >> lv : 1, sh = x->h >> lv ? x->h >> lv : 1; VkBufferImageCopy pc[CAPP];
+    for (int k = 0; k < CAPP; k++) pc[k] = (VkBufferImageCopy){ .bufferOffset = (VkDeviceSize)CAPN * CAPW * CAPH * 4 + (VkDeviceSize)CAPS * CAPP * 16 + ((VkDeviceSize)g_cap_nd * CAPP + (VkDeviceSize)k) * 16,
+        .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, lv, x->is3d ? 0 : ly, 1 }, .imageOffset = { (int32_t)(sw * (uint32_t)(1 + 2 * (k % 4)) / 8), (int32_t)(sh * (uint32_t)(1 + 2 * (k / 4)) / 6), x->is3d ? (int32_t)ly : 0 },
+        .imageExtent = { 1, 1, 1 } };
+    vprog *cp = S.prog ? prog_get(S.prog) : NULL; snprintf(g_cap_dkey[g_cap_nd], sizeof g_cap_dkey[0], "%s", cp && cp->sh[1] ? cp->sh[1]->key : "-");
+    VkCommandBuffer cb = CB(); vkCmdEndRendering(cb); P.open = 0;
+    barrier_all(cb); vkCmdCopyImageToBuffer(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, g_cap_buf, CAPP, pc); barrier_all(cb);
+    g_cap_nd++; pass_begin();
+}
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (atomic_load(&g_cap) == 2) { g_cap_draws++;
         if (g_cap_draws <= 3 && S.prog) { vprog *cp = prog_get(S.prog); if (cp && cp->sh[0]) cap_printf("  draw %d: vertex %s fragment %s\n", g_cap_draws, cp->sh[0]->key, cp->sh[1] ? cp->sh[1]->key : "-"); } }
+    if (atomic_load(&g_cap) == 2 && g_cap_dp < 2) { draw_(dw, di, NULL); cap_draw_values(); return; }
     if (!VPROF_ON) { draw_(dw, di, NULL); return; }
     uint64_t m[5] = { mono_ns(), 0, 0, 0, 0 }; draw_(dw, di, m); uint64_t e = mono_ns();
     for (int i = 0; i < 4; i++) { uint64_t a = m[i], b = m[i + 1] ? m[i + 1] : e; if (b > a) g_vp_t[i] += b - a; if (!m[i + 1]) break; }
