@@ -30,7 +30,15 @@ final class DriverPackages {
     static String current(Context c) { return GameSettings.get(c, "DM_VK_DRIVER"); }
     static String label(String lib) { if (lib == null || lib.isEmpty()) return "the phone's own driver"; File f = new File(lib); return f.getParentFile().getName() + " (" + f.getName() + ")"; }
     static void useSystem(Context c) { setAll(c, "DM_VK_DRIVER", ""); setAll(c, "DM_VK_DRIVER_SHA256", ""); }
+    // this phone's GPU as the engine wrote it (gpu.txt, lower case; empty before the first start)
+    static String gpu(Context c) { try (BufferedReader r = new BufferedReader(new FileReader(new File(GameSettings.dir(c), "gpu.txt")))) { String l = r.readLine(); return l == null ? "" : l.toLowerCase(java.util.Locale.ROOT); } catch (IOException e) { return ""; } }
+    // a Turnip (Mesa for Adreno) package: libvulkan_freedreno.so, or the adrenotools name vulkan.adNNN.so, or a folder named after it
+    static boolean adrenoOnly(File lib) { String n = lib.getName().toLowerCase(java.util.Locale.ROOT), d = lib.getParentFile() == null ? "" : lib.getParentFile().getName().toLowerCase(java.util.Locale.ROOT);
+        return n.contains("freedreno") || n.matches("vulkan\\.ad[0-9x]+\\.so") || d.contains("turnip"); }
+    // why this package cannot drive this phone's GPU, or null: a Turnip package on a Mali / Xclipse / PowerVR phone finds no GPU (#71: every start closed at once)
+    static String mismatch(Context c, File lib) { String g = gpu(c); return adrenoOnly(lib) && !g.isEmpty() && !g.contains("adreno") ? "a Turnip driver works on Adreno GPUs only, and this phone's GPU is " + g : null; }
     static void use(Context c, File lib) {
+        if (mismatch(c, lib) != null) return;   // (the menu shows why; the engine also falls back to the phone's own driver when a driver finds no GPU)
         String sha = ""; if (MaliDriver.isPanvk(lib.getName())) try { sha = MaliDriver.sha256(lib); } catch (IOException e) { }
         setAll(c, "DM_VK_DRIVER_SHA256", sha); setAll(c, "DM_VK_DRIVER", lib.getPath());
     }
@@ -67,6 +75,8 @@ final class DriverPackages {
                 note = known != null ? "\nVerified: " + known + " (SHA-256 matches the release)."
                      : "\nNot a known FristOneRR PanVK release (SHA-256 " + zipSha.substring(0, 16) + "…): download drivers only from the developer's own Releases page.";
             }
+            String why = mismatch(c, so);
+            if (why != null) return "Driver " + name + " installed, but not used: " + why + ". The phone's own driver stays.";
             use(c, so);
             return "Driver " + name + " installed: it is used from the next start." + note;
         } catch (IOException e) { return "could not read " + name + ": " + e.getMessage(); }
@@ -85,7 +95,7 @@ final class DriverPackages {
     // what patched variants bake in (StevenMXZ's force_sysmem patch is TU_DEBUG=sysmem)
     static final String[][] TURNIP_OPTIONS = { { "sysmem", "Render to memory (fixes flicker / corrupted frames from tiled rendering; slower)" },
         { "noubwc", "No framebuffer compression (UBWC: fixes corrupted or striped textures)" }, { "nolrz", "No early depth rejection (LRZ: fixes some depth glitches)" } };
-    static boolean isTurnip(String lib) { return lib != null && new File(lib).getName().toLowerCase(java.util.Locale.ROOT).contains("freedreno"); }
+    static boolean isTurnip(String lib) { return lib != null && !lib.isEmpty() && adrenoOnly(new File(lib)); }
     static java.util.Set<String> turnipOptions(Context c) { java.util.Set<String> s = new java.util.LinkedHashSet<>(); for (String o : GameSettings.get(c, "TU_DEBUG").split(",")) if (!o.isEmpty()) s.add(o); return s; }
     static void setTurnipOptions(Context c, java.util.Set<String> s) { setAll(c, "TU_DEBUG", String.join(",", s)); }
     static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File x : k) deleteTree(x); f.delete(); }
