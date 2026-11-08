@@ -41,20 +41,37 @@ int nvn_deswizzle_geom(const nvn_texdesc *d, unsigned level, unsigned layer,
     return 0;
 }
 
+// GOB by GOB: a GOB's place in storage is worked out once (the block-linear arithmetic of nvn_bl_offset), then its 8 rows x 4 segments of 16 bytes go by the fixed
+//   in-GOB pattern (gob_off). The same bytes to the same places as addressing every 16-byte segment on its own, which divided several times per segment: a world
+//   area's textures (247 in one frame, 38 MB, walking in Shield's Wild Area) held the submit thread for 2 s
 static int move(const nvn_texdesc *d, unsigned level, unsigned layer, uint8_t *bl, uint8_t *lin, size_t pitch, int to_linear) {
     uint32_t row_bytes, rows, slices, bpb; uint64_t base; unsigned th, td;
     if (nvn_deswizzle_geom(d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &bpb)) return -1;
     if (pitch < row_bytes) return -1;
     bl += base;
-    for (uint32_t z = 0; z < slices; z++)
-        for (uint32_t y = 0; y < rows; y++) {
-            uint8_t *row = lin + ((size_t)z * rows + y) * pitch;
-            for (uint32_t x = 0; x < row_bytes; x += 16) {             // 16-byte segments: 16 bytes are contiguous within a GOB, and 16 divides all block widths
-                uint32_t n = row_bytes - x < 16 ? row_bytes - x : 16;
-                uint8_t *p = bl + nvn_bl_offset(x, y, z, row_bytes, rows, th, td);
-                if (to_linear) memcpy(row + x, p, n); else memcpy(p, row + x, n);
+    const uint32_t bh = 1u << th, bd = 1u << td, brows = 8 * bh;
+    const uint64_t gobs_x = (row_bytes + 63) / 64, blocks_y = (rows + brows - 1) / brows, block = 512ull * bh * bd;
+    for (uint32_t z = 0; z < slices; z++) {
+        const uint64_t zbase = (uint64_t)(z / bd) * gobs_x * blocks_y * block, zin = (uint64_t)(z % bd) * bh;
+        for (uint32_t y0 = 0; y0 < rows; y0 += 8) {   // a row of GOBs (8 rows; y0 is a multiple of 8, so all 8 rows sit in the same block row and GOB)
+            const uint32_t ny = rows - y0 < 8 ? rows - y0 : 8;
+            const uint64_t rbase = zbase + (uint64_t)(y0 / brows) * gobs_x * block + (zin + (y0 % brows) / 8) * 512ull;
+            uint8_t *lrow0 = lin + ((size_t)z * rows + y0) * pitch;
+            for (uint64_t gx = 0; gx < gobs_x; gx++) {
+                uint8_t *gob = bl + rbase + gx * block;
+                const uint32_t x0 = (uint32_t)gx * 64, nx = row_bytes - x0 < 64 ? row_bytes - x0 : 64;
+                for (uint32_t r = 0; r < ny; r++) {
+                    uint8_t *lrow = lrow0 + (size_t)r * pitch + x0;
+                    const uint32_t roff = (r / 2) * 64 + (r % 2) * 16;
+                    for (uint32_t x = 0; x < nx; x += 16) {
+                        uint8_t *p = gob + roff + (x / 32) * 256 + (x % 32 / 16) * 32;
+                        if (nx - x >= 16) { if (to_linear) memcpy(lrow + x, p, 16); else memcpy(p, lrow + x, 16); }   // (a constant 16: one vector load and store)
+                        else { uint32_t n = nx - x; if (to_linear) memcpy(lrow + x, p, n); else memcpy(p, lrow + x, n); }
+                    }
+                }
             }
         }
+    }
     return 0;
 }
 
