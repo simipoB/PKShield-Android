@@ -505,7 +505,8 @@ static const char *thermal_text(char *buf, size_t n) {
 // Graphics "auto": TV mode while the phone keeps cool; handheld mode (720p, lighter effects) once it is hot (thermal status severe or worse, or throttling forecast
 // within 10 s), back to TV mode after a minute below "moderate" with headroom to spare. The game switches as when a Switch leaves or enters its dock
 void dm_set_opmode(int m);   // host/hle_oe.c: tells the game the console mode changed
-// Frame-rate guard (DM_FPS_TARGET 60 and up, with Graphics on Auto or Adaptive; DM_FPS_GUARD=0 turns it off): the frames presented each 5 s against the target. Two
+// Frame-rate guard (every frame-rate target, 30 included: the project's floor is a locked 30 on every phone; with Graphics on Auto or Adaptive; DM_FPS_GUARD=0 turns
+//   it off): the frames presented each 5 s against the target. Two
 //   checks in a row short of it (under 93 %) drop to handheld mode (720p, the game's lighter settings), which holds the rate where TV mode cannot; TV mode is tried
 //   again after a calm, steady spell, a minute the first time and twice as long after each fall back (up to 16 minutes), so a scene that cannot hold it does not
 //   flip between the two. Game speed stays right meanwhile (hle_nvn.c vstep_tick). Graphics on High or Low chosen by hand is left alone
@@ -513,9 +514,9 @@ static int g_fps_guard;   // set at start (fps_guard_init): the target, 0 off
 static void fps_guard_init(void) {
     const char *t = getenv("DM_FPS_TARGET"), *off = getenv("DM_FPS_GUARD"), *g = getenv("DM_GRAPHICS");
     if (!t || !*t) t = getenv("DM_AUTO_FPS");   // (Frame rate on Auto: what the app chose for this phone)
-    int fps = t ? atoi(t) : 0;
-    if (fps < 60 || (off && !strcmp(off, "0")) || (g && (!strcmp(g, "high") || !strcmp(g, "low")))) return;   // (read before the phone's profile fills DM_GRAPHICS in)
-    g_fps_guard = fps; fprintf(stderr, "fps guard: %d fps target: handheld mode (720p) whenever TV mode falls short of it\n", fps);
+    int fps = t ? atoi(t) : 0; if (fps <= 0) fps = 30;   // (no target set: the game's own 30)
+    if (fps < 30 || (off && !strcmp(off, "0")) || (g && (!strcmp(g, "high") || !strcmp(g, "low")))) return;   // (read before the phone's profile fills DM_GRAPHICS in)
+    g_fps_guard = fps; fprintf(stderr, "fps guard: %d fps target: handheld mode (720p) whenever TV mode falls short of 30 or the phone runs hot\n", fps);
 }
 static void graphics_auto(void) {
     static int mode = 1, cool, slow, held, wait = 12, primed; static uint64_t last_fr;
