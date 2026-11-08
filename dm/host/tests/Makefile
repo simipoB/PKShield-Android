@@ -47,6 +47,11 @@ $(B)/t_resscale: t_resscale.c ../hle_resscale.c ../hle.h ../dm.h $(GAME_H) | $(B
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_resscale.c
 $(B):
 	mkdir -p $@
-.PHONY: run tsan
+.PHONY: run tsan linux
 tsan: $(B)/t_audio_spsc_tsan
 	$(B)/t_audio_spsc_tsan
+# Linux (WSL) / Android only: the crash record's first line names code from /proc/self/maps (make GAME=<base game title ID> linux)
+$(B)/t_crash_line: t_crash_line.c ../crash_line.h ../dm.h $(GAME_H) | $(B)
+	cc -O1 -fPIE -pie -Wno-unused-function -I../../android/compat -I.. $(GINC) -o $@ t_crash_line.c -ldl
+linux: $(B)/t_crash_line
+	$(B)/t_crash_line
