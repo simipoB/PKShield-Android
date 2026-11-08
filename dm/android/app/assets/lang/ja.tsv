@@ -9,7 +9,7 @@
 30 fps, as the game is made	30 fps（ゲーム本来）
 60 fps (experimental: needs a fast phone)	60 fps（試験的：高性能な端末が必要）
 Adaptive	自動調整
-Adaptive: High, Low while the phone is hot	自動調整：通常は高、端末が熱いときは低
+Adaptive: High, a lighter picture while the phone is hot or slow	自動調整：通常は高、端末が熱いときや重いときは軽い画質
 Add %s to the home screen	%sをホーム画面に追加
 Adding %d shader(s) the game made last time...	前回ゲームが作ったシェーダー%d個を追加中...
 Allow access to all files so the app can read your dump where it is (it is several GB; nothing is copied).	ダンプをその場所のまま読めるよう、すべてのファイルへのアクセスを許可してください（数GBあり、コピーはしません）。
@@ -87,6 +87,8 @@ Load order: higher wins	読み込み順：上が優先
 Local play is back on this Wi-Fi from the next start.	次回起動からこのWi-Fiでのローカル通信に戻ります。
 Low	低
 Low: handheld mode, 720p, lighter	低：携帯モード、720p、軽量
+Lowest	最低
+Lowest: handheld mode, 3D at 960x540, coolest	最低：携帯モード、3Dは960x540、発熱が最も少ない
 Mali driver (PanVK) options	Maliドライバー（PanVK）のオプション
 Memory	メモリ
 Mod "%s" installed (%d files). It is used from the next start.	Mod「%s」をインストールしました（%d個のファイル）。次回起動から使われます。

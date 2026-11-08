@@ -9,7 +9,7 @@
 30 fps, as the game is made	30 ips, comme le jeu est conçu
 60 fps (experimental: needs a fast phone)	60 ips (expérimental : nécessite un téléphone rapide)
 Adaptive	Adaptatif
-Adaptive: High, Low while the phone is hot	Adaptatif : Élevé, Faible quand le téléphone chauffe
+Adaptive: High, a lighter picture while the phone is hot or slow	Adaptatif : Élevé, une image plus légère quand le téléphone chauffe ou ralentit
 Add %s to the home screen	Ajouter %s à l'écran d'accueil
 Adding %d shader(s) the game made last time...	Ajout de %d shader(s) créé(s) par le jeu la dernière fois...
 Allow access to all files so the app can read your dump where it is (it is several GB; nothing is copied).	Autorisez l'accès à tous les fichiers pour que l'app lise votre dump là où il est (plusieurs Go ; rien n'est copié).
@@ -87,6 +87,8 @@ Load order: higher wins	Ordre de chargement : le plus haut l'emporte
 Local play is back on this Wi-Fi from the next start.	Le jeu local revient sur ce Wi-Fi au prochain lancement.
 Low	Faible
 Low: handheld mode, 720p, lighter	Faible : mode portable, 720p, plus léger
+Lowest	Minimal
+Lowest: handheld mode, 3D at 960x540, coolest	Minimal : mode portable, 3D en 960x540, le plus frais
 Mali driver (PanVK) options	Options du pilote Mali (PanVK)
 Memory	Mémoire
 Mod "%s" installed (%d files). It is used from the next start.	Mod « %s » installé (%d fichiers). Il sera utilisé au prochain lancement.
