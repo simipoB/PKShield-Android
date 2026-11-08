@@ -30,7 +30,9 @@
     X(vkCmdSetViewport) X(vkCmdSetScissor) X(vkCmdSetBlendConstants) X(vkCmdSetDepthBias) X(vkCmdSetCullMode) X(vkCmdSetFrontFace) \
     X(vkCmdSetPrimitiveTopology) X(vkCmdSetDepthTestEnable) X(vkCmdSetDepthWriteEnable) X(vkCmdSetDepthCompareOp) \
     X(vkCmdSetStencilTestEnable) X(vkCmdSetStencilOp) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetStencilReference) \
-    X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp)
+    X(vkCmdResetQueryPool) X(vkCmdWriteTimestamp) \
+    X(vkCreateRenderPass) X(vkDestroyRenderPass) X(vkCreateFramebuffer) X(vkDestroyFramebuffer) X(vkCmdBeginRenderPass) X(vkCmdEndRenderPass) X(vkCmdBindVertexBuffers)
+    /* (the last line: Vulkan 1.0 render passes and vertex binding, for drivers without dynamic rendering / extended dynamic state: rend_begin, pso_make) */
 #define VK_DECLARE(f) static PFN_##f f;
 VK_GLOBAL(VK_DECLARE) VK_INSTANCE(VK_DECLARE) VK_DEVICE(VK_DECLARE)
 static PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr;

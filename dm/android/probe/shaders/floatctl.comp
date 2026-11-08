@@ -1,0 +1,20 @@
+#version 450
+// Float controls: what the translated game shaders rely on (Maxwell's exact infinities and NaN; every texture coordinate guarded with isnan).
+// The inputs come from a buffer so no compiler can fold them. Run as compiled and again patched with the engine's spv_float_controls
+// (SignedZeroInfNanPreserve); without the patch a driver may assume no value is ever infinite or NaN (the Mali white screen, #47).
+layout(local_size_x = 1) in;
+layout(std430, binding = 0) buffer B {
+    float v[8];    // 0 +inf, 1 NaN, 2 -0.0, 3 0.0, 4 1.0
+    uint r[8];
+};
+void main() {
+    float inf = v[0], nan = v[1], nzero = v[2], zero = v[3], one = v[4];
+    r[0] = isnan(nan) ? 1u : 0u;                          // 1: NaN seen as NaN
+    r[1] = isinf(inf) ? 1u : 0u;                          // 1: infinity seen as infinite
+    r[2] = floatBitsToUint(nzero * one);                  // 0x80000000: the sign of zero kept
+    r[3] = isnan(inf * zero) ? 1u : 0u;                   // 1: inf * 0 is NaN
+    r[4] = isinf(one / zero) ? 1u : 0u;                   // 1: 1 / 0 is infinite
+    r[5] = (nan != nan) ? 1u : 0u;                        // 1: NaN unequal to itself
+    r[6] = isnan(inf - inf) ? 1u : 0u;                    // 1: inf - inf is NaN
+    r[7] = floatBitsToUint(inf + one);                    // 0x7f800000: infinity survives arithmetic
+}

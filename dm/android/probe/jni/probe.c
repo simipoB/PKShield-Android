@@ -22,12 +22,15 @@
 #include <vulkan/vulkan.h>
 
 static char *g_out; static size_t g_len, g_cap;
-static void P(const char *fmt, ...) {
-    char buf[4096]; va_list ap; va_start(ap, fmt); int n = vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+// the report's one writer; selftest.c writes through it too
+void probe_vout(const char *fmt, va_list ap) {
+    char buf[4096]; int n = vsnprintf(buf, sizeof buf, fmt, ap);
     if (n < 0) return; if (n >= (int)sizeof buf) n = sizeof buf - 1;
     if (g_len + n + 1 > g_cap) { g_cap = (g_len + n + 1) * 2; g_out = realloc(g_out, g_cap); }
     memcpy(g_out + g_len, buf, n); g_len += n; g_out[g_len] = 0;
 }
+static void P(const char *fmt, ...) { va_list ap; va_start(ap, fmt); probe_vout(fmt, ap); va_end(ap); }
+void probe_selftests(void);   // selftest.c
 static const char *prop(const char *k) { static char v[8][PROP_VALUE_MAX]; static int i; char *r = v[i++ & 7]; r[0] = 0; __system_property_get(k, r); return r[0] ? r : "-"; }
 
 // ---- Device ----
@@ -350,7 +353,7 @@ static void zero_copy(void) {
 
 JNIEXPORT jstring JNICALL Java_com_nxnative_probe_Probe_run(JNIEnv *env, jclass c) {
     (void)c; g_len = 0;
-    P("nxnative Android probe 2\n"); device(); memory(); registers(); zero_copy(); vulkan();
+    P("nxnative Android probe 3\n"); device(); probe_selftests(); memory(); registers(); zero_copy(); vulkan();
     jstring s = (*env)->NewStringUTF(env, g_out ? g_out : "");
     return s;
 }

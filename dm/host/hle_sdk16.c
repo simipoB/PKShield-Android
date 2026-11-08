@@ -232,11 +232,16 @@ HLE_FORCE("_ZN2nn9bluetooth35UnregisterGattOperationNotificationERKNS0_17GattAtt
 // ---------- vi: vsync event ----------
 // The game passes a SystemEventType; after binding, a host thread fires it at 60 Hz (DM_VSYNC_HZ can change it)
 void dm_host_helper_qos(qos_class_t q);   // hle_thread.c
+// The display's refresh period once the renderer knows it (nvn_vk.c, frame pacing), else 0: the 60 Hz below then runs on the display's own clock (a whole number of its
+//   refreshes), so the game's frames and the display's do not drift apart (a 59.94 Hz panel against a 60.00 Hz timer slipped a frame every 17 s). DM_VSYNC_HZ keeps the timer
+__attribute__((weak)) uint64_t dm_display_refresh_ns(void) { return 0; }
 static void *vsync_thread(void *ev) {
     dm_host_helper_qos(QOS_CLASS_USER_INTERACTIVE);   // the game paces frames on this event
     const char *e = getenv("DM_VSYNC_HZ"); double hz = e ? atof(e) : 60.0; if (hz <= 0) hz = 60.0;
-    uint64_t period = (uint64_t)(1e9 / hz), next = now_ns() + period;
+    uint64_t base = (uint64_t)(1e9 / hz), period = base, next = now_ns() + period;
     for (;;) {
+        if (!e) { uint64_t r = dm_display_refresh_ns();   // (within 10 % of 60 Hz only: a 90 Hz panel has no whole number of refreshes near 16.7 ms and keeps the timer)
+            if (r) { uint64_t k = (base + r / 2) / r, p = (k ? k : 1) * r; if (p > base * 9 / 10 && p < base * 11 / 10 && p != period) { period = p; LOG("vsync: %.3f ms, from the display", p / 1e6); } } }
         uint64_t t = now_ns(); if (next > t) { struct timespec ts = {(time_t)((next - t) / 1000000000ull), (long)((next - t) % 1000000000ull)}; nanosleep(&ts, NULL); }
         hle_signal_system_event(ev); next += period; if (now_ns() > next + 4 * period) next = now_ns() + period;   // do not try to catch up when far behind
     }
