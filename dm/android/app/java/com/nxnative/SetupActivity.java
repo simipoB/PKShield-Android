@@ -77,18 +77,19 @@ public final class SetupActivity extends Activity {
             if (n[0].equals("mods")) Toast.makeText(this, n[1], Toast.LENGTH_LONG).show();
             else if (n[0].equals("driver")) { block = true; final String gpu = n[1];
                 new android.app.AlertDialog.Builder(this).setTitle(T.t(this, "The game closed while starting its graphics"))
-                    .setMessage(T.t(this, "Last time, %s closed while starting its graphics on this phone's own driver (%s). ", gameName(), gpu) + driverAdvice(gpu))
-                    .setPositiveButton("Choose a driver", (d, w) -> pick(PICK_DRIVER, false))
-                    .setNeutralButton("Start anyway", (d, w) -> startGame())
-                    .setNegativeButton("Close", null).show(); }
+                    .setMessage(T.t(this, "Last time, %s closed while starting its graphics on this phone's own driver (%s). ", gameName(), gpu) + driverAdvice(this, gpu))
+                    .setPositiveButton(T.t(this, "Choose a driver"), (d, w) -> pick(PICK_DRIVER, false))
+                    .setNeutralButton(T.t(this, "Start anyway"), (d, w) -> startGame())
+                    .setNegativeButton(T.t(this, "Close"), null).show(); }
         }
         return block;
     }
-    private static String driverAdvice(String gpu) {
+    // (translated: the dialog came half in English in the Portuguese app, #82)
+    private static String driverAdvice(android.content.Context c, String gpu) {
         String g = gpu.toLowerCase(java.util.Locale.ROOT);
-        if (g.contains("adreno")) return "A recent Mesa Turnip package for Adreno usually fixes this: choose its .zip as the graphics driver.";
-        if (g.matches(".*mali-g(57|68|77|78|52|72|76).*")) return "FristOneRR's PanVK driver supports this Mali: download its .zip from the developer's GitHub Releases and choose it as the graphics driver.";
-        return "No replacement driver supports this GPU yet. Please report it with the log in Download (the -log-previous.txt file), so the app can be fixed for it.";
+        if (g.contains("adreno")) return T.t(c, "A recent Mesa Turnip package for Adreno usually fixes this: choose its .zip as the graphics driver.");
+        if (g.matches(".*mali-g(57|68|77|78|52|72|76).*")) return T.t(c, "FristOneRR's PanVK driver supports this Mali: download its .zip from the developer's GitHub Releases and choose it as the graphics driver.");
+        return T.t(c, "No replacement driver supports this GPU yet. Please report it with the log in Download (the -log-previous.txt file), so the app can be fixed for it.");
     }
     // a game set up (its folder has the ready file and the shader pack): the dual launcher's list
     private boolean isReady(String id) {

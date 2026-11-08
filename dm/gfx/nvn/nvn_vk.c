@@ -148,6 +148,13 @@ static void *vk_open(void) {
 static int g_bcgpu;   // the BC layer is on (mtl_init)
 static int g_fctl_ext, g_drvprops_ext;   // a Vulkan 1.1 driver with VK_KHR_shader_float_controls / VK_KHR_driver_properties (enabled at device creation)
 static int g_fctl;    // every shader asks for SignedZeroInfNanPreserve (spv_float_controls; mtl_init decides)
+static int g_arm_rel, g_arm_p;   // Arm's own Mali driver: its release, r<rel>p<p> (driverVersion is VK_MAKE_VERSION(rel, p, 0): 0xb001000 = r44p1); 0 for any other driver
+static int g_dualsrc = 1;        // the device blends with a second shader output (dualSrcBlend): Arm's own Mali driver has none (r44p1)
+// Markers of a set-up step that crashed the driver (mark_file below), one set per driver kind: a crash on a driver package does not change the phone's own driver
+static const char *drv_mark(const char *base) {
+    static char m[4][64]; static int k; char *o = m[k++ & 3]; const char *d = getenv("DM_VK_DRIVER");
+    snprintf(o, sizeof m[0], "%s%s", base, d && *d ? "_package" : ""); return o;
+}
 static void vk_logf(const char *f, ...) { va_list a; va_start(a, f); fputs("[dm] [nvn-vk] ", stderr); vfprintf(stderr, f, a); fputc('\n', stderr); va_end(a); }
 static uint32_t g_instance_api = VK_API_VERSION_1_3;   // the instance's apiVersion (mtl_init)
 static uint32_t g_api;   // the device's Vulkan version (DM_VK_API=11 / 12 tries an older device's path on a newer one)
@@ -367,6 +374,7 @@ void mtl_init(void) {
     VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_qf, .queueCount = 1, .pQueuePriorities = &prio };
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = ndext, .ppEnabledExtensionNames = dext };
     VKCHECK(vkCreateDevice(g_pd, &dci, NULL, &g_dev));
+    { extern void dm_boot_device_up(void) __attribute__((weak)); if (dm_boot_device_up) dm_boot_device_up(); }   // (android_main.c boot_state: a crash from here on counts as the driver's)
     VK_DEVICE(VK_LOAD_D)
     vkGetDeviceQueue(g_dev, g_qf, 0, &g_q);
     p_push = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(g_dev, "vkCmdPushDescriptorSetKHR");
@@ -382,6 +390,7 @@ void mtl_init(void) {
            L->maxPushConstantsSize, L->maxVertexInputAttributeOffset, L->maxVertexInputBindingStride, L->maxVertexInputBindings, L->maxTexelBufferElements); }
     // Float controls (spv_float_controls): ARM's own Mali driver gets every shader with SignedZeroInfNanPreserve, where it supports it. Without it the lit scene came out
     //   at the format's maximum on Mali-G615 / G720 / G925 (#47 #53 #64 #68 #69 #72); PanVK on the same GPUs drew it right. DM_VK_FLOAT_CONTROLS=0 / 1 decides on any driver
+    int arm_known = 0;   // (Arm's own driver told apart by its driver ID below; without driver properties, by the vendor ID after)
     if (g_api >= VK_API_VERSION_1_2 || g_fctl_ext) {   // (Vulkan 1.1: through the extensions, same structures)
         int drvp = g_api >= VK_API_VERSION_1_2 || g_drvprops_ext;
         VkPhysicalDeviceDriverProperties dp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
@@ -391,9 +400,17 @@ void mtl_init(void) {
         // Samsung's Xclipse driver too: the probe self-test (float-controls) found inf - inf not NaN without them on Xclipse 540 and 940, and every check right with them
         const char *e = getenv("DM_VK_FLOAT_CONTROLS"); int arm = drvp ? dp.driverID == VK_DRIVER_ID_ARM_PROPRIETARY : g_props.vendorID == 0x13B5;
         int sec = drvp ? dp.driverID == VK_DRIVER_ID_SAMSUNG_PROPRIETARY : g_props.vendorID == 0x144D;
+        arm_known = 1; if (arm) { g_arm_rel = (int)(g_props.driverVersion >> 22); g_arm_p = (int)(g_props.driverVersion >> 12 & 0x3ff); }
         g_fctl = fc.shaderSignedZeroInfNanPreserveFloat32 && (e ? atoi(e) != 0 : arm || sec);
-        VLOG("driver %s (id %d)%s; shaders keep infinities and NaN (float controls): %s", dp.driverName, (int)dp.driverID, arm ? ", ARM's own" : sec ? ", Samsung's own" : "",
-             g_fctl ? "asked for" : !fc.shaderSignedZeroInfNanPreserveFloat32 ? "not supported" : "not asked for");
+        // The test shader below crashed a driver (#89: Mali-G57, the start ended right after this line): a start that dies there leaves the marker, and later starts on
+        //   this driver go without float controls (DM_VK_FLOAT_CONTROLS=1 tries again)
+        int fc_crashed = g_fctl && mark_file(drv_mark("float_controls_crashed"), "", 0) && !e;
+        if (fc_crashed) g_fctl = 0;
+        char rel[24] = ""; if (arm && g_arm_rel) snprintf(rel, sizeof rel, " r%dp%d", g_arm_rel, g_arm_p);
+        VLOG("driver %s (id %d)%s%s; shaders keep infinities and NaN (float controls): %s", dp.driverName, (int)dp.driverID, arm ? ", ARM's own" : sec ? ", Samsung's own" : "", rel,
+             fc_crashed ? "not asked for: the driver crashed on their test shader at an earlier start (DM_VK_FLOAT_CONTROLS=1 tries again)"
+             : g_fctl ? "asked for" : !fc.shaderSignedZeroInfNanPreserveFloat32 ? "not supported" : "not asked for");
+        if (g_fctl) mark_file(drv_mark("float_controls_crashed"), "building the float-controls test shader; if this file is still here the driver crashed doing so, and later starts go without float controls\n", 1);
         if (g_fctl) {   // a self-test: an empty compute shader patched the same way must make a pipeline, else this start goes without (the game's shaders would fail one by one)
             static const uint32_t tiny[] = { 0x07230203, 0x00010300, 0, 5, 0, 2u << 16 | 17, 1, 3u << 16 | 14, 0, 1, 5u << 16 | 15, 5, 1, 0x6e69616d, 0, 6u << 16 | 16, 1, 17, 1, 1, 1,
                                              2u << 16 | 19, 2, 3u << 16 | 33, 3, 2, 5u << 16 | 54, 2, 1, 0, 3, 2u << 16 | 248, 4, 1u << 16 | 253, 1u << 16 | 56 };
@@ -407,9 +424,26 @@ void mtl_init(void) {
             }
             if (pp) vkDestroyPipeline(g_dev, pp, NULL); if (pl) { PFN_vkDestroyPipelineLayout dpl = (PFN_vkDestroyPipelineLayout)vkGetDeviceProcAddr(g_dev, "vkDestroyPipelineLayout"); if (dpl) dpl(g_dev, pl, NULL); } if (m) vkDestroyShaderModule(g_dev, m, NULL); free(c);
             if (tr != VK_SUCCESS) { g_fctl = 0; VLOG("[RED] float controls: the driver refused a test shader asking for them (%d): not this start", (int)tr); }
+            mark_file(drv_mark("float_controls_crashed"), "", -1);   // (the test came back: no crash)
         }
     }
-    if (!f2.features.textureCompressionBC) { bc_gpu_info bi = { g_dev, g_q, g_qf, vkGetDeviceProcAddr, &g_memp, vk_logf }; g_bcgpu = bc_gpu_init(&bi); }
+    // A driver without Vulkan 1.2 or the float-controls extension: Arm's own when it is ARM's vendor ID and not a driver package (PanVK reports ARM's ID too)
+    if (!arm_known && g_props.vendorID == 0x13B5 && !(getenv("DM_VK_DRIVER") && *getenv("DM_VK_DRIVER"))) { g_arm_rel = (int)(g_props.driverVersion >> 22); g_arm_p = (int)(g_props.driverVersion >> 12 & 0x3ff); }
+    // Dual-source blending (the game's blend factors SRC1_*) needs dualSrcBlend; Arm's own driver has none (r44p1), and a pipeline using it there is undefined: those
+    //   factors become the first output's (bfac_dev), named once in the log. DM_VK_DUALSRC=keep passes them as they are
+    g_dualsrc = f2.features.dualSrcBlend || (getenv("DM_VK_DUALSRC") && !strcmp(getenv("DM_VK_DUALSRC"), "keep"));
+    if (!f2.features.dualSrcBlend) VLOG("blending: the driver has no dual-source blending (dualSrcBlend): the game's SRC1 blend factors %s", g_dualsrc ? "passed as they are (DM_VK_DUALSRC=keep)" : "become the first output's");
+    // The BC layer's set-up builds and runs its shaders on this GPU: a start that dies there leaves the marker, and later starts on this driver convert on the CPU
+    //   (DM_VK_BC_GPU=1 tries again)
+    if (!f2.features.textureCompressionBC) {
+        const char *be = getenv("DM_VK_BC_GPU");
+        if (mark_file(drv_mark("bc_gpu_crashed"), "", 0) && !be) VLOG("[RED] BC layer: the driver crashed setting it up at an earlier start: BC textures converted on the CPU (DM_VK_BC_GPU=1 tries again)");
+        else {
+            mark_file(drv_mark("bc_gpu_crashed"), "setting up the BC layer (its shaders built and checked on this GPU); if this file is still here the driver crashed doing so, and later starts convert on the CPU\n", 1);
+            bc_gpu_info bi = { g_dev, g_q, g_qf, vkGetDeviceProcAddr, &g_memp, vk_logf }; g_bcgpu = bc_gpu_init(&bi);
+            mark_file(drv_mark("bc_gpu_crashed"), "", -1);
+        }
+    }
     if (g_host_import) {
         VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT };
         VkPhysicalDeviceProperties2 pp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp }; vkGetPhysicalDeviceProperties2(g_pd, &pp);
@@ -1313,8 +1347,14 @@ static void img_init(vtex *t, int zero) {
 // into, so render targets and everything the screen is made of keep their size. Views shift their levels down by the same count; copies into or out of such a texture are
 // left out (not seen in Shield)
 static uint64_t g_drop_n, g_drop_saved;   // textures stored without their largest level, bytes not stored (the memory readout)
+// Arm's own driver before r49 closed the game three frames in with half textures (Mali-G615 MC2 on r44p1: #63 #65 #71 #82, the same crash every time); the same phones
+// run with full textures (#77, #21) and r49p1 runs half (#53): there half is used only when the player chose it, not when the phone's profile did (DM_VK_TEX_QUALITY_AUTO)
 static int tex_quality_half(void) {
-    static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_TEX_QUALITY"); v = e && !strcmp(e, "half"); if (v) VLOG("texture quality half: the game's large textures without their largest mip level"); }
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_VK_TEX_QUALITY"); v = e && !strcmp(e, "half");
+        if (v && g_arm_rel && g_arm_rel < 49 && getenv("DM_VK_TEX_QUALITY_AUTO")) { v = 0;
+            VLOG("texture quality full, not the phone profile's half: Arm's driver r%dp%d closed the game with half textures (Mali-G615 MC2, #82); DM_VK_TEX_QUALITY=half in env.txt uses it anyway", g_arm_rel, g_arm_p); }
+        else if (v) VLOG("texture quality half: the game's large textures without their largest mip level"); }
     return v;
 }
 static vtex *tex_new(const tex_t *t, int pkg) {
@@ -2498,6 +2538,14 @@ static VkBlendFactor bfac(int f) {
         case 0x61: return VK_BLEND_FACTOR_CONSTANT_COLOR; case 0x62: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR; case 0x63: return VK_BLEND_FACTOR_CONSTANT_ALPHA; case 0x64: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA; }
     return VK_BLEND_FACTOR_ONE;
 }
+// The blend factor on this device: without dual-source blending a second output's factor is the first output's (g_dualsrc: mtl_init)
+static VkBlendFactor bfac_dev(int f) {
+    VkBlendFactor v = bfac(f);
+    if (g_dualsrc || v < VK_BLEND_FACTOR_SRC1_COLOR || v > VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA) return v;
+    RED_ONCE(111, "the game blends with its second shader output (blend factor %d) and the driver has no dual-source blending: the first output's instead (DM_VK_DUALSRC=keep to compare)", (int)v);
+    return v == VK_BLEND_FACTOR_SRC1_COLOR ? VK_BLEND_FACTOR_SRC_COLOR : v == VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR ? VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR
+         : v == VK_BLEND_FACTOR_SRC1_ALPHA ? VK_BLEND_FACTOR_SRC_ALPHA : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+}
 static VkBlendOp bop(int e) { switch (e) { case 2: return VK_BLEND_OP_SUBTRACT; case 3: return VK_BLEND_OP_REVERSE_SUBTRACT; case 4: return VK_BLEND_OP_MIN; case 5: return VK_BLEND_OP_MAX; } return VK_BLEND_OP_ADD; }
 // vertex format for a shader input of class ct (0 float, 1 uint, 2 sint): an integer format of the other signedness is read with the same width and the input's sign
 static VkFormat vfmt_for(int nvn_fmt, int ct) {
@@ -2738,7 +2786,7 @@ static VkPipeline pso_make(vprog *pr, pkey k, const sst *ss) {
         if (fs && fs->color_known && !(fs->color_mask >> i & 1)) m = 0;   // outputs the shader does not write keep their content (nvn_mtl.m pso_desc)
         cb[i].colorWriteMask = m;
         if (k.blend_en >> i & 1 && m && !fmt_int_class(cf[i])) { cb[i].blendEnable = VK_TRUE;   // integer targets never blend (Vulkan: undefined)
-            cb[i].srcColorBlendFactor = bfac(k.blend[i].src_rgb); cb[i].dstColorBlendFactor = bfac(k.blend[i].dst_rgb); cb[i].srcAlphaBlendFactor = bfac(k.blend[i].src_a); cb[i].dstAlphaBlendFactor = bfac(k.blend[i].dst_a);
+            cb[i].srcColorBlendFactor = bfac_dev(k.blend[i].src_rgb); cb[i].dstColorBlendFactor = bfac_dev(k.blend[i].dst_rgb); cb[i].srcAlphaBlendFactor = bfac_dev(k.blend[i].src_a); cb[i].dstAlphaBlendFactor = bfac_dev(k.blend[i].dst_a);
             cb[i].colorBlendOp = bop(k.blend[i].eq_rgb); cb[i].alphaBlendOp = bop(k.blend[i].eq_a); }
     }
     VkPipelineColorBlendStateCreateInfo bs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .logicOpEnable = k.logic_en, .logicOp = (VkLogicOp)k.logic_op,

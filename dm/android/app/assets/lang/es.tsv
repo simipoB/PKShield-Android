@@ -264,3 +264,9 @@ Auto: on with ARM's driver (v0.52)	Auto: activado con el driver de ARM (v0.52)
 Off: the shaders as before v0.52	Desactivado: los shaders como antes de la v0.52
 Merge render passes	Unir pasadas de renderizado
 Off: every render target change starts a new pass	Desactivado: cada cambio de destino de renderizado empieza una pasada nueva
+Close	Cerrar
+Choose a driver	Elegir un controlador
+Start anyway	Iniciar de todos modos
+A recent Mesa Turnip package for Adreno usually fixes this: choose its .zip as the graphics driver.	Un paquete reciente de Mesa Turnip para Adreno suele solucionarlo: elige su .zip como controlador gráfico.
+FristOneRR's PanVK driver supports this Mali: download its .zip from the developer's GitHub Releases and choose it as the graphics driver.	El controlador PanVK de FristOneRR es compatible con esta Mali: descarga su .zip desde GitHub Releases del desarrollador y elígelo como controlador gráfico.
+No replacement driver supports this GPU yet. Please report it with the log in Download (the -log-previous.txt file), so the app can be fixed for it.	Aún no hay un controlador alternativo para esta GPU. Infórmalo con el registro en Download (el archivo -log-previous.txt) para que la app pueda corregirse para ella.
