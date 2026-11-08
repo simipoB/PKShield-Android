@@ -2119,6 +2119,9 @@ void mtl_prog_release(prog_t *p) { (void)p; }   // programs are kept (keyed by s
 
 // ================= Render passes =================
 static struct { int open; uint32_t cfmt[8], dfmt, sfmt, samples, tw, th; int hd, hs, ncolor; uint32_t layers; } P;   // layers: a layered pass (a 3D target's slices) when > 1
+// DM_VK_PROF: what ended each open pass (0 a new render target, 1 a uniform update, 2 a buffer copy, 3 a buffer fill), and the cost of opening one split into its
+//   attachment views, the barrier before it and the driver's begin (g_pb_ns); g_brk_other: any work outside a pass that ended one (the causes above included)
+static uint64_t g_brk[4], g_pb_ns[3], g_brk_other;
 static VkCommandBuffer CB(void) { return g_sub->cb; }
 // ================= Frame capture (a bug report's pictures) =================
 // One frame, pass by pass: each pass's colour targets scaled into 320x180 pictures (blits into one array image, copied out as they come), and notes on what the pass
@@ -2399,11 +2402,15 @@ static uint64_t g_stat_begins;   // vkCmdBeginRendering calls (the present line'
 static int pass_begin(void) {
     if (P.open) return 1;
     if (!R.has_rt) { RED_ONCE(21, "draw with no render target set"); return 0; }
+    static int prof = -1; if (prof < 0) prof = getenv("DM_VK_PROF") != NULL; uint64_t pt0 = prof ? mono_ns() : 0;   // (DM_VK_PROF: g_pb_ns)
     VkRenderingAttachmentInfo ca[8]; VkRenderingAttachmentInfo da = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }, sa = da;
     memset(&P, 0, sizeof P); uint32_t tw = 16384, th = 16384, nlay = 0; int any = 0, ncol = 0;   // nlay: the fewest layers of the attachments (a layered pass over a 3D target)
     for (int i = 0; i < 8; i++) { ca[i] = (VkRenderingAttachmentInfo){ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO }; }
+    // A target whose texture has no format (NVN format 0, never built: Sword / Shield bind one with a 1x1 viewport, 60 of 92 players' logs) is a slot switched off,
+    //   as on Maxwell: no attachment there, and a pass with nothing else attached runs without attachments (its draws still write buffers and images) instead of
+    //   being dropped ("no render target could be attached")
     for (int i = 0; i < R.rt.n && i < 8; i++) {
-        if (!R.rt.color[i] || rt_dup_slot(&R.rt, i)) continue;
+        if (!R.rt.color[i] || !R.rt.color[i]->d.format || rt_dup_slot(&R.rt, i)) continue;
         vtex *x; uint32_t w, h; VkImageView v = att_view(R.rt.color[i], &R.rt.cview[i], R.rt.has_cview[i], &x, &w, &h);
         if (!v || !(x->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) continue;
         if (!nlay || g_att_layers < nlay) nlay = g_att_layers;
@@ -2414,7 +2421,7 @@ static int pass_begin(void) {
         if (TD_TRACE) VLOG("[trace] pass colour %d ser=%llu %ux%u fmt %d %s", i, (unsigned long long)R.rt.color[i]->serial, w, h, (int)x->fmt, R.clear_c[i] ? "clear" : "load");
         td_note(x, R.rt.color[i]->serial, R.rt.has_cview[i] && R.rt.cview[i].set_levels ? R.rt.cview[i].base_level : 0, R.rt.has_cview[i] && R.rt.cview[i].set_layers ? R.rt.cview[i].min_layer : 0);
     }
-    if (R.rt.depth) {
+    if (R.rt.depth && R.rt.depth->d.format) {
         vtex *x; uint32_t w, h; VkImageView v = att_view(R.rt.depth, &R.rt.dview, R.rt.has_dview, &x, &w, &h);
         if (v && (x->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
             if (!nlay || g_att_layers < nlay) nlay = g_att_layers;
@@ -2426,7 +2433,7 @@ static int pass_begin(void) {
         }
     }
     if (!any) {   // no target attached: an attachment-less pass at the viewport's size (nvn_mtl.m bare_dims), or nothing when targets were set but none could be attached
-        int bare = !R.rt.depth; for (int i = 0; i < R.rt.n; i++) if (R.rt.color[i]) bare = 0;
+        int bare = !(R.rt.depth && R.rt.depth->d.format); for (int i = 0; i < R.rt.n && i < 8; i++) if (R.rt.color[i] && R.rt.color[i]->d.format) bare = 0;   // (format 0: off)
         if (!bare) {
             static int no_target_reports;
             if (no_target_reports < 32) {
@@ -2442,10 +2449,13 @@ static int pass_begin(void) {
     }
     if (!P.samples) P.samples = 1;
     P.tw = tw; P.th = th; P.ncolor = ncol; P.layers = nlay ? nlay : 1;
+    uint64_t pt1 = prof ? mono_ns() : 0;
     barrier_all(CB());
+    uint64_t pt2 = prof ? mono_ns() : 0;
     VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {tw, th}}, .layerCount = nlay ? nlay : 1, .colorAttachmentCount = (uint32_t)ncol, .pColorAttachments = ca,
                            .pDepthAttachment = P.hd ? &da : NULL, .pStencilAttachment = P.hs ? &sa : NULL };
     rend_begin(CB(), &ri, P.cfmt, P.hd ? P.dfmt : P.hs ? P.sfmt : 0, P.samples, 0); g_stat_begins++;
+    if (prof) { uint64_t pt3 = mono_ns(); g_pb_ns[0] += pt1 - pt0; g_pb_ns[1] += pt2 - pt1; g_pb_ns[2] += pt3 - pt2; }
     memset(R.clear_c, 0, sizeof R.clear_c); R.clear_d = R.clear_s = 0;
     P.open = 1;
     return 1;
@@ -2456,7 +2466,7 @@ static void pass_flush(void) {   // pending clears with no draw after them: a pa
     if (pend && !P.open && g_sub) pass_begin();
     pass_end();
 }
-static void outside_pass(void) { pass_end(); barrier_all(CB()); }   // transfer work: no pass open, ordered after everything before
+static void outside_pass(void) { if (P.open) g_brk_other++; pass_end(); barrier_all(CB()); }   // transfer work: no pass open, ordered after everything before
 
 // ================= Pipelines =================
 typedef struct {
@@ -2941,7 +2951,7 @@ static void push_stage(vshader *s, int st, VkPipelineBindPoint bp, VkPipelineLay
 
 // ================= Draws =================
 // DM_VK_PROF: where the replay's CPU time goes per draw (pass + pipeline, dynamic state + vertex streams, descriptors, flush + draw), logged every 300 presents
-static int g_vprof = -1; static uint64_t g_vp_t[4], g_vp_n, g_vp_o[5];
+static int g_vprof = -1; static uint64_t g_vp_t[4], g_vp_n, g_vp_o[5], g_vp_pass, g_vp_pso;
 #define VPROF_ON (g_vprof < 0 ? (g_vprof = getenv("DM_VK_PROF") != NULL) : g_vprof)
 static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark);
 // the frame capture's draw by draw values (g_cap_dp): after a draw of the chosen pass, the pass is ended (without logging it), colour 0's 12 points copied, and the pass
@@ -2994,9 +3004,12 @@ static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark) {
         tfcap = 1;
     }
     if (S.poly.cull == NVN_FACE_FRONT_AND_BACK && !tfcap) return;
+    uint64_t pp0 = mark ? mono_ns() : 0;
     if (tfcap) tf_pass_begin(); else if (!pass_begin()) return;
     int prim = dw ? dw->prim : di->prim; VkPrimitiveTopology topo = topo_of(prim);
+    uint64_t pp1 = mark ? mono_ns() : 0;
     VkPipeline p = pso_get(pr, topo); if (!p) return;
+    if (mark) { g_vp_pass += pp1 - pp0; g_vp_pso += mono_ns() - pp1; }   // (DM_VK_PROF: the "pass + pipeline" stage split)
     if (TD_TRACE) VLOG("[trace] draw vs %s fs %s blend_en %#x", pr->sh[0] ? pr->sh[0]->key : "-", pr->sh[1] ? pr->sh[1]->key : "-", (unsigned)S.color.blend_en);
     VkCommandBuffer cb = CB(); if (mark) mark[1] = mono_ns();
     { static VkCommandBuffer bcb; static VkPipeline bp; static uint64_t bfence;   // the same pipeline already bound in this command buffer: no rebind (Vulkan keeps it across passes)
@@ -3134,6 +3147,7 @@ static void dispatch(const p_dispatch *dp) {
 static void sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
     VkBuffer sb, db; VkDeviceSize so, dof;
     if (!pool_buf(src, n, &sb, &so, NULL) || !pool_buf(dst, n, &db, &dof, NULL)) { RED_ONCE(42, "buffer copy %#llx → %#llx outside the pools", (unsigned long long)src, (unsigned long long)dst); return; }
+    if (P.open) g_brk[2]++;
     outside_pass();
     if (sb == db && so < dof + n && dof < so + n) {   // overlapping ranges of one buffer: through the arena
         VkBuffer tb; VkDeviceSize to; arena_alloc(g_sub, n, &tb, &to);
@@ -3144,6 +3158,7 @@ static void sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
 static void sub_update(const void *data, uint64_t dst, uint64_t n) {   // the data is copied now (the game may reuse its command memory before the GPU runs)
     if (!n) return;
     VkBuffer db; VkDeviceSize dof; if (!pool_buf(dst, n, &db, &dof, NULL)) { RED_ONCE(43, "uniform update outside the pools"); return; }
+    if (P.open) g_brk[1]++;
     outside_pass();
     VkBuffer tb; VkDeviceSize to; void *m = arena_alloc(g_sub, n, &tb, &to); memcpy(m, data, n);
     VkBufferCopy c = { to, dof, n }; vkCmdCopyBuffer(CB(), tb, db, 1, &c); barrier_all(CB()); wb_note(dst, n);
@@ -3151,6 +3166,7 @@ static void sub_update(const void *data, uint64_t dst, uint64_t n) {   // the da
 void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
     if (!n) return;
     VkBuffer db; VkDeviceSize dof; if (!pool_buf(dst, n, &db, &dof, NULL)) { RED_ONCE(44, "buffer fill outside the pools"); return; }
+    if (P.open) g_brk[3]++;
     outside_pass();
     if (dof % 4 || n % 4) { RED_ONCE(45, "buffer fill not 4-byte aligned (%#llx, %llu)", (unsigned long long)dof, (unsigned long long)n); return; }
     vkCmdFillBuffer(CB(), db, dof, n, value); barrier_all(CB()); wb_note(dst, n);
@@ -3307,6 +3323,9 @@ static int clear_slice_by_pass(int ci, const VkClearValue *v, VkRect2D rc) {
 }
 static void clear_in_pass(int color_index, const VkClearValue *v, VkImageAspectFlags asp) {   // a clear inside an open pass (or a partial one): vkCmdClearAttachments over the scissor
     if (!pass_begin()) return;
+    // nothing attached there (a slot switched off: format 0, or a target that could not be attached): nothing to clear, and Vulkan forbids naming it
+    if ((asp & VK_IMAGE_ASPECT_COLOR_BIT) && (color_index < 0 || color_index >= P.ncolor || !P.cfmt[color_index])) return;
+    if (!(asp & VK_IMAGE_ASPECT_COLOR_BIT)) { if (!P.hd) asp &= ~VK_IMAGE_ASPECT_DEPTH_BIT; if (!P.hs) asp &= ~VK_IMAGE_ASPECT_STENCIL_BIT; if (!asp) return; }
     VkClearAttachment a = { asp, (uint32_t)(color_index < 0 ? 0 : color_index), *v };
     VkRect2D rc = {{0, 0}, {P.tw, P.th}};
     if (R.has_sc) { long x0 = R.sc.x < 0 ? 0 : R.sc.x, y0 = R.sc.y < 0 ? 0 : R.sc.y, x1 = (long)R.sc.x + R.sc.w, y1 = (long)R.sc.y + R.sc.h; if (x1 > (long)P.tw) x1 = P.tw; if (y1 > (long)P.th) y1 = P.th;
@@ -3389,6 +3408,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_COPY_B2B: { uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); sub_copy(s, d, n); break; }
             case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); sub_update(a + 16, d, n); break; }
             case OP_SET_RT: g_stat_passes++; if (P.open && R.has_rt && !getenv_nomerge() && rt_same(&R.rt, (const p_set_rt *)a)) { g_stat_rt_same++; break; }
+                if (P.open) g_brk[0]++;
                 sub_split_at_target();
                 pass_flush(); R.rt = *(const p_set_rt *)a; R.has_rt = 1; break;
             case OP_CLEAR_COLOR: {
@@ -3977,6 +3997,11 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
         VLOG("[prof] replay per frame: %.0f draws; pass + pipeline %.2f ms, dynamic state + vertex %.2f ms, descriptors %.2f ms, flush + draw %.2f ms (%.1f us a draw)", g_vp_n / 300.0,
              g_vp_t[0] / f, g_vp_t[1] / f, g_vp_t[2] / f, g_vp_t[3] / f, (g_vp_t[0] + g_vp_t[1] + g_vp_t[2] + g_vp_t[3]) / 1e3 / (double)g_vp_n);
         VLOG("[prof] other ops per frame: set target %.2f ms, clears %.2f ms, copies %.2f ms, compute %.2f ms, state %.2f ms; commit %.2f ms", g_vp_o[0] / f, g_vp_o[1] / f, g_vp_o[2] / f, g_vp_o[3] / f, g_vp_o[4] / f, g_vp_c / f);
+        VLOG("[prof] of pass + pipeline: opening passes %.2f ms, pipeline lookup %.2f ms (%.2f us a draw)", g_vp_pass / f, g_vp_pso / f, g_vp_pso / 1e3 / (double)g_vp_n);
+        VLOG("[prof] opening a pass, per frame: attachment views %.2f ms, barrier %.2f ms, driver begin %.2f ms", g_pb_ns[0] / f, g_pb_ns[1] / f, g_pb_ns[2] / f);
+        VLOG("[prof] open passes ended per frame: by a new render target %.1f, a uniform update %.1f, a buffer copy %.1f, a buffer fill %.1f; by any work outside a pass %.1f",
+             g_brk[0] / 300.0, g_brk[1] / 300.0, g_brk[2] / 300.0, g_brk[3] / 300.0, g_brk_other / 300.0);
+        g_vp_pass = g_vp_pso = 0; memset(g_pb_ns, 0, sizeof g_pb_ns); memset(g_brk, 0, sizeof g_brk); g_brk_other = 0;
         { extern _Atomic uint64_t g_wait_sync_ns, g_wait_sync_n; uint64_t ws = atomic_exchange(&g_wait_sync_ns, 0), wn = atomic_exchange(&g_wait_sync_n, 0);
           VLOG("[prof] waits per frame: sync waits %.2f ms (%.1f a frame), submission slot %.2f ms", ws / f, wn / 300.0, g_wait_ring_ns / f); g_wait_ring_ns = 0; }
         memset(g_vp_t, 0, sizeof g_vp_t); memset(g_vp_o, 0, sizeof g_vp_o); g_vp_c = 0; g_vp_n = 0; }
