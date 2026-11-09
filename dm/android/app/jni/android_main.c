@@ -662,11 +662,11 @@ static void host_start(void) {
     char p[1200], q[1200];
     snprintf(p, sizeof p, "%s/log.txt", g_files); snprintf(q, sizeof q, "%s/log.prev.txt", g_files); rename(p, q);
     if (freopen(p, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
-    // the log's first lines: the credits (the app is MIT: its copyright notice stays with every copy; the full text is in the menu, About) and, once env.txt is
+    // the log's first lines: the credits (the Galar Native License; the d2r-mobile / nxnative parts are MIT, whose notice stays with every copy; the full text is in the menu, About) and, once env.txt is
     //   read, whether this is an official build (BuildSigner's DM_BUILD_SIGNER), so a log attached to an issue says at once whether it comes from a repack
     { const char *v = getenv("DM_APP_VERSION");
-      fprintf(stderr, "boot: app version code %s. Copyright (c) 2026 jhaizhou (d2r-mobile, nxnative) and the Galar Native (formerly PKShield Android) contributors. "
-                      "MIT License (menu, About). Official downloads: github.com/simipoB/Galar-Native-Android/releases\n", v && *v ? v : "?"); }
+      fprintf(stderr, "boot: app version code %s. Copyright (c) 2026 SimipoB and the Galar Native contributors; parts (c) 2026 jhaizhou (d2r-mobile, nxnative), MIT. "
+                      "Galar Native License: source-available, no changed or shared copies (menu, About). Official downloads: github.com/simipoB/Galar-Native-Android/releases\n", v && *v ? v : "?"); }
     { char d[256]; snprintf(d, sizeof d, DL "/%s-log-previous.txt", g_stem); copy_file(q, d); }
     snprintf(g_crash_src, sizeof g_crash_src, "%s/log.txt", g_files); snprintf(g_crash_dl, sizeof g_crash_dl, DL "/%s-log.txt", g_stem);
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }

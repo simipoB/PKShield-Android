@@ -283,7 +283,7 @@ Signed with the %s release key.	%s のリリース鍵で署名されています
 This copy was not signed by the %s project (signer %s). It may have been changed.	このコピーは %s プロジェクトの署名ではありません（署名者 %s）。改変されている可能性があります。
 Official downloads: %s	公式ダウンロード: %s
 Credits	クレジット
-Free software under the MIT License. This notice must stay with every copy.	MIT ライセンスのフリーソフトウェアです。この表示はすべてのコピーに含める必要があります。
+Source-available under the Galar Native License: personal use only, no changed or shared copies. Parts from d2r-mobile / nxnative are under the MIT License.	Galar Native ライセンスのソース公開ソフトウェアです。個人での利用のみ可能で、改変したコピーや配布はできません。d2r-mobile / nxnative 由来の部分は MIT ライセンスです。
 Show the license	ライセンスを表示
 Third-party code	サードパーティのコード
 Vibrate on press	押したときに振動

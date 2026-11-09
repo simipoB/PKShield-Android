@@ -83,4 +83,13 @@ Import a mod `.zip` (`romfs/` file replacements, `exefs/*.pchtxt` code patches f
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**, **yuzu**: references.
 - **SPIRV-Cross**, **CPython**, **capstone**, **LZ4**, **libvpx**, **stb_vorbis**, **Vulkan Headers**, **DejaVu Sans**, **native_app_glue**.
 
+## License
+
+Galar Native is **source-available, not open source**. From 9 November 2026 it is under the [Galar Native License](LICENSE): the PolyForm Strict License 1.0.0 with additional terms.
+
+- **Allowed:** reading the code, building it unchanged for your own use, and sending pull requests to this repository.
+- **Not allowed:** sharing changed or renamed builds, using the code commercially, copying or reworking it into other projects (by hand or with an AI), or using it to train AI. See [AI_POLICY.md](AI_POLICY.md).
+
+Code from d2r-mobile / nxnative stays under the MIT License ([LICENSE-MIT-upstream](LICENSE-MIT-upstream)), and `dm/third_party` keeps its own licenses. Copies obtained before 9 November 2026 stay under the MIT License they came with.
+
 Pokémon, Pokémon Sword and Pokémon Shield are trademarks of Nintendo, Creatures Inc. and GAME FREAK inc. Not affiliated with or endorsed by them.

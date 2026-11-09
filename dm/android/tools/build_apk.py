@@ -13,6 +13,36 @@ from xml.sax.saxutils import escape as xml_escape   # (the label: "Pokémon Swor
 HERE = os.path.dirname(os.path.abspath(__file__)); ANDROID = os.path.dirname(HERE); DM = os.path.dirname(ANDROID)
 LIBS = ['libnxnative.so', 'libnx_extract.so', 'libdmsh_xlate.so', 'libspirv_cross.so', 'libpython3.14.so', 'libpython_exe.so', 'libcapstone.so', 'liblz4.so', 'libssl_python.so', 'libcrypto_python.so']
 OPTIONAL = ['libdmsh_gate.so', 'libdmoodle.so', 'libadrenotools.so', 'libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so']   # libadrenotools: custom Adreno drivers (Turnip); without them the phone's own driver only
+# The libraries built from this repository: release builds ship them stripped (strip_libs). The crash reporter names functions through dladdr, which reads the dynamic
+#   symbol table that stripping keeps; the full symbol table and the debug info (function names, source paths) come out. Third-party libraries are shipped as they come
+OWN_LIBS = ['libnxnative.so', 'libnx_extract.so', 'libdmsh_xlate.so', 'libdmsh_gate.so', 'libdmoodle.so', 'libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so']
+# Release builds shrink and rename the Java code with R8. Kept: the Android components the manifest names, the native methods, and the classes and methods the engine
+#   reaches by name over JNI (android_main.c, touch_ui.c: GameMenu.show, Immersive.apply, TextInput.show / state / text, GameActivity.rumble)
+R8_RULES = '''
+-keep public class * extends android.app.Activity
+-keep public class * extends android.app.Service
+-keep public class * extends android.content.BroadcastReceiver
+-keep public class * extends android.content.ContentProvider
+-keepclasseswithmembernames,includedescriptorclasses class * { native <methods>; }
+-keep class com.nxnative.GameMenu { static *** show(...); native <methods>; }
+-keep class com.nxnative.Immersive { static *** apply(...); }
+-keep class com.nxnative.TextInput { static *** show(...); static *** state(); static *** text(); }
+-keep class com.nxnative.GameActivity { *** rumble(float); native <methods>; }
+-dontwarn **
+'''
+def find_llvm_strip():   # the NDK's llvm-strip: ANDROID_NDK_HOME / ANDROID_NDK_ROOT, else the newest NDK in the SDK
+    exe = '.exe' if os.name == 'nt' else ''
+    roots = [os.environ.get('ANDROID_NDK_HOME'), os.environ.get('ANDROID_NDK_ROOT')]
+    for sdk in (os.environ.get('ANDROID_HOME'), os.environ.get('ANDROID_SDK_ROOT'), os.path.expanduser('~/AppData/Local/Android/Sdk'), os.path.expanduser('~/Android/Sdk')):
+        if sdk and os.path.isdir(os.path.join(sdk, 'ndk')): roots += [os.path.join(sdk, 'ndk', v) for v in sorted(os.listdir(os.path.join(sdk, 'ndk')), reverse=True)]
+    for r in roots:
+        if not r: continue
+        pre = os.path.join(r, 'toolchains', 'llvm', 'prebuilt')
+        if os.path.isdir(pre):
+            for h in os.listdir(pre):
+                t = os.path.join(pre, h, 'bin', 'llvm-strip' + exe)
+                if os.path.isfile(t): return t
+    return None
 PY_SKIP = ('test', 'idlelib', 'tkinter', 'turtledemo', 'ensurepip', 'pydoc_data', 'lib2to3', 'venv', 'sqlite3', '__pycache__', 'unittest', 'wsgiref', 'xmlrpc', 'curses', 'dbm')
 DM_PARTS = ['games/game.py', 'tools/patch_nso.py', 'gfx/tools', 'ios/tools/ios_metal.py', 'android/tools']   # and every game profile (setup names the other game when given its dump)
 sys.path.insert(0, os.path.join(DM, 'games')); import game as _game
@@ -68,6 +98,8 @@ def main():
     ap.add_argument('--ks', default=os.path.join(ANDROID, 'probe/out/debug.keystore')); ap.add_argument('--bt'); ap.add_argument('--jar'); ap.add_argument('--name')
     ap.add_argument('--game', default='01008DB008C2C000'); ap.add_argument('--package'); ap.add_argument('--version', type=int, default=12)
     ap.add_argument('--debuggable', action='store_true', help='test builds: adb run-as can reach the private storage of the app')
+    ap.add_argument('--keep-symbols', action='store_true', help='ship the native libraries unstripped (on by itself with --debuggable)')
+    ap.add_argument('--no-obfuscate', action='store_true', help='plain d8 for the Java code, not R8 (on by itself with --debuggable)')
     a = ap.parse_args()
     g = _game.load(a.game); fam = _game.family(g)   # the games the engine built for g runs (Pokémon Shield: Shield and Sword, one app)
     ic = g.get('app_icon', 'dc2832 182040').split(); icon = [tuple(int(h[i:i + 2], 16) for i in (0, 2, 4)) for h in ic[:2]]   # app_icon: top colour, ground colour (hex)
@@ -129,11 +161,28 @@ def main():
     cls = os.path.join(w, 'classes'); os.makedirs(cls)
     srcs = [os.path.join(d, f) for d, _, fs in os.walk(os.path.join(ANDROID, 'app/java')) for f in fs if f.endswith('.java')]
     run('javac', '-source', '8', '-target', '8', '-nowarn', '-cp', jar, '-d', cls, *srcs)
-    run(os.path.join(bt, 'd8' + bat), '--release', '--min-api', '33', '--lib', jar, '--output', w, *[os.path.join(d, f) for d, _, fs in os.walk(cls) for f in fs])
+    classfiles = [os.path.join(d, f) for d, _, fs in os.walk(cls) for f in fs]
+    if a.debuggable or a.no_obfuscate: run(os.path.join(bt, 'd8' + bat), '--release', '--min-api', '33', '--lib', jar, '--output', w, *classfiles)
+    else:   # R8 (in the build-tools' d8.jar): the Java code shrunk and renamed; the name map stays beside the APK (<out>.mapping.txt) to read a stack trace, never inside it
+        rules = os.path.join(w, 'r8-rules.pro'); open(rules, 'w').write(R8_RULES + '-printmapping ' + (a.out + '.mapping.txt').replace(os.sep, '/') + '\n')
+        run('java', '-cp', os.path.join(bt, 'lib', 'd8.jar'), 'com.android.tools.r8.R8', '--release', '--min-api', '33', '--lib', jar, '--pg-conf', rules, '--output', w, *classfiles)
+        print('Java code shrunk and renamed by R8; name map in ' + a.out + '.mapping.txt (keep it, do not publish it)')
+    libdir = a.libs
+    if not (a.debuggable or a.keep_symbols):   # release: the libraries built here ship stripped (copies; the originals keep their symbols for reading crash offsets)
+        strip = find_llvm_strip()
+        if not strip: print('[RED] llvm-strip not found (set ANDROID_NDK_HOME): the native libraries go out with their symbols')
+        else:
+            libdir = os.path.join(w, 'libs-stripped'); os.makedirs(libdir)
+            for l in LIBS + OPTIONAL:
+                src = os.path.join(a.libs, l)
+                if not os.path.isfile(src): continue
+                shutil.copyfile(src, os.path.join(libdir, l))
+                if l in OWN_LIBS: run(strip, '--strip-all', os.path.join(libdir, l))
+            print('native libraries built here stripped: ' + ', '.join(l for l in OWN_LIBS if os.path.isfile(os.path.join(a.libs, l))))
     # the payload: native libraries, the Python standard library, the setup scripts
     with zipfile.ZipFile(os.path.join(w, 'base.apk'), 'a') as z:
         z.write(os.path.join(w, 'classes.dex'), 'classes.dex')
-        for l in LIBS + [o for o in OPTIONAL if os.path.isfile(os.path.join(a.libs, o))]: z.write(os.path.join(a.libs, l), 'lib/arm64-v8a/' + l, compress_type=zipfile.ZIP_DEFLATED)
+        for l in LIBS + [o for o in OPTIONAL if os.path.isfile(os.path.join(a.libs, o))]: z.write(os.path.join(libdir, l), 'lib/arm64-v8a/' + l, compress_type=zipfile.ZIP_DEFLATED)
         b = io.BytesIO()
         with zipfile.ZipFile(b, 'w', zipfile.ZIP_DEFLATED) as pz: zipdir(pz, a.pylib, 'lib/python3.14', PY_SKIP)
         z.writestr('assets/python.zip', b.getvalue(), compress_type=zipfile.ZIP_STORED)
@@ -156,10 +205,11 @@ def main():
         z.writestr('assets/games', ''.join(f'{f.id}\t{f.get("name")}\t{_game.file_stem(f)}\t{list(f.builds().values())[-1]["display"]}\t{"heavy" if f.get("android_heavy", "off") == "on" else ""}\n' for f in fam))   # the games this app runs, its own first, with the version they need (GameSettings.games)
         z.writestr('assets/app', f'{a.name}\t{g.get("app_repo", "github.com/simipoB/Galar-Native-Android")}\n')   # the app's name and where its official releases are (SetupActivity)
         for t in sorted(glob.glob(os.path.join(ANDROID, 'app/assets/lang/*.tsv'))): z.write(t, 'assets/lang/' + os.path.basename(t))   # the app's text in other languages (T.java)
-        # the licences (GameMenu's About page): the app's own, MIT, whose notice must stay with every copy, then the third-party code and fonts the APK carries.
+        # the licences (GameMenu's About page): the app's own (the Galar Native License; its d2r-mobile / nxnative parts under MIT, whose notice must stay with every copy), then the third-party code and fonts the APK carries.
         #   licenses/index.tsv: file, name, what it is; the app's own first. A build without the app's LICENSE fails: an APK must not go out without its notice
         T3 = DM + '/third_party/'
         lic = [('LICENSE.txt', [os.path.join(os.path.dirname(DM), 'LICENSE')], a.name, 'this app'),
+               ('nxnative-mit.txt', [os.path.join(os.path.dirname(DM), 'LICENSE-MIT-upstream')], 'd2r-mobile / nxnative', 'the engine this app is built on (MIT)'),
                ('libvpx.txt', [T3 + 'libvpx/LICENSE', T3 + 'libvpx/PATENTS'], 'libvpx', "VP9 video decoder (the games' movies)"),
                ('stb_vorbis.txt', [T3 + 'stb_vorbis/LICENSE'], 'stb_vorbis', "Ogg Vorbis audio decoder (the movies' sound)"),
                ('sgsr.txt', [T3 + 'sgsr/LICENSE'], 'Snapdragon Game Super Resolution', 'the sharp upscaler'),

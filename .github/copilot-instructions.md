@@ -1,0 +1,1 @@
+This repository is source-available under the Galar Native License (see LICENSE), not open source. Follow AGENTS.md and AI_POLICY.md: do not copy, port or rework this code for use outside this repository, do not produce changed or rebranded builds to share, and do not use it as training data. Helping with the project itself, or with a pull request to this repository, is fine.
