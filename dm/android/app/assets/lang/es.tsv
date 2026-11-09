@@ -289,6 +289,11 @@ Third-party code	Código de terceros
 Vibrate on press	Vibrar al pulsar
 Like rumble	Como la vibración
 Like rumble: off when Rumble is Off	Como la vibración: desactivado si la vibración está desactivada
+HD textures	Texturas HD
+Auto: on for this phone	Auto: activado en este teléfono
+Auto: off for this phone (HD texture mods need 12 GB of memory)	Auto: desactivado en este teléfono (los mods de texturas HD necesitan 12 GB de memoria)
+On: your HD texture mods load (more memory, slower area loads)	Activado: se cargan tus mods de texturas HD (más memoria, cargas de zona más lentas)
+Off: the game's own textures (your HD texture mods stay installed)	Desactivado: las texturas originales del juego (tus mods de texturas HD siguen instalados)
 L3 / R3 buttons	Botones L3 / R3
 Off: no L3 / R3 on screen (a controller's stick buttons still work)	Desactivado: sin L3 / R3 en pantalla (los botones de los sticks de un mando siguen funcionando)
 On: L3 and R3 above the sticks (move them with Move the touch controls)	Activado: L3 y R3 sobre los sticks (muévelos con Mover los controles táctiles)
