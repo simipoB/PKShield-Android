@@ -128,6 +128,7 @@ public final class SetupActivity extends Activity {
         // the app's icon with two games: the launcher, once one of them is set up; before that (the first start after installing) the setup screen, which says what to do
         else if (!running && !asked && GameSettings.games(this).size() > 1 && !readyGames().isEmpty()) { launcher(official); return; }
         else if (!running && !asked) { List<String> ready = readyGames(); if (ready.size() == 1) GameSettings.choose(this, ready.get(0)); else if (ready.size() > 1) asked = true; }
+        cleanLeftovers();   // (before the game may start straight away: a stopped setup's leftovers, in the background)
         if (ready()) setupShortcut();
         if (ready() && !asked && !running && notices()) asked = true;   // the last run crashed starting its graphics: this screen offers a driver instead of starting the game
         if (ready() && !asked && !running) { gameIcon(); if (!pendingWork(gameDir())) { startGame(); return; } }
@@ -353,6 +354,32 @@ public final class SetupActivity extends Activity {
     // a driver package into the app's private storage (libadrenotools loads drivers only from there): its meta.json names the library
     private void installDriver(Uri u, String name) { status.setText(DriverPackages.install(this, u, name)); refresh(); }   // (DriverPackages: shared with the in-game menu)
     private static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) deleteTree(c); f.delete(); }
+    private static long treeSize(File f) { if (f.isFile()) return f.length(); long s = 0; File[] k = f.listFiles(); if (k != null) for (File c : k) s += treeSize(c); return s; }
+    // What a setup that stopped leaves behind (#47: 26 GB for a 10 GB game): its unpacked game in setup_work (about 12 GB; any later setup unpacks the game again, so it
+    //   is never read once the app has restarted) and its scan, and the loose shader folder (vk/) of setups made before the shader pack. Not while a setup runs, nor
+    //   within 10 minutes of its log changing (a setup still going); a translation a later "Set up again" can keep (translated.json, setup_game.py) stays
+    private void cleanLeftovers() {
+        if (running) return;
+        final List<File> dirs = new ArrayList<>(); File root = GameSettings.root(this); List<String[]> gs = GameSettings.games(this);
+        for (int i = 0; i < gs.size(); i++) dirs.add(i == 0 ? root : new File(root, gs.get(i)[0]));
+        new Thread(() -> {
+            long freed = 0;
+            for (File game : dirs) {
+                File work = new File(game, "setup_work"), log = new File(work, "setup.log");
+                if (running || (log.isFile() && System.currentTimeMillis() - log.lastModified() < 10 * 60 * 1000L)) continue;
+                boolean keepXlate = new File(work, "translated.json").isFile();
+                File[] w = work.listFiles();
+                if (w != null) for (File f : w) { String n = f.getName();
+                    boolean drop = n.equals("extract") || n.equals("shader_pkg") || n.equals("cas") || n.equals("aoc") || n.startsWith("dmsh_")
+                        || (!keepXlate && (n.equals("vk") || n.equals("shader_cache")));
+                    if (drop && !running) { freed += treeSize(f); deleteTree(f); } }
+                File vk = new File(game, "vk");
+                if (vk.isDirectory() && new File(game, "shaders.pak").isFile() && new File(game, "ready").isFile() && !running) { freed += treeSize(vk); deleteTree(vk); }
+            }
+            if (freed > (64L << 20)) { final String gb = String.format(java.util.Locale.ROOT, "%.1f", freed / 1e9);
+                runOnUiThread(() -> { if (status != null && status.getText().length() == 0) status.setText(T.t(this, "Freed %s GB left over from an earlier setup.", gb)); }); }
+        }).start();
+    }
     private void refresh() {
         if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? T.t(this, "the phone's own Vulkan driver") : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")");
                                   if (maliBox != null) maliBox.setVisibility(MaliDriver.isPanvk(d) ? android.view.View.VISIBLE : android.view.View.GONE); }

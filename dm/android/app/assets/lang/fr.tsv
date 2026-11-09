@@ -272,3 +272,4 @@ FristOneRR's PanVK driver supports this Mali: download its .zip from the develop
 No replacement driver supports this GPU yet. Please report it with the log in Download (the -log-previous.txt file), so the app can be fixed for it.	Aucun pilote de remplacement ne prend encore en charge ce GPU. Signalez-le avec le journal dans Download (le fichier -log-previous.txt) pour que l'application puisse être corrigée.
 Faster rendering (experimental)	Rendu plus rapide (expérimental)
 On: the graphics work runs on its own thread, next to the game's. Not tested on every phone yet: if the game misbehaves, turn it off and tell us on GitHub	Activé : le travail graphique tourne sur son propre fil, à côté de celui du jeu. Pas encore testé sur tous les téléphones : si le jeu se comporte mal, désactivez-le et dites-le-nous sur GitHub
+Freed %s GB left over from an earlier setup.	%s Go restants d’une configuration précédente ont été libérés.

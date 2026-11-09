@@ -152,6 +152,7 @@ static int g_arm_rel, g_arm_p;   // Arm's own Mali driver: its release, r<rel>p<
 static int g_arm_beta;           // ... a beta build of it (driverInfo "v1.r49p1-03bet0": the G925's)
 static int g_clampzero; static _Atomic int g_clampzero_n;   // shaders get spv_clamp_zero (Arm erratum 3779215: mtl_init decides); how many it changed
 static int g_dualsrc = 1;        // the device blends with a second shader output (dualSrcBlend): Arm's own Mali driver has none (r44p1)
+static int g_tlsem = 1;          // the device has timeline semaphores; 0: each submission signals a fence of its own instead (older Adreno stock drivers, Vulkan 1.1, #99)
 // Markers of a set-up step that crashed the driver (mark_file below), one set per driver kind: a crash on a driver package does not change the phone's own driver
 static const char *drv_mark(const char *base) {
     static char m[4][64]; static int k; char *o = m[k++ & 3]; const char *d = getenv("DM_VK_DRIVER");
@@ -229,8 +230,9 @@ void mtl_init(void) {
         // Timeline semaphores are required. Dynamic rendering and extended dynamic state are used where listed; without them passes are render passes (rend_begin)
         //   and the draw state goes into the pipelines (sst): Arm's r32 driver of a Mali-G68 (Galaxy A25 5G) lists neither, and the game stopped here before
         static const char *deps11[] = { "VK_KHR_depth_stencil_resolve", "VK_KHR_create_renderpass2", "VK_KHR_multiview", "VK_KHR_maintenance2" };   // dynamic rendering's prerequisites on 1.1
-        if (!has_ext(de, nde, "VK_KHR_timeline_semaphore")) VDIE("Vulkan %u.%u device without VK_KHR_timeline_semaphore", VK_API_VERSION_MAJOR(g_api), VK_API_VERSION_MINOR(g_api));
-        dext[ndext++] = "VK_KHR_timeline_semaphore";
+        // without timeline semaphores (a Vulkan 1.1 Adreno 6xx stock driver: #99, Adreno 613) every submission signals a fence of its own instead (g_tlsem)
+        if (has_ext(de, nde, "VK_KHR_timeline_semaphore")) dext[ndext++] = "VK_KHR_timeline_semaphore";
+        else { g_tlsem = 0; VLOG("Vulkan %u.%u device without timeline semaphores: a fence for each submission instead", VK_API_VERSION_MAJOR(g_api), VK_API_VERSION_MINOR(g_api)); }
         if ((x_dynren = has_ext(de, nde, "VK_KHR_dynamic_rendering"))) {
             dext[ndext++] = "VK_KHR_dynamic_rendering";
             if (old11) for (unsigned k = 0; k < sizeof deps11 / sizeof *deps11; k++) if (has_ext(de, nde, deps11[k])) dext[ndext++] = deps11[k];
@@ -349,7 +351,7 @@ void mtl_init(void) {
     VkPhysicalDeviceDynamicRenderingFeatures fdr = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES };
     void *tail = opt;
     if (old && x_eds) { fed.pNext = tail; tail = &fed; }
-    if (old11) { fts.pNext = tail; tail = &fts; }
+    if (old11 && g_tlsem) { fts.pNext = tail; tail = &fts; }   // (only with its extension enabled: a structure of one that is not is invalid)
     if (old && x_dynren) { fdr.pNext = tail; tail = &fdr; }
     VkPhysicalDeviceVulkan13Features f13 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = opt };
     VkPhysicalDeviceVulkan12Features f12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = old ? tail : (void *)&f13 };
@@ -358,7 +360,7 @@ void mtl_init(void) {
     vkGetPhysicalDeviceFeatures2(g_pd, &f2);
     int dynren = old ? x_dynren && fdr.dynamicRendering : f13.dynamicRendering, timeline = old11 ? fts.timelineSemaphore : f12.timelineSemaphore;
     int eds = old ? x_eds && fed.extendedDynamicState : 1;
-    if (!timeline) VDIE("timeline semaphores missing");
+    if (!timeline && g_tlsem) { g_tlsem = 0; VLOG("timeline semaphores listed but not supported: a fence for each submission instead"); }
     g_dynren = dynren && !(getenv("DM_VK_NO_DYNREN") && atoi(getenv("DM_VK_NO_DYNREN")));
     g_eds = eds && !(getenv("DM_VK_NO_EDS") && atoi(getenv("DM_VK_NO_EDS")));
     VLOG("passes: %s; draw state: %s", g_dynren ? "dynamic rendering" : dynren ? "render passes (DM_VK_NO_DYNREN)" : "render passes (the driver has no dynamic rendering)",
@@ -924,6 +926,7 @@ typedef struct {
     wb_t *wb; int nwb, cwb;        // mirrored pools: ranges the GPU writes in this submission (copied back to the game's pages at completion)
     VkDescriptorPool *dp; int ndp, cdp;   // g_nopush: this submission's descriptor pools (dp[cdp] in use), reset when it is reused
     uint64_t frame;                 // the frame it belongs to (GPU time per frame, mtl_gpu_ms)
+    VkFence vf;                     // without timeline semaphores (g_tlsem 0): the fence its submission signals, waited for by the completion thread
 } sub_t;
 #define NSUB 6
 static sub_t g_subs[NSUB]; static sub_t *g_sub; static int g_sub_next;
@@ -996,12 +999,12 @@ static void *completion_main(void *unused) {
     for (;;) {
         pthread_mutex_lock(&g_cmu);
         while (!g_nin) pthread_cond_wait(&g_ccv, &g_cmu);
-        sub_t *s = g_inflight[0]; uint64_t want = s->fence;
+        sub_t *s = g_inflight[0]; uint64_t want = s->fence; VkFence vf = s->vf;
         pthread_mutex_unlock(&g_cmu);
         VkSemaphoreWaitInfo wi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_tl, .pValues = &want };
-        VkResult r = vk_wait(&wi, VK_NULL_HANDLE, 2000000000ull);
+        VkResult r = g_tlsem ? vk_wait(&wi, VK_NULL_HANDLE, 2000000000ull) : vk_wait(NULL, vf, 2000000000ull);
         if (r == VK_TIMEOUT) continue;
-        if (r) VDIE("vkWaitSemaphores failed: %d (device lost?)", r);
+        if (r) VDIE("%s failed: %d (device lost?)", g_tlsem ? "vkWaitSemaphores" : "vkWaitForFences", r);
         post_apply(s); gpu_ts_done(s);
         pthread_mutex_lock(&g_cmu);
         memmove(g_inflight, g_inflight + 1, (size_t)--g_nin * sizeof *g_inflight);
@@ -1014,7 +1017,7 @@ static void *completion_main(void *unused) {
 static void completion_start(void) {
     VkSemaphoreTypeCreateInfo st = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE };
     VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st };
-    VKCHECK(vkCreateSemaphore(g_dev, &sci, NULL, &g_tl));
+    if (g_tlsem) VKCHECK(vkCreateSemaphore(g_dev, &sci, NULL, &g_tl));
     for (int i = 0; i < NSUB; i++) {
         VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, .queueFamilyIndex = g_qf };
         VKCHECK(vkCreateCommandPool(g_dev, &pci, NULL, &g_subs[i].pool));
@@ -1228,11 +1231,12 @@ static int fd_export_mark(int op) {
     return f != NULL;
 }
 static int mirror_ordered(void);
-static void queue_submit(VkCommandBuffer *cbs, uint32_t n, uint64_t signal) {
+static void queue_submit(VkCommandBuffer *cbs, uint32_t n, uint64_t signal, VkFence vf) {
     VkTimelineSemaphoreSubmitInfo ts = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &signal };
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &ts, .commandBufferCount = n, .pCommandBuffers = cbs, .signalSemaphoreCount = 1, .pSignalSemaphores = &g_tl };
+    if (!g_tlsem) { si.pNext = NULL; si.signalSemaphoreCount = 0; si.pSignalSemaphores = NULL; }   // (the fence vf says it is done instead)
     if (!mirror_ordered()) shadow_sync();   // (ordered: the submission's own command buffer copies them, shadow_sync_ordered)
-    pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, VK_NULL_HANDLE); pthread_mutex_unlock(&g_qmu);
+    pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, g_tlsem ? VK_NULL_HANDLE : vf); pthread_mutex_unlock(&g_qmu);
     if (r && g_host_import && host_import_mark(1)) VLOG("[RED] vkQueueSubmit failed with imported host memory: the next start will not import it");
     if (r && g_heapmap > 0 && heap_import_mark(1)) VLOG("[RED] vkQueueSubmit failed with dma-buf pools: the next start moves the driver's mappings instead");
     if (r) VDIE("vkQueueSubmit failed: %d", r);
@@ -1241,7 +1245,11 @@ static void queue_submit(VkCommandBuffer *cbs, uint32_t n, uint64_t signal) {
 static uint64_t submit_tracked(sub_t *s, VkCommandBuffer *cbs, uint32_t n) {
     pthread_mutex_lock(&g_cmu);
     uint64_t f = ++g_fence; s->fence = f;
-    queue_submit(cbs, n, f);
+    if (!g_tlsem) {   // a new fence for this submission (the slot is reused only after its last submission completed, so the old fence is no longer waited on)
+        if (s->vf) vkDestroyFence(g_dev, s->vf, NULL);
+        VkFenceCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO }; s->vf = VK_NULL_HANDLE; VKCHECK(vkCreateFence(g_dev, &fi, NULL, &s->vf));
+    }
+    queue_submit(cbs, n, f, s->vf);
     g_inflight[g_nin++] = s; pthread_cond_broadcast(&g_ccv);
     pthread_mutex_unlock(&g_cmu);
     return f;
