@@ -24,7 +24,8 @@ export default {
 };
 
 async function download(request, env) {
-  const form = await request.formData();
+  let form;
+  try { form = await request.formData(); } catch { return refuse('The human check is missing. Go back to the download page and try again.'); }   // (no form at all)
   const token = String(form.get('cf-turnstile-response') || '');
   if (!token || !env.TURNSTILE_SECRET) return refuse('The human check is missing. Go back to the download page and try again.');
 
