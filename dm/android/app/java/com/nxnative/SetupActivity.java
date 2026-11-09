@@ -61,7 +61,7 @@ public final class SetupActivity extends Activity {
     // static: the setup runs in its own thread and outlives this screen; a new screen (Android may still make one, despite configChanges in the manifest, which keeps it
     // across rotation: #42) must not start a second setup next to it
     private static volatile boolean running;
-    private String unofficial() { String[] app = GameSettings.app(this); return T.t(this, "Unofficial build: not supported. Official %s releases come only from %s/releases.", app[0], app[1]); }
+    private String unofficial() { String[] app = GameSettings.app(this); return T.t(this, "Unofficial build: not supported. Official %s releases come only from %s.", app[0], app[2]); }
 
     private File gameDir() { return GameSettings.dir(this); }   // the chosen game's folder (GameSettings)
     private String[] game() { return GameSettings.game(this); }
@@ -161,7 +161,7 @@ public final class SetupActivity extends Activity {
         // the author, linked to the official page (a copy uploaded elsewhere keeps it unless the APK is changed, and a changed APK says "Unofficial build" above)
         TextView by = text(root, "SimipoB", 13, acc, false); by.setGravity(Gravity.CENTER); by.setPadding(0, 0, 0, px(6));
         by.setPaintFlags(by.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
-        by.setOnClickListener(v -> { try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/simipoB/Galar-Native-Android"))); } catch (Exception e) { } });
+        by.setOnClickListener(v -> { try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(GameSettings.app(this)[2]))); } catch (Exception e) { } });
         LinearLayout c1 = card(root, "1", T.t(this, "Your game files"), acc);
         text(c1, T.t(this, "The base game (.nsp or .xci), the %s update and any DLC. You can choose them all at once.", GameSettings.version(this)), 13, 0xFFA9AFBA, false);
         gameText = text(c1, "", 14, 0xFFF2F3F5, false); gameText.setPadding(0, px(8), 0, px(8));

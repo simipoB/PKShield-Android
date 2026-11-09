@@ -72,10 +72,11 @@ final class GameSettings {
         for (String[] k : known) if (all.contains(k[0])) return k[1];
         return null;
     }
-    // the app's own name and where its official releases are (assets/app, from the base game's profile: Galar Native, Paldea Native)
+    // the app's own name, its repository and where official downloads are (assets/app, from the base game's profile: Galar Native, Paldea Native): { name, repo, download URL }
     static String[] app(Context c) {
-        try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getAssets().open("app"), "UTF-8"))) { String[] a = r.readLine().split("\t"); if (a.length >= 2) return a; } catch (Exception e) { }
-        return new String[] { "Galar Native", "github.com/simipoB/Galar-Native-Android" };
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(c.getAssets().open("app"), "UTF-8"))) { String[] a = r.readLine().split("\t");
+            if (a.length >= 3) return a; if (a.length == 2) return new String[] { a[0], a[1], "https://" + a[1] + "/releases" }; } catch (Exception e) { }
+        return new String[] { "Galar Native", "github.com/simipoB/Galar-Native-Android", "https://galar-native-android.galar-native.workers.dev" };
     }
     static boolean isShield(Context c) { return "01008DB008C2C000".equalsIgnoreCase(game(c)[0]); }
     // the games the built-in 60 fps patch knows (loader.c FPS_SITES: Pokémon Shield and Sword 1.3.2)

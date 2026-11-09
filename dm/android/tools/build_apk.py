@@ -203,7 +203,9 @@ def main():
             if os.path.isfile(p): z.write(p, 'assets/' + f)
         z.writestr('assets/shader_chain', shader_chain(g) + '\n')   # the launcher sends players back to setup when their shader pack was made for another chain
         z.writestr('assets/games', ''.join(f'{f.id}\t{f.get("name")}\t{_game.file_stem(f)}\t{list(f.builds().values())[-1]["display"]}\t{"heavy" if f.get("android_heavy", "off") == "on" else ""}\n' for f in fam))   # the games this app runs, its own first, with the version they need (GameSettings.games)
-        z.writestr('assets/app', f'{a.name}\t{g.get("app_repo", "github.com/simipoB/Galar-Native-Android")}\n')   # the app's name and where its official releases are (SetupActivity)
+        # assets/app: the app's name, its repository, and where official downloads are (app_download: the download site; else the repository's releases page)
+        repo = g.get('app_repo', 'github.com/simipoB/Galar-Native-Android')
+        z.writestr('assets/app', f'{a.name}\t{repo}\t{g.get("app_download", "https://" + repo + "/releases")}\n')   # (SetupActivity)
         for t in sorted(glob.glob(os.path.join(ANDROID, 'app/assets/lang/*.tsv'))): z.write(t, 'assets/lang/' + os.path.basename(t))   # the app's text in other languages (T.java)
         # the licences (GameMenu's About page): the app's own (the Galar Native License; its d2r-mobile / nxnative parts under MIT, whose notice must stay with every copy), then the third-party code and fonts the APK carries.
         #   licenses/index.tsv: file, name, what it is; the app's own first. A build without the app's LICENSE fails: an APK must not go out without its notice

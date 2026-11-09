@@ -440,7 +440,7 @@ public final class GameMenu {
     private static void about(Activity a) {
         String[] app = GameSettings.app(a), sg = BuildSigner.digests(a); boolean official = BuildSigner.official(sg);
         String ver = ""; try { ver = a.getPackageManager().getPackageInfo(a.getPackageName(), 0).versionName; } catch (Exception e) { }
-        String dl = "https://" + app[1] + "/releases";
+        String dl = app[2];   // the official downloads (the download site)
         heading(a, app[0] + (ver == null || ver.isEmpty() ? "" : " v" + ver));
         LinearLayout c = card(a); titleRow(a, c, official ? t(a, "Official build") : t(a, "Unofficial build"), null);
         c.addView(text(a, official ? t(a, "Signed with the %s release key.", app[0])

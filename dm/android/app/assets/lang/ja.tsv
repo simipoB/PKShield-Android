@@ -170,7 +170,7 @@ Touch controls	タッチ操作
 Touch controls: look	タッチ操作：見た目
 Turnip options	Turnipのオプション
 Turnip options (from the next start)	Turnipのオプション（次回起動から）
-Unofficial build: not supported. Official %s releases come only from %s/releases.	非公式ビルド：サポート対象外です。%sの公式版は%s/releasesからのみ配布されます。
+Unofficial build: not supported. Official %s releases come only from %s.	非公式ビルド：サポート対象外です。%sの公式版は%sからのみ配布されます。
 Upscaling	アップスケーリング
 Use the phone's own driver	端末標準のドライバーを使う
 Wait for the current setup to finish.	現在のセットアップが終わるまでお待ちください。
