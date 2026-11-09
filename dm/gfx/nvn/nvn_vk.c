@@ -370,6 +370,16 @@ void mtl_init(void) {
     if (!fcc.depthClipControl) g_clipctl = 0;
     // custom border colours are made without a format (sampler_get), which needs customBorderColorWithoutFormat: a driver without it gets the nearest standard colour
     if (!fbc.customBorderColors || !fbc.customBorderColorWithoutFormat) { if (fbc.customBorderColors) VLOG("custom border colours need a format on this driver: the nearest standard colour instead"); g_border = 0; }
+    // Mali-G615 on Arm's own driver before r49 (the G615 MC2's r44p1) closed the game three frames in (addr 0x90 in libGLES_mali.so: #63 #65 #82 #105 #112) unless its
+    //   uniform buffers were copied at record time (DM_VK_UBO_SNAPSHOT) and its BC textures decoded, not transcoded to ETC2 (DM_VK_BC_TRANSCODE=off): the two logs that play
+    //   on v0.5x (#77, #110) have both, and every crash lacks one of them. Both from the first start there (the safe-start ladder took four crashes to reach them);
+    //   env.txt still wins
+    if (g_props.vendorID == 0x13B5 && (g_props.driverVersion >> 22) < 49 && strstr(g_props.deviceName, "G615") && !(getenv("DM_VK_DRIVER") && *getenv("DM_VK_DRIVER"))) {
+        int u = !getenv("DM_VK_UBO_SNAPSHOT"), b = !getenv("DM_VK_BC_TRANSCODE");
+        setenv("DM_VK_UBO_SNAPSHOT", "1", 0); setenv("DM_VK_BC_TRANSCODE", "off", 0);
+        VLOG("Mali-G615 on Arm's driver r%up%u: DM_VK_UBO_SNAPSHOT=%s (%s), DM_VK_BC_TRANSCODE=%s (%s): what the G615 MC2 needs to get past its first frames (#110)",
+             g_props.driverVersion >> 22, g_props.driverVersion >> 12 & 0x3ff, getenv("DM_VK_UBO_SNAPSHOT"), u ? "default here" : "env.txt", getenv("DM_VK_BC_TRANSCODE"), b ? "default here" : "env.txt");
+    }
     // BC1–BC7: sampled directly where the GPU has them (Adreno, Xclipse, desktop), else decoded on upload (Mali, PowerVR; DM_VK_NO_BC=1 tries that path anywhere)
     if (getenv("DM_VK_NO_BC") && atoi(getenv("DM_VK_NO_BC"))) f2.features.textureCompressionBC = VK_FALSE;
     nvn_fmt_vk_bc(f2.features.textureCompressionBC);
