@@ -369,12 +369,36 @@ static void window_rate(ANativeWindow *w) {
 // order of <mods>/order.txt (the in-game menu's: one name a line, first wins), then by name; a mod's exefs/*.pchtxt code patches are found by the loader (loader.c
 // pchtxt_dir). A mod folder named with a leading "-" or "." is switched off
 static char g_roots[8192]; static size_t g_roots_len; static int g_roots_n;
+// HD texture packs (DM_HD_TEXTURES: "" Auto = the phone profile's DM_AUTO_HD, "on", "off"; the menu's Display → HD textures): a mod whose RomFS is mostly textures,
+//   100 MB or more with at least 3/4 of its bytes under a path naming "texture" (retexture mods such as the HD mod for Sword and Shield), is left out on a phone that
+//   should not carry it, as if switched off: more texture memory and slower area loads would cost a weaker phone its 30 fps
+static int has_texture_word(const char *s) { for (; *s; s++) if (!strncasecmp(s, "texture", 7)) return 1; return 0; }
+static void tex_walk(const char *dir, int intex, uint64_t *all, uint64_t *tex, int depth) {
+    DIR *d = depth > 16 ? NULL : opendir(dir); if (!d) return;
+    struct dirent *e; char p[1200]; struct stat st;
+    while ((e = readdir(d))) {
+        if (e->d_name[0] == '.' || snprintf(p, sizeof p, "%s/%s", dir, e->d_name) >= (int)sizeof p || stat(p, &st)) continue;
+        int t = intex || has_texture_word(e->d_name);
+        if (S_ISDIR(st.st_mode)) tex_walk(p, t, all, tex, depth + 1); else { *all += (uint64_t)st.st_size; if (t) *tex += (uint64_t)st.st_size; }
+    }
+    closedir(d);
+}
+static int texture_pack(const char *romfs) { uint64_t all = 0, tex = 0; tex_walk(romfs, 0, &all, &tex, 0); return all >= (100ull << 20) && tex * 4 >= all * 3; }
+static int hd_textures_on(const char **why) {
+    const char *e = getenv("DM_HD_TEXTURES"); *why = "HD textures in the menu";
+    if (!e || !*e) { e = getenv("DM_AUTO_HD"); *why = "HD textures on Auto: this phone's memory and GPU"; }
+    return !e || strcmp(e, "off");   // (no profile: an older app, as before: on)
+}
 static void mod_root(const char *mods, const char *nm) {
-    char d[1200]; struct stat st;
+    char d[1200]; struct stat st; static char skipped[2048];
     if (nm[0] == '.' || nm[0] == '-' || !strcmp(nm, "romfs") || strchr(nm, '/')) return;
     snprintf(d, sizeof d, "%s/%s/romfs", mods, nm); size_t dl = strlen(d);
     if (stat(d, &st) || !S_ISDIR(st.st_mode) || strchr(d, ':') || g_roots_len + dl + 2 >= sizeof g_roots) return;
     for (const char *q = g_roots; (q = strstr(q, d)); q += dl) if ((q == g_roots || q[-1] == ':') && (q[dl] == ':' || !q[dl])) return;   // (listed already)
+    { char key[300]; snprintf(key, sizeof key, "/%s/", nm); if (strstr(skipped, key)) return;   // (left out already: order.txt, then the folder scan)
+      const char *why; if (!hd_textures_on(&why) && texture_pack(d)) {
+          if (strlen(skipped) + strlen(key) < sizeof skipped) strcat(skipped, key);
+          fprintf(stderr, "boot: mod %s: an HD texture pack, left out (%s)\n", nm, why); return; } }
     g_roots_len += snprintf(g_roots + g_roots_len, sizeof g_roots - g_roots_len, "%s%s", g_roots_len ? ":" : "", d); g_roots_n++;
     fprintf(stderr, "boot: mod %s: RomFS files (load order %d)\n", nm, g_roots_n);
 }

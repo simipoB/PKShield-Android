@@ -289,3 +289,8 @@ Third-party code	サードパーティのコード
 Vibrate on press	押したときに振動
 Like rumble	振動設定に合わせる
 Like rumble: off when Rumble is Off	振動設定に合わせる：振動がオフのときはオフ
+HD textures	HD テクスチャ
+Auto: on for this phone	自動：この端末ではオン
+Auto: off for this phone (HD texture mods need 12 GB of memory)	自動：この端末ではオフ（HD テクスチャ MOD には 12 GB のメモリが必要です）
+On: your HD texture mods load (more memory, slower area loads)	オン：HD テクスチャ MOD を読み込みます（メモリ使用量が増え、エリアの読み込みが遅くなります）
+Off: the game's own textures (your HD texture mods stay installed)	オフ：ゲーム本来のテクスチャ（HD テクスチャ MOD はインストールされたままです）

@@ -243,6 +243,15 @@ public final class GameMenu {
         choice(a, "DM_SCALER", t(a, "Upscaling"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", rec) },
             { "sharp", t(a, "Sharp"), t(a, "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)") },
             { "sgsr", "SGSR", t(a, "Snapdragon Game Super Resolution (Qualcomm's upscaler)") }, { "smooth", t(a, "Smooth"), t(a, "Smooth: a plain stretch") } });
+        // HD textures: the player's own retexture mods (Mods), on Auto only on phones with the memory for them (GameSettings.profile, android_main.c mod_root);
+        //   offered once such a mod is in the mods folder
+        if (GameSettings.hasTexturePack(a)) {
+            boolean hdAuto = GameSettings.profile(a)[8].equals("on");
+            choice(a, "DM_HD_TEXTURES", t(a, "HD textures"), new String[][] {
+                { "", t(a, "Auto"), hdAuto ? t(a, "Auto: on for this phone") : t(a, "Auto: off for this phone (HD texture mods need 12 GB of memory)") },
+                { "on", t(a, "On"), t(a, "On: your HD texture mods load (more memory, slower area loads)") },
+                { "off", t(a, "Off"), t(a, "Off: the game's own textures (your HD texture mods stay installed)") } });
+        }
         heading(a, t(a, "Overlay"));
         choice(a, "DM_PERF_OVERLAY", t(a, "Performance overlay"), new String[][] { { "", t(a, "Off"), "" }, { "on", t(a, "On"), t(a, "On: fps, temperature, GPU, memory, battery") } });
     }

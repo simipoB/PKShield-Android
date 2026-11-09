@@ -289,3 +289,8 @@ Third-party code	Code tiers
 Vibrate on press	Vibrer à l'appui
 Like rumble	Comme la vibration
 Like rumble: off when Rumble is Off	Comme la vibration : coupé quand la vibration est désactivée
+HD textures	Textures HD
+Auto: on for this phone	Auto : activé sur ce téléphone
+Auto: off for this phone (HD texture mods need 12 GB of memory)	Auto : désactivé sur ce téléphone (les mods de textures HD demandent 12 Go de mémoire)
+On: your HD texture mods load (more memory, slower area loads)	Activé : vos mods de textures HD sont chargés (plus de mémoire, chargements de zone plus lents)
+Off: the game's own textures (your HD texture mods stay installed)	Désactivé : les textures d'origine du jeu (vos mods de textures HD restent installés)
