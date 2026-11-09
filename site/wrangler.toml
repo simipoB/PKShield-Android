@@ -1,12 +1,17 @@
-# The official download site (Cloudflare Pages, deployed from this folder of the repository; see site/README.md).
-# The APKs are not in the repository: they live in the R2 bucket below, uploaded by dm/android/tools/publish_cf.py,
-# and functions/download.js hands one out only after a Turnstile check.
-name = "galar-native"
-pages_build_output_dir = "public"
+# The official download site, a Cloudflare Worker deployed from this folder of the repository (Workers Builds, connected to GitHub;
+# see site/README.md). The page is static (public/); src/worker.js answers /download and /api/*. The APKs are not in the repository:
+# they live in the R2 bucket below, uploaded by dm/android/tools/publish_cf.py, and the Worker hands one out only after a Turnstile check.
+# The name must match the Worker's name in the Cloudflare dashboard.
+name = "galar-native-android"
+main = "src/worker.js"
 compatibility_date = "2025-09-01"
 
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
 [vars]
-# The Turnstile widget's site key (public; Cloudflare dashboard, Turnstile). Its secret key is a Pages secret: TURNSTILE_SECRET.
+# The Turnstile widget's site key (public). Its secret key is a Worker secret: npx wrangler secret put TURNSTILE_SECRET
 TURNSTILE_SITEKEY = "0x4AAAAAAF6QctkzjN5JF401"
 
 [[r2_buckets]]
