@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 enum { OVL_DISC = 0, OVL_RING = 1, OVL_RRECT = 2 };
-enum { OVL_G_A, OVL_G_B, OVL_G_X, OVL_G_Y, OVL_G_L, OVL_G_R, OVL_G_ZL, OVL_G_ZR, OVL_G_PLUS, OVL_G_MINUS, OVL_G_NONE = -1 };
+enum { OVL_G_A, OVL_G_B, OVL_G_X, OVL_G_Y, OVL_G_L, OVL_G_R, OVL_G_ZL, OVL_G_ZR, OVL_G_PLUS, OVL_G_MINUS, OVL_G_L3, OVL_G_R3, OVL_G_NONE = -1 };   // (the atlas cells: overlay/ovl_font.h)
 typedef struct {
     float x, y, w, h;          // rectangle, pixels
     float r, g, b, a;          // fill colour (straight alpha)

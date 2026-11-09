@@ -1,8 +1,8 @@
-// Renders the overlay's button labels (A B X Y L R ZL ZR + −) into a 16-cell R8 atlas of 64x64 cells and writes ovl_font.h (nvn_vk.c ovl_*). Run: swift font_atlas.swift
+// Renders the overlay's button labels (A B X Y L R ZL ZR + − L3 R3) into a 16-cell R8 atlas of 64x64 cells and writes ovl_font.h (nvn_vk.c ovl_*). Run: swift font_atlas.swift
 import CoreGraphics
 import CoreText
 import Foundation
-let labels = ["A", "B", "X", "Y", "L", "R", "ZL", "ZR", "+", "\u{2212}"]
+let labels = ["A", "B", "X", "Y", "L", "R", "ZL", "ZR", "+", "\u{2212}", "L3", "R3"]   // (L3 / R3 were first drawn on Windows: Arial Bold through Pillow, the same size)
 let cell = 64, cells = 16, W = cell * cells, H = cell
 var px = [UInt8](repeating: 0, count: W * H)
 let cs = CGColorSpaceCreateDeviceGray()

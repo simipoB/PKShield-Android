@@ -28,7 +28,7 @@
 #include <string.h>
 #include <time.h>
 
-enum { C_STICK, C_CAM, C_RSTICK, C_A, C_B, C_X, C_Y, C_L, C_R, C_ZL, C_ZR, C_PLUS, C_MINUS, C_UP, C_DOWN, C_LEFT, C_RIGHT, C_THROW, C_MENU, NCTL };   // (C_MENU: the ☰ button, the in-game settings)
+enum { C_STICK, C_CAM, C_RSTICK, C_A, C_B, C_X, C_Y, C_L, C_R, C_ZL, C_ZR, C_PLUS, C_MINUS, C_UP, C_DOWN, C_LEFT, C_RIGHT, C_THROW, C_MENU, C_L3, C_R3, NCTL };   // (C_MENU: the ☰ button, the in-game settings; C_L3 / C_R3: pressing the sticks)
 typedef struct { float cx, cy, r; int glyph, shown; uint64_t btn; } ctl;
 static ctl g_c[NCTL];
 static float g_w, g_h;
@@ -54,7 +54,7 @@ static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ?
 
 // ---------- the player's layout (the in-game editor): position, size and visibility of each control, kept in <files>/touch_layout.txt ----------
 // One line per changed control: "<name> <x / width> <y / height> <radius / height> <shown>"; controls without a line keep the default layout
-static const char *const CTL_NAME[NCTL] = { "stick", "camera", "rstick", "a", "b", "x", "y", "l", "r", "zl", "zr", "plus", "minus", "up", "down", "left", "right", "throw", "menu" };
+static const char *const CTL_NAME[NCTL] = { "stick", "camera", "rstick", "a", "b", "x", "y", "l", "r", "zl", "zr", "plus", "minus", "up", "down", "left", "right", "throw", "menu", "l3", "r3" };
 static struct { int set; float fx, fy, fr; int shown; } g_ov[NCTL];
 static char g_lay_path[1100]; static int g_lay_loaded;
 void touch_ui_set_dir(const char *dir) { snprintf(g_lay_path, sizeof g_lay_path, "%s/touch_layout.txt", dir); g_lay_loaded = 0; }
@@ -107,6 +107,10 @@ static void layout(float w, float h) {
     g_c[C_THROW] = (ctl){ w - 0.66f * s, h - 0.56f * s, 0.10f * s, OVL_G_NONE, GESTURES_ON, DM_BTN_ZR };
     g_c[C_RSTICK] = (ctl){ w - 0.80f * s, h - 0.19f * s, 0.11f * s, OVL_G_NONE, 1, 0 };
     g_c[C_MENU] = (ctl){ w * 0.5f - 0.24f * s, 0.06f * s, mr, OVL_G_NONE, 1, 0 };   // ☰ just left of −, at the top centre: the settings (front_open_menu); no Switch button
+    // L3 / R3 (pressing a stick in, #108): small buttons just above each stick, outside its touch area (1.3 x its radius) and clear of the D-pad and A B X Y on
+    //   16:9 to 20:9 screens; hide or move them in the layout editor like any other
+    g_c[C_L3] = (ctl){ g_c[C_STICK].cx, g_c[C_STICK].cy - 0.22f * s, 0.05f * s, OVL_G_L3, 1, DM_BTN_LS };
+    g_c[C_R3] = (ctl){ g_c[C_RSTICK].cx, g_c[C_RSTICK].cy - 0.21f * s, 0.05f * s, OVL_G_R3, 1, DM_BTN_RS };
     // touch-first games (Legends: Arceus): only the movement stick and − / + on screen; everything else is touch on the game itself (touch_ui_event's gestures, touch_menu.c)
     if (GESTURES_ON) for (int c = C_RSTICK; c < NCTL; c++) if (c != C_PLUS && c != C_MINUS && c != C_MENU) g_c[c].shown = 0;
     if (!g_rstick_on) { g_rknob_x = g_c[C_RSTICK].cx; g_rknob_y = g_c[C_RSTICK].cy; }
@@ -445,7 +449,7 @@ int front_overlay(dm_ovl_item *it, int max, int width, int height) {
             if (c == C_THROW) { pokeball(it, &n, max, &g_c[c], on, al); continue; }
             if (c == C_MENU) { menu_icon(it, &n, max, &g_c[c], idle ? fmaxf(al, 0.45f) : al); continue; }   // (never quite gone: it is how the settings are found)
             bubble(it, &n, max, &g_c[c], on, 0, al);
-            if (c >= C_UP && al == 1.0f) { float r = g_c[c].r, ox = c == C_LEFT ? -0.42f : c == C_RIGHT ? 0.42f : 0, oy = c == C_UP ? -0.42f : c == C_DOWN ? 0.42f : 0;
+            if (c >= C_UP && c <= C_RIGHT && al == 1.0f) { float r = g_c[c].r, ox = c == C_LEFT ? -0.42f : c == C_RIGHT ? 0.42f : 0, oy = c == C_UP ? -0.42f : c == C_DOWN ? 0.42f : 0;
                 add(it, &n, max, g_c[c].cx + ox * r, g_c[c].cy + oy * r, r * 0.22f, OVL_DISC, 255, 255, 255, 0.9f); } }
         compass(it, &n, max, g_stick_on ? 1.0f : idle ? ia : 0.75f, g_stick_x, g_stick_y, g_knob_x, g_knob_y, g_c[C_STICK].r);
         if (g_c[C_RSTICK].shown) compass(it, &n, max, g_rstick_on ? 1.0f : idle ? ia : faint ? 0.25f : 0.75f, g_c[C_RSTICK].cx,   // faint while unused: it and the D-pad sit over the dialogue box
