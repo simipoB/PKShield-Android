@@ -7,7 +7,7 @@ compatibility_date = "2025-09-01"
 
 [vars]
 # The Turnstile widget's site key (public; Cloudflare dashboard, Turnstile). Its secret key is a Pages secret: TURNSTILE_SECRET.
-TURNSTILE_SITEKEY = "REPLACE_WITH_THE_TURNSTILE_SITE_KEY"
+TURNSTILE_SITEKEY = "0x4AAAAAAF6QctkzjN5JF401"
 
 [[r2_buckets]]
 binding = "APKS"
