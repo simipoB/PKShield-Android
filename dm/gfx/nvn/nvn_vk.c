@@ -545,6 +545,7 @@ static void defer_add(dfr d) {
 // vkDestroyImageView hits that stale entry - the pass can leave its attachment unwritten (Arm erratum 3786926, r49p1-r51; MaliBridge MK-06 saw it on a G720 r44p1 too, a
 // stale picture once images were being made and destroyed). Destroyed views and images wait in a FIFO, views ahead of their images, so a handle value does not come back
 // soon; the memory under them is freed at once (only handles are held). DM_VK_VIEW_QUARANTINE=n sets its size, 0 turns it off
+static void fbc_forget(VkImageView v);   // (the framebuffers naming a view, destroyed just before it: render passes below)
 typedef struct { uint64_t h; uint8_t img; } qent;
 static qent *g_vq; static int g_vqcap = -1; static size_t g_vqhead, g_vqcount;
 static int quarantine_on(void) {
@@ -555,7 +556,7 @@ static int quarantine_on(void) {
 }
 static void q_put(int img, uint64_t h) {   // caller holds g_dfmu
     if (g_vqcount == (size_t)g_vqcap) { qent e = g_vq[g_vqhead]; g_vqhead = (g_vqhead + 1) % (size_t)g_vqcap; g_vqcount--;
-        if (e.img) vkDestroyImage(g_dev, (VkImage)(uintptr_t)e.h, NULL); else vkDestroyImageView(g_dev, (VkImageView)(uintptr_t)e.h, NULL); }
+        if (e.img) vkDestroyImage(g_dev, (VkImage)(uintptr_t)e.h, NULL); else { fbc_forget((VkImageView)(uintptr_t)e.h); vkDestroyImageView(g_dev, (VkImageView)(uintptr_t)e.h, NULL); } }
     g_vq[(g_vqhead + g_vqcount) % (size_t)g_vqcap] = (qent){ h, (uint8_t)img }; g_vqcount++;
 }
 static void defer_drain(void) {
@@ -569,7 +570,7 @@ static void defer_drain(void) {
         if (qon && d.kind == DF_VIEW) { q_put(0, (uint64_t)(uintptr_t)d.h.view); vk_free(d.a); continue; }
         if (qon && d.kind == DF_IMAGE) { imgs[nimg++] = d.h.img; vk_free(d.a); continue; }
         switch (d.kind) {
-            case DF_IMAGE: vkDestroyImage(g_dev, d.h.img, NULL); break; case DF_VIEW: vkDestroyImageView(g_dev, d.h.view, NULL); break;
+            case DF_IMAGE: vkDestroyImage(g_dev, d.h.img, NULL); break; case DF_VIEW: fbc_forget(d.h.view); vkDestroyImageView(g_dev, d.h.view, NULL); break;
             case DF_BUFFER: vkDestroyBuffer(g_dev, d.h.buf, NULL); break; case DF_BUFVIEW: vkDestroyBufferView(g_dev, d.h.bview, NULL); break;
             case DF_PIPELINE: vkDestroyPipeline(g_dev, d.h.pipe, NULL); break; case DF_ALLOC: break;
             case DF_FRAMEBUFFER: vkDestroyFramebuffer(g_dev, d.h.fb, NULL); break;
@@ -1184,6 +1185,16 @@ static void scfb_forget(VkImageView v) {   // the view is being destroyed (the G
     for (int i = 0; i < g_nscfb;) if (g_scfb[i].v == v) { vkDestroyFramebuffer(g_dev, g_scfb[i].fb, NULL); g_scfb[i] = g_scfb[--g_nscfb]; } else i++;
     pthread_mutex_unlock(&g_scfbmu);
 }
+// Framebuffers of the other passes, kept and found again by render pass, views and size (fb_cache.h). DM_VK_FB_CACHE=0: one framebuffer per pass, as before
+static VkFramebuffer fbc_create(VkRenderPass rp, const VkImageView *views, uint32_t nv, uint32_t w, uint32_t h, uint32_t layers) {
+    VkFramebufferCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = nv, .pAttachments = views, .width = w, .height = h, .layers = layers };
+    VkFramebuffer fb; VKCHECK(vkCreateFramebuffer(g_dev, &fi, NULL, &fb)); return fb;
+}
+#define FBC_CREATE(rp, v, nv, w, h, l) fbc_create(rp, v, nv, w, h, l)
+#define FBC_DESTROY(x) vkDestroyFramebuffer(g_dev, (x), NULL)
+#define FBC_DEFER(x) defer_add((dfr){ .kind = DF_FRAMEBUFFER, .h.fb = (x) })
+#include "fb_cache.h"
+static int fbc_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_FB_CACHE"); on = !e || atoi(e) != 0; } return on; }
 // Begins a pass described as dynamic rendering. cf: each colour slot's format (a slot with no view: ignored), dsfmt: the depth / stencil attachment's format,
 //   samples: the attachments' sample count; swapchain: the one colour attachment is a swapchain image (framebuffer kept, see g_scfb)
 static void rend_begin(VkCommandBuffer cb, const VkRenderingInfo *ri, const uint32_t *cf, uint32_t dsfmt, uint32_t samples, int swapchain) {
@@ -1210,6 +1221,7 @@ static void rend_begin(VkCommandBuffer cb, const VkRenderingInfo *ri, const uint
         for (int i = 0; i < g_nscfb && !fb; i++) if (g_scfb[i].v == views[0] && g_scfb[i].rp == rp && g_scfb[i].w == w && g_scfb[i].h == h) fb = g_scfb[i].fb;
         pthread_mutex_unlock(&g_scfbmu);
     }
+    if (!fb && !swapchain && fbc_on()) fb = fbc_get(rp, views, nv, w ? w : 1, h ? h : 1, ri->layerCount ? ri->layerCount : 1);
     if (!fb) {
         VkFramebufferCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = nv, .pAttachments = views, .width = w ? w : 1, .height = h ? h : 1,
                                        .layers = ri->layerCount ? ri->layerCount : 1 };
@@ -2256,6 +2268,9 @@ static struct { int open; uint32_t cfmt[8], dfmt, sfmt, samples, tw, th; int hd,
 // DM_VK_PROF: what ended each open pass (0 a new render target, 1 a uniform update, 2 a buffer copy, 3 a buffer fill), and the cost of opening one split into its
 //   attachment views, the barrier before it and the driver's begin (g_pb_ns); g_brk_other: any work outside a pass that ended one (the causes above included)
 static uint64_t g_brk[4], g_pb_ns[3], g_brk_other;
+// Every 300 presents (mtl_present), for all players: what ended the passes, and how many passes opened onto exactly the attachments of the one a target change had just
+//   ended (g_pass_samev): passes that could go on as one. The data for joining passes on drivers where each one costs a load and a store of its attachments (#99)
+static uint64_t g_pass_samev; static int g_pass_last_by_rt; static VkImageView g_pass_lastv[9]; static uint32_t g_pass_lastwh[3];
 static VkCommandBuffer CB(void) { return g_sub->cb; }
 // ================= Frame capture (a bug report's pictures) =================
 // One frame, pass by pass: each pass's colour targets scaled into 320x180 pictures (blits into one array image, copied out as they come), and notes on what the pass
@@ -2590,6 +2605,11 @@ static int pass_begin(void) {
                            .pDepthAttachment = P.hd ? &da : NULL, .pStencilAttachment = P.hs ? &sa : NULL };
     rend_begin(CB(), &ri, P.cfmt, P.hd ? P.dfmt : P.hs ? P.sfmt : 0, P.samples, 0); g_stat_begins++;
     if (prof) { uint64_t pt3 = mono_ns(); g_pb_ns[0] += pt1 - pt0; g_pb_ns[1] += pt2 - pt1; g_pb_ns[2] += pt3 - pt2; }
+    {   // a pass onto exactly the attachments of the one a target change just ended (the same views, size and layers): one that could have gone on (g_pass_samev)
+        VkImageView v[9] = { 0 }; for (int i = 0; i < ncol; i++) v[i] = ca[i].imageView; v[8] = P.hd ? da.imageView : P.hs ? sa.imageView : VK_NULL_HANDLE;
+        if (g_pass_last_by_rt && !memcmp(v, g_pass_lastv, sizeof v) && tw == g_pass_lastwh[0] && th == g_pass_lastwh[1] && P.layers == g_pass_lastwh[2]) g_pass_samev++;
+        memcpy(g_pass_lastv, v, sizeof v); g_pass_lastwh[0] = tw; g_pass_lastwh[1] = th; g_pass_lastwh[2] = P.layers; g_pass_last_by_rt = 0;
+    }
     memset(R.clear_c, 0, sizeof R.clear_c); R.clear_d = R.clear_s = 0;
     P.open = 1;
     return 1;
@@ -2600,7 +2620,7 @@ static void pass_flush(void) {   // pending clears with no draw after them: a pa
     if (pend && !P.open && g_sub) pass_begin();
     pass_end();
 }
-static void outside_pass(void) { if (P.open) g_brk_other++; pass_end(); barrier_all(CB()); }   // transfer work: no pass open, ordered after everything before
+static void outside_pass(void) { if (P.open) g_brk_other++; g_pass_last_by_rt = 0; pass_end(); barrier_all(CB()); }   // transfer work: no pass open, ordered after everything before
 
 // ================= Pipelines =================
 typedef struct {
@@ -3551,7 +3571,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_COPY_B2B: { uint64_t s, d, n; memcpy(&s, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); sub_copy(s, d, n); break; }
             case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); sub_update(a + 16, d, n); break; }
             case OP_SET_RT: g_stat_passes++; if (P.open && R.has_rt && !getenv_nomerge() && rt_same(&R.rt, (const p_set_rt *)a)) { g_stat_rt_same++; break; }
-                if (P.open) g_brk[0]++;
+                if (P.open) { g_brk[0]++; g_pass_last_by_rt = 1; }
                 sub_split_at_target();
                 pass_flush(); R.rt = *(const p_set_rt *)a; R.has_rt = 1; break;
             case OP_CLEAR_COLOR: {
@@ -4168,6 +4188,13 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     if (n == 1 || n % 300 == 0) VLOG("present %llu: %llu render target sets (%llu kept the open pass, %llu passes begun), %llu draws so far; textures uploaded %llu (re-uploaded %llu, %.1f MB)%s", (unsigned long long)n, (unsigned long long)g_stat_passes, (unsigned long long)g_stat_rt_same, (unsigned long long)g_stat_begins,
                                      (unsigned long long)g_stat_draws, (unsigned long long)g_pkg_uploads, (unsigned long long)g_pkg_reuploads, g_up_bytes / 1048576.0,
                                      g_bcgpu ? (snprintf(g_bc_line, sizeof g_bc_line, "; BC layer: %llu levels, %llu copies", (unsigned long long)g_bc_gpu_levels, (unsigned long long)g_bc_gpu_copies), g_bc_line) : "");
+    if (n % 300 == 0 && !VPROF_ON)   // (running totals: DM_VK_PROF prints these per 300 frames instead, and resets them)
+        VLOG("passes so far: %llu begun; ended by a new target %llu, a uniform update %llu, a buffer copy %llu, a buffer fill %llu, any work outside a pass %llu (those three included); "
+             "%llu opened onto exactly the attachments a target change had just ended", (unsigned long long)g_stat_begins, (unsigned long long)g_brk[0], (unsigned long long)g_brk[1],
+             (unsigned long long)g_brk[2], (unsigned long long)g_brk[3], (unsigned long long)g_brk_other, (unsigned long long)g_pass_samev);
+    if (!g_dynren && n % 300 == 0) { pthread_mutex_lock(&g_fbcmu);
+        VLOG("render pass framebuffers so far: %llu found again, %llu made, %d kept%s", (unsigned long long)g_fbc_hit, (unsigned long long)g_fbc_made, g_nfbc, fbc_on() ? "" : " (DM_VK_FB_CACHE=0: one per pass)");
+        pthread_mutex_unlock(&g_fbcmu); }
     return n;
 }
 void mtl_present_wait(uint64_t ticket) { (void)ticket; }
