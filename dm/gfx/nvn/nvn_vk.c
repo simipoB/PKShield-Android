@@ -591,6 +591,23 @@ static int g_plast = -1;
 #define PS_BASE(i) (g_pools[i].base)
 #define PS_SIZE(i) (g_pools[i].size)
 #include "pool_index.h"
+#include "pool_pages.h"
+static int pp_hook(void *addr, int is_write, void *uc) { (void)is_write; (void)uc; return pp_fault(addr); }
+static void pp_hook_once(void) { static atomic_int done; if (!atomic_exchange(&done, 1)) dm_fault_hook_register(pp_hook); }
+// MREMAP_DONTUNMAP is tried until the kernel refuses it for the driver's mappings (errno 22, every log so far: Xclipse, Mali): a refused call has already unmapped its
+// target, a gap another thread's new mapping could take before the next call replaces it, so it is not tried again
+#ifdef __linux__
+static atomic_int g_dontunmap = 1;
+static void *mremap_keep_old(void *from, size_t n, void *to) {
+    if (!atomic_load(&g_dontunmap)) { errno = EINVAL; return MAP_FAILED; }
+#ifndef MREMAP_DONTUNMAP
+#define MREMAP_DONTUNMAP 4
+#endif
+    void *q = mremap(from, n, n, MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP, to);
+    if (q == MAP_FAILED && errno == EINVAL && atomic_exchange(&g_dontunmap, 0)) VLOG("pool memory: MREMAP_DONTUNMAP refused (errno 22): moving without it from now on");
+    return q;
+}
+#endif
 // Pool memory of the mremap route is never given back to the driver: Adreno hands the mappings of freed allocations out again, and one whose pages had been moved
 // crashed the next pool (loading a save, leaving the house in Shield) or lost the device. A freed pool's buffer and memory, its pages moved back where the driver
 // mapped them, wait here for the next pool of the same size
@@ -789,13 +806,9 @@ reuse:
 #ifdef __linux__
         // MREMAP_DONTUNMAP leaves the driver's old range mapped (empty) in the same step, so no other thread's mapping can land in a gap there before the placeholder;
         // where the kernel refuses it for this mapping, the plain move and the placeholder right after
-#ifndef MREMAP_DONTUNMAP
-#define MREMAP_DONTUNMAP 4
-#endif
-        void *q = mremap(p, n, n, MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP, (void *)a);
+        void *q = mremap_keep_old(p, n, (void *)a);
         if (q == (void *)a) mmap(p, n, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);   // the empty old range becomes the placeholder (replaced in one step)
         else {
-            static int said; if (!said++) VLOG("pool memory: MREMAP_DONTUNMAP refused (errno %d), moving without it", errno);
             q = mremap(p, n, n, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)a);
             if (q != (void *)a) q = move_pieces((uintptr_t)p, n, (void *)a);
             if (q != (void *)a) {
@@ -835,10 +848,10 @@ void mtl_pool_del(const void *mem) {
         // all the time: 131 times in two minutes of Pokémon Shield's character creation)
         mtl_finish();
         if (e.shadow) { atomic_fetch_sub(&g_nshadow, 1); if (e.tracked_here) nvn_dirty_remove_range((void *)e.base); }
-        if (e.fdmapped) {   // the game's pages back as ordinary memory with the same content, then a plain free (the driver's own mapping was never touched)
-            void *keep = malloc(e.size); memcpy(keep, (void *)e.base, e.size);
-            mmap((void *)e.base, e.size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-            memcpy((void *)e.base, keep, e.size); free(keep);
+        if (e.fdmapped) {   // the game's pages back as ordinary memory with the same content, in one step (pool_pages.h), then a plain free (the driver's own mapping was never touched)
+            void *copy = pages_copy(e.base, e.size);
+            if (copy == MAP_FAILED) VDIE("memory pool %p+%#llx: no memory to give its pages back (errno %d)", (void *)e.base, (unsigned long long)e.size, errno);
+            pages_back(e.base, e.size, copy);
             vkDestroyBuffer(g_dev, e.buf, NULL); vkFreeMemory(g_dev, e.mem, NULL);
             return;
         }
@@ -846,22 +859,31 @@ void mtl_pool_del(const void *mem) {
         if (e.moved_from) {
             // The driver's pages go back where the driver mapped them (over the placeholder) before the free: Adreno keeps freed allocations with their mappings and hands
             // them out again, so a later pool's vkMapMemory returned the placeholder's address and the first write there crashed (loading a save in Pokémon Shield)
-            void *keep = malloc(e.size); memcpy(keep, (void *)e.base, e.size);
+            void *copy = pages_copy(e.base, e.size);   // (made first: the game's pages become it the moment the driver's leave, pool_pages.h)
+            if (copy == MAP_FAILED) VDIE("memory pool %p+%#llx: no memory to give its pages back (errno %d)", (void *)e.base, (unsigned long long)e.size, errno);
 #ifdef __linux__
             // one protection over the whole range first: the texture tracking's write protection splits it into several mappings, and mremap moves one (EFAULT otherwise)
             mprotect((void *)e.base, e.size, PROT_READ | PROT_WRITE);
-            void *q = mremap((void *)e.base, e.size, e.size, MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP, e.moved_from);
-            if (q != e.moved_from) q = mremap((void *)e.base, e.size, e.size, MREMAP_MAYMOVE | MREMAP_FIXED, e.moved_from);   // (then the gap below is filled at once)
-            if (q != e.moved_from) q = move_pieces(e.base, e.size, e.moved_from);
+            // A refused move has already unmapped its target (the placeholder at the driver's address): the placeholder goes back right away, before anything slower
+            //   (move_pieces reads /proc/self/maps), so another thread's new mapping never lands where the next move would replace it
+            #define PLACEHOLDER() mmap(e.moved_from, e.size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0)
+            pp_hook_once(); int pp = pp_begin(e.base, e.size);   // (a game thread touching the range from here to pages_back waits for it: pool_pages.h)
+            int tried = atomic_load(&g_dontunmap); void *q = mremap_keep_old((void *)e.base, e.size, e.moved_from);
+            if (q != e.moved_from) { if (tried) PLACEHOLDER(); q = mremap((void *)e.base, e.size, e.size, MREMAP_MAYMOVE | MREMAP_FIXED, e.moved_from); }
+            if (q != e.moved_from) { int err = errno; PLACEHOLDER(); q = move_pieces(e.base, e.size, e.moved_from); if (q != e.moved_from) errno = err; }
             if (q != e.moved_from) {
-                VLOG("[RED] memory pool %p: the GPU memory could not go back to the driver (errno %d): kept, not freed", (void *)e.base, errno); keep_mem = 1;
-                // the refused moves unmapped the placeholder first: it goes back, so nothing else lands where the driver believes its mapping is
-                mmap(e.moved_from, e.size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
+                int err = errno;
+                pages_back(e.base, e.size, copy); pp_end(pp);   // the game's pages first (any of the driver's still there go with them)
+                VLOG("[RED] memory pool %p: the GPU memory could not go back to the driver (errno %d): kept, not freed", (void *)e.base, err); keep_mem = 1;
+                PLACEHOLDER();   // (over any piece that did go back: nothing else lands where the driver believes its mapping is)
+            } else {
+                pages_back(e.base, e.size, copy); pp_end(pp);
+                mprotect(e.moved_from, e.size, PROT_READ | PROT_WRITE);   // pages the texture tracking had write-protected come back writable
             }
-            else mprotect(e.moved_from, e.size, PROT_READ | PROT_WRITE);   // pages the texture tracking had write-protected come back writable
+            #undef PLACEHOLDER
+#else
+            pages_back(e.base, e.size, copy);
 #endif
-            mmap((void *)e.base, e.size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-            memcpy((void *)e.base, keep, e.size); free(keep);
         }
 #ifdef __linux__
         if (e.moved_from && !keep_mem) { if (!pool_mem_put(e.size, e.buf, e.mem, e.moved_from)) vkDestroyBuffer(g_dev, e.buf, NULL); return; }   // kept for the next pool (full: kept aside)
