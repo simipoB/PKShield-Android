@@ -585,6 +585,10 @@ typedef struct { uintptr_t lo, hi, base; VkBuffer buf; VkDeviceMemory mem; VkDev
 static pool_ent *g_pools; static int g_npool, g_cpool; static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int g_nshadow;   // mirrored pools alive
 static int g_plast = -1;
+// The pools by base address for pool_find's binary search (pool_index.h), kept in step with g_pools under g_mu. DM_VK_POOL_LINEAR=1 goes back to the linear scan
+#define PS_BASE(i) (g_pools[i].base)
+#define PS_SIZE(i) (g_pools[i].size)
+#include "pool_index.h"
 // Pool memory of the mremap route is never given back to the driver: Adreno hands the mappings of freed allocations out again, and one whose pages had been moved
 // crashed the next pool (loading a save, leaving the house in Shield) or lost the device. A freed pool's buffer and memory, its pages moved back where the driver
 // mapped them, wait here for the next pool of the same size
@@ -815,13 +819,13 @@ bind:
     if (!reused) VKCHECK(vkBindBufferMemory(g_dev, e.buf, e.mem, 0));
     pthread_mutex_lock(&g_mu);
     if (g_npool == g_cpool) { g_cpool = g_cpool ? g_cpool * 2 : 64; g_pools = realloc(g_pools, g_cpool * sizeof *g_pools); }
-    g_pools[g_npool++] = e; g_plast = -1;
+    g_pools[g_npool++] = e; ps_add(g_npool - 1); g_plast = -1;
     pthread_mutex_unlock(&g_mu);
 }
 void mtl_pool_del(const void *mem) {
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < g_npool; i++) if (g_pools[i].key == mem) {
-        pool_ent e = g_pools[i]; g_pools[i] = g_pools[--g_npool]; g_plast = -1;
+        pool_ent e = g_pools[i]; ps_remove(i); int last = --g_npool; g_pools[i] = g_pools[last]; if (i != last) ps_moved(last, i); g_plast = -1;
         pthread_mutex_unlock(&g_mu);
         // The game gets its pages back as ordinary memory with the same content (the driver's pages there replaced in one step, never leaving a gap another thread's
         // mapping could take); the GPU buffer and its memory go once the GPU is done with them. The placeholder at the driver's old address is the driver's to unmap
@@ -866,10 +870,21 @@ void mtl_pool_del(const void *mem) {
     }
     pthread_mutex_unlock(&g_mu);
 }
+static int pool_find_linear(uint64_t addr, uint64_t len) {
+    for (int i = 0; i < g_npool; i++) if (addr >= g_pools[i].base && addr + len <= g_pools[i].base + g_pools[i].size) return i;
+    return -1;
+}
 static int pool_find(uint64_t addr, uint64_t len) {   // caller holds g_mu
     if (g_plast >= 0 && g_plast < g_npool && addr >= g_pools[g_plast].base && addr + len <= g_pools[g_plast].base + g_pools[g_plast].size) return g_plast;
-    for (int i = 0; i < g_npool; i++) if (addr >= g_pools[i].base && addr + len <= g_pools[i].base + g_pools[i].size) return g_plast = i;
-    return -1;
+    static int linear = -1, checks; if (linear < 0) { const char *e = getenv("DM_VK_POOL_LINEAR"); linear = e && atoi(e); }
+    if (linear || g_psix_n != g_npool) { int i = pool_find_linear(addr, len); return i >= 0 ? (g_plast = i) : -1; }
+    int i = ps_find(addr, len);   // (binary search: the last pool whose base is at or below addr)
+    if (checks < 4000) {   // the first lookups of a run checked against the scan: a difference turns the binary search off for this run (the scan's answer is used)
+        int s = pool_find_linear(addr, len); checks++;
+        if (s != i) { linear = 1; VLOG("[RED] memory pools: the sorted index disagreed with the scan for %#llx (%d against %d): the scan from now on", (unsigned long long)addr, i, s); }
+        i = s;
+    }
+    return i >= 0 ? (g_plast = i) : -1;
 }
 // GPU buffer + offset of [addr, addr + len); 0 when it is in no pool
 static int pool_buf(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *left) {

@@ -270,3 +270,5 @@ Start anyway	このまま起動
 A recent Mesa Turnip package for Adreno usually fixes this: choose its .zip as the graphics driver.	Adreno向けの新しいMesa Turnipパッケージで通常は解決します。その.zipをグラフィックドライバーとして選んでください。
 FristOneRR's PanVK driver supports this Mali: download its .zip from the developer's GitHub Releases and choose it as the graphics driver.	FristOneRRのPanVKドライバーはこのMaliに対応しています。開発者のGitHub Releasesから.zipをダウンロードし、グラフィックドライバーとして選んでください。
 No replacement driver supports this GPU yet. Please report it with the log in Download (the -log-previous.txt file), so the app can be fixed for it.	このGPUに対応する代替ドライバーはまだありません。Downloadフォルダーのログ（-log-previous.txtファイル）を添えて報告してください。アプリの修正に役立ちます。
+Faster rendering (experimental)	高速レンダリング（実験的）
+On: the graphics work runs on its own thread, next to the game's. Not tested on every phone yet: if the game misbehaves, turn it off and tell us on GitHub	オン：グラフィック処理をゲームとは別のスレッドで動かします。まだすべての端末で試されていません。ゲームの動作がおかしい場合はオフにして、GitHubでお知らせください
