@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Galar Native: official download</title>
+<meta name="description" content="The only official download of Galar Native, the native Android port of Pokémon Sword and Shield 1.3.2. Bring your own game.">
+<style>
+  :root { --bg: #0b0c10; --card: #15171e; --line: #262a35; --text: #eef0f5; --sub: #9aa1b2; --accent: #e0245e; --ok: #2fbf71; }
+  @media (prefers-color-scheme: light) { :root { --bg: #f4f5f8; --card: #ffffff; --line: #dde0e8; --text: #12141a; --sub: #5a6170; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 28px; margin: 0 0 4px; }
+  .lede { color: var(--sub); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+  .ver { font-size: 20px; font-weight: 700; }
+  .meta { color: var(--sub); font-size: 14px; }
+  button { width: 100%; margin-top: 16px; padding: 14px; border: 0; border-radius: 12px; background: var(--accent); color: #fff; font-size: 17px; font-weight: 700; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  #ts { margin-top: 16px; min-height: 65px; }
+  select { width: 100%; margin-top: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 15px; }
+  code { font-size: 12px; word-break: break-all; color: var(--sub); }
+  .warn { border-color: var(--accent); }
+  a { color: var(--accent); }
+  footer { color: var(--sub); font-size: 13px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Galar Native</h1>
+  <p class="lede">The native Android port of Pokémon Sword and Shield 1.3.2. It contains no game files: you need your own copy of the game and keys.</p>
+
+  <div class="card">
+    <div class="ver" id="ver">Loading…</div>
+    <div class="meta" id="meta"></div>
+    <form id="f" method="post" action="/download">
+      <label class="meta" for="pick" id="pickl" hidden>Another version</label>
+      <select id="pick" name="file" hidden></select>
+      <div id="ts"></div>
+      <button id="go" type="submit" disabled>Download</button>
+    </form>
+    <p class="meta" id="hint">Complete the check above, then download.</p>
+    <p class="meta">SHA-256: <code id="sha">–</code></p>
+  </div>
+
+  <div class="card warn">
+    <strong>This is the only official download.</strong>
+    <p class="meta">Copies on other sites may have been changed. In the app, ☰ → About shows whether your copy is an official build.</p>
+  </div>
+
+  <footer>
+    Source code and issues: <a href="https://github.com/simipoB/Galar-Native-Android">github.com/simipoB/Galar-Native-Android</a>.<br>
+    Copyright (c) 2026 jhaizhou (d2r-mobile, nxnative) and the Galar Native (formerly PKShield Android) contributors. MIT License.
+  </footer>
+</main>
+<script>
+  const $ = (id) => document.getElementById(id);
+  const mb = (n) => (n / 1048576).toFixed(1) + ' MB';
+  let list = [];
+  function show(r) {
+    $('ver').textContent = 'Galar Native v' + r.version;
+    $('meta').textContent = [r.date, mb(r.size)].filter(Boolean).join(' · ');
+    $('sha').textContent = r.sha256 || '–';
+  }
+  fetch('/api/releases').then((x) => x.json()).then((l) => {
+    list = l;
+    if (!l.length) { $('ver').textContent = 'No version is published yet.'; return; }
+    show(l[0]);
+    if (l.length > 1) {
+      for (const r of l) { const o = document.createElement('option'); o.value = r.file; o.textContent = 'v' + r.version + (r === l[0] ? ' (latest)' : ''); $('pick').appendChild(o); }
+      $('pick').hidden = $('pickl').hidden = false;
+      $('pick').onchange = () => show(list.find((r) => r.file === $('pick').value) || l[0]);
+    }
+  }).catch(() => { $('ver').textContent = 'The version list could not be loaded. Try again later.'; });
+
+  // Turnstile: the download button works once the check is passed; each pass is good for one download
+  window.onTs = () => fetch('/api/config').then((x) => x.json()).then((c) => {
+    if (!c.sitekey) { $('hint').textContent = 'Downloads are not set up yet.'; return; }
+    turnstile.render('#ts', {
+      sitekey: c.sitekey, action: 'download',
+      callback: () => { $('go').disabled = false; $('hint').textContent = 'Ready.'; },
+      'expired-callback': () => { $('go').disabled = true; $('hint').textContent = 'The check expired: complete it again.'; },
+    });
+  });
+  $('f').addEventListener('submit', () => {
+    setTimeout(() => { $('go').disabled = true; $('hint').textContent = 'Downloading. For another download, complete the check again.'; if (window.turnstile) turnstile.reset('#ts'); }, 500);
+  });
+</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onTs" async defer></script>
+</body>
+</html>
