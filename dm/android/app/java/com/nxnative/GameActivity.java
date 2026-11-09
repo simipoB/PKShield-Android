@@ -158,6 +158,8 @@ public final class GameActivity extends NativeActivity implements InputManager.I
             StringBuilder hz = new StringBuilder(); for (float r : GameSettings.refreshRates(this)) hz.append(hz.length() > 0 ? "," : "").append(Math.round(r));
             android.system.Os.setenv("DM_DISPLAY_HZ", hz.toString(), true);
         } catch (Exception e) { }
+        // the app's version code: a safe start level (android_main.c safe_start) belongs to the version that crashed; an update starts at the normal settings again
+        try { android.system.Os.setenv("DM_APP_VERSION", String.valueOf(getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode()), true); } catch (Exception e) { }
         // The Chinese / Korean shared-font stand-in (hle_sdk16.c, #62: a game set to Chinese drew none of its text) into the game's font/, for setups made before it
         //   shipped; the APK carries it (build_apk.py), copied when missing or of another size
         try {

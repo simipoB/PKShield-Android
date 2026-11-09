@@ -148,6 +148,16 @@ static void *vk_open(void) {
 static int g_bcgpu;   // the BC layer is on (mtl_init)
 static int g_fctl_ext, g_drvprops_ext;   // a Vulkan 1.1 driver with VK_KHR_shader_float_controls / VK_KHR_driver_properties (enabled at device creation)
 static int g_fctl;    // every shader asks for SignedZeroInfNanPreserve (spv_float_controls; mtl_init decides)
+static int g_arm_rel, g_arm_p;   // Arm's own Mali driver: its release, r<rel>p<p> (driverVersion is VK_MAKE_VERSION(rel, p, 0): 0xb001000 = r44p1); 0 for any other driver
+static int g_arm_beta;           // ... a beta build of it (driverInfo "v1.r49p1-03bet0": the G925's)
+static int g_clampzero; static _Atomic int g_clampzero_n;   // shaders get spv_clamp_zero (Arm erratum 3779215: mtl_init decides); how many it changed
+static int g_dualsrc = 1;        // the device blends with a second shader output (dualSrcBlend): Arm's own Mali driver has none (r44p1)
+static int g_tlsem = 1;          // the device has timeline semaphores; 0: each submission signals a fence of its own instead (older Adreno stock drivers, Vulkan 1.1, #99)
+// Markers of a set-up step that crashed the driver (mark_file below), one set per driver kind: a crash on a driver package does not change the phone's own driver
+static const char *drv_mark(const char *base) {
+    static char m[4][64]; static int k; char *o = m[k++ & 3]; const char *d = getenv("DM_VK_DRIVER");
+    snprintf(o, sizeof m[0], "%s%s", base, d && *d ? "_package" : ""); return o;
+}
 static void vk_logf(const char *f, ...) { va_list a; va_start(a, f); fputs("[dm] [nvn-vk] ", stderr); vfprintf(stderr, f, a); fputc('\n', stderr); va_end(a); }
 static uint32_t g_instance_api = VK_API_VERSION_1_3;   // the instance's apiVersion (mtl_init)
 static uint32_t g_api;   // the device's Vulkan version (DM_VK_API=11 / 12 tries an older device's path on a newer one)
@@ -220,8 +230,9 @@ void mtl_init(void) {
         // Timeline semaphores are required. Dynamic rendering and extended dynamic state are used where listed; without them passes are render passes (rend_begin)
         //   and the draw state goes into the pipelines (sst): Arm's r32 driver of a Mali-G68 (Galaxy A25 5G) lists neither, and the game stopped here before
         static const char *deps11[] = { "VK_KHR_depth_stencil_resolve", "VK_KHR_create_renderpass2", "VK_KHR_multiview", "VK_KHR_maintenance2" };   // dynamic rendering's prerequisites on 1.1
-        if (!has_ext(de, nde, "VK_KHR_timeline_semaphore")) VDIE("Vulkan %u.%u device without VK_KHR_timeline_semaphore", VK_API_VERSION_MAJOR(g_api), VK_API_VERSION_MINOR(g_api));
-        dext[ndext++] = "VK_KHR_timeline_semaphore";
+        // without timeline semaphores (a Vulkan 1.1 Adreno 6xx stock driver: #99, Adreno 613) every submission signals a fence of its own instead (g_tlsem)
+        if (has_ext(de, nde, "VK_KHR_timeline_semaphore")) dext[ndext++] = "VK_KHR_timeline_semaphore";
+        else { g_tlsem = 0; VLOG("Vulkan %u.%u device without timeline semaphores: a fence for each submission instead", VK_API_VERSION_MAJOR(g_api), VK_API_VERSION_MINOR(g_api)); }
         if ((x_dynren = has_ext(de, nde, "VK_KHR_dynamic_rendering"))) {
             dext[ndext++] = "VK_KHR_dynamic_rendering";
             if (old11) for (unsigned k = 0; k < sizeof deps11 / sizeof *deps11; k++) if (has_ext(de, nde, deps11[k])) dext[ndext++] = deps11[k];
@@ -340,7 +351,7 @@ void mtl_init(void) {
     VkPhysicalDeviceDynamicRenderingFeatures fdr = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES };
     void *tail = opt;
     if (old && x_eds) { fed.pNext = tail; tail = &fed; }
-    if (old11) { fts.pNext = tail; tail = &fts; }
+    if (old11 && g_tlsem) { fts.pNext = tail; tail = &fts; }   // (only with its extension enabled: a structure of one that is not is invalid)
     if (old && x_dynren) { fdr.pNext = tail; tail = &fdr; }
     VkPhysicalDeviceVulkan13Features f13 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = opt };
     VkPhysicalDeviceVulkan12Features f12 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES, .pNext = old ? tail : (void *)&f13 };
@@ -349,7 +360,7 @@ void mtl_init(void) {
     vkGetPhysicalDeviceFeatures2(g_pd, &f2);
     int dynren = old ? x_dynren && fdr.dynamicRendering : f13.dynamicRendering, timeline = old11 ? fts.timelineSemaphore : f12.timelineSemaphore;
     int eds = old ? x_eds && fed.extendedDynamicState : 1;
-    if (!timeline) VDIE("timeline semaphores missing");
+    if (!timeline && g_tlsem) { g_tlsem = 0; VLOG("timeline semaphores listed but not supported: a fence for each submission instead"); }
     g_dynren = dynren && !(getenv("DM_VK_NO_DYNREN") && atoi(getenv("DM_VK_NO_DYNREN")));
     g_eds = eds && !(getenv("DM_VK_NO_EDS") && atoi(getenv("DM_VK_NO_EDS")));
     VLOG("passes: %s; draw state: %s", g_dynren ? "dynamic rendering" : dynren ? "render passes (DM_VK_NO_DYNREN)" : "render passes (the driver has no dynamic rendering)",
@@ -367,6 +378,7 @@ void mtl_init(void) {
     VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = g_qf, .queueCount = 1, .pQueuePriorities = &prio };
     VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f2, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = ndext, .ppEnabledExtensionNames = dext };
     VKCHECK(vkCreateDevice(g_pd, &dci, NULL, &g_dev));
+    { extern void dm_boot_device_up(void) __attribute__((weak)); if (dm_boot_device_up) dm_boot_device_up(); }   // (android_main.c boot_state: a crash from here on counts as the driver's)
     VK_DEVICE(VK_LOAD_D)
     vkGetDeviceQueue(g_dev, g_qf, 0, &g_q);
     p_push = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(g_dev, "vkCmdPushDescriptorSetKHR");
@@ -382,6 +394,7 @@ void mtl_init(void) {
            L->maxPushConstantsSize, L->maxVertexInputAttributeOffset, L->maxVertexInputBindingStride, L->maxVertexInputBindings, L->maxTexelBufferElements); }
     // Float controls (spv_float_controls): ARM's own Mali driver gets every shader with SignedZeroInfNanPreserve, where it supports it. Without it the lit scene came out
     //   at the format's maximum on Mali-G615 / G720 / G925 (#47 #53 #64 #68 #69 #72); PanVK on the same GPUs drew it right. DM_VK_FLOAT_CONTROLS=0 / 1 decides on any driver
+    int arm_known = 0;   // (Arm's own driver told apart by its driver ID below; without driver properties, by the vendor ID after)
     if (g_api >= VK_API_VERSION_1_2 || g_fctl_ext) {   // (Vulkan 1.1: through the extensions, same structures)
         int drvp = g_api >= VK_API_VERSION_1_2 || g_drvprops_ext;
         VkPhysicalDeviceDriverProperties dp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES };
@@ -391,9 +404,17 @@ void mtl_init(void) {
         // Samsung's Xclipse driver too: the probe self-test (float-controls) found inf - inf not NaN without them on Xclipse 540 and 940, and every check right with them
         const char *e = getenv("DM_VK_FLOAT_CONTROLS"); int arm = drvp ? dp.driverID == VK_DRIVER_ID_ARM_PROPRIETARY : g_props.vendorID == 0x13B5;
         int sec = drvp ? dp.driverID == VK_DRIVER_ID_SAMSUNG_PROPRIETARY : g_props.vendorID == 0x144D;
+        arm_known = 1; if (arm) { g_arm_rel = (int)(g_props.driverVersion >> 22); g_arm_p = (int)(g_props.driverVersion >> 12 & 0x3ff); g_arm_beta = drvp && strstr(dp.driverInfo, "bet") != NULL; }
         g_fctl = fc.shaderSignedZeroInfNanPreserveFloat32 && (e ? atoi(e) != 0 : arm || sec);
-        VLOG("driver %s (id %d)%s; shaders keep infinities and NaN (float controls): %s", dp.driverName, (int)dp.driverID, arm ? ", ARM's own" : sec ? ", Samsung's own" : "",
-             g_fctl ? "asked for" : !fc.shaderSignedZeroInfNanPreserveFloat32 ? "not supported" : "not asked for");
+        // The test shader below crashed a driver (#89: Mali-G57, the start ended right after this line): a start that dies there leaves the marker, and later starts on
+        //   this driver go without float controls (DM_VK_FLOAT_CONTROLS=1 tries again)
+        int fc_crashed = g_fctl && mark_file(drv_mark("float_controls_crashed"), "", 0) && !e;
+        if (fc_crashed) g_fctl = 0;
+        char rel[24] = ""; if (arm && g_arm_rel) snprintf(rel, sizeof rel, " r%dp%d", g_arm_rel, g_arm_p);
+        VLOG("driver %s (id %d)%s%s; shaders keep infinities and NaN (float controls): %s", dp.driverName, (int)dp.driverID, arm ? ", ARM's own" : sec ? ", Samsung's own" : "", rel,
+             fc_crashed ? "not asked for: the driver crashed on their test shader at an earlier start (DM_VK_FLOAT_CONTROLS=1 tries again)"
+             : g_fctl ? "asked for" : !fc.shaderSignedZeroInfNanPreserveFloat32 ? "not supported" : "not asked for");
+        if (g_fctl) mark_file(drv_mark("float_controls_crashed"), "building the float-controls test shader; if this file is still here the driver crashed doing so, and later starts go without float controls\n", 1);
         if (g_fctl) {   // a self-test: an empty compute shader patched the same way must make a pipeline, else this start goes without (the game's shaders would fail one by one)
             static const uint32_t tiny[] = { 0x07230203, 0x00010300, 0, 5, 0, 2u << 16 | 17, 1, 3u << 16 | 14, 0, 1, 5u << 16 | 15, 5, 1, 0x6e69616d, 0, 6u << 16 | 16, 1, 17, 1, 1, 1,
                                              2u << 16 | 19, 2, 3u << 16 | 33, 3, 2, 5u << 16 | 54, 2, 1, 0, 3, 2u << 16 | 248, 4, 1u << 16 | 253, 1u << 16 | 56 };
@@ -407,9 +428,31 @@ void mtl_init(void) {
             }
             if (pp) vkDestroyPipeline(g_dev, pp, NULL); if (pl) { PFN_vkDestroyPipelineLayout dpl = (PFN_vkDestroyPipelineLayout)vkGetDeviceProcAddr(g_dev, "vkDestroyPipelineLayout"); if (dpl) dpl(g_dev, pl, NULL); } if (m) vkDestroyShaderModule(g_dev, m, NULL); free(c);
             if (tr != VK_SUCCESS) { g_fctl = 0; VLOG("[RED] float controls: the driver refused a test shader asking for them (%d): not this start", (int)tr); }
+            mark_file(drv_mark("float_controls_crashed"), "", -1);   // (the test came back: no crash)
         }
     }
-    if (!f2.features.textureCompressionBC) { bc_gpu_info bi = { g_dev, g_q, g_qf, vkGetDeviceProcAddr, &g_memp, vk_logf }; g_bcgpu = bc_gpu_init(&bi); }
+    // A driver without Vulkan 1.2 or the float-controls extension: Arm's own when it is ARM's vendor ID and not a driver package (PanVK reports ARM's ID too)
+    if (!arm_known && g_props.vendorID == 0x13B5 && !(getenv("DM_VK_DRIVER") && *getenv("DM_VK_DRIVER"))) { g_arm_rel = (int)(g_props.driverVersion >> 22); g_arm_p = (int)(g_props.driverVersion >> 12 & 0x3ff); }
+    // Arm erratum 3779215 (r38p1 to r49p0 and r50p0 to r51p0, fixed in r49p1 and r52p0; a beta r49p1, the G925's, is not known to have the fix): a clamp to zero of a value
+    //   selected between constants compiled as a plain min or max. Shaders on those drivers get spv_clamp_zero; DM_VK_CLAMP_ZERO=0 / 1 decides on any driver
+    { int v = g_arm_rel * 100 + g_arm_p; const char *e = getenv("DM_VK_CLAMP_ZERO");
+      g_clampzero = e ? atoi(e) != 0 : g_arm_rel && ((v >= 3801 && v < 4901) || (g_arm_beta && v >= 4901 && v < 4902) || (v >= 5000 && v < 5101));
+      if (g_clampzero) VLOG("shaders: a clamp to zero of a value selected between constants gets a zero the compiler cannot fold (Arm erratum 3779215%s)", e ? ", DM_VK_CLAMP_ZERO" : g_arm_beta ? ", a beta driver" : ""); }
+    // Dual-source blending (the game's blend factors SRC1_*) needs dualSrcBlend; Arm's own driver has none (r44p1), and a pipeline using it there is undefined: those
+    //   factors become the first output's (bfac_dev), named once in the log. DM_VK_DUALSRC=keep passes them as they are
+    g_dualsrc = f2.features.dualSrcBlend || (getenv("DM_VK_DUALSRC") && !strcmp(getenv("DM_VK_DUALSRC"), "keep"));
+    if (!f2.features.dualSrcBlend) VLOG("blending: the driver has no dual-source blending (dualSrcBlend): the game's SRC1 blend factors %s", g_dualsrc ? "passed as they are (DM_VK_DUALSRC=keep)" : "become the first output's");
+    // The BC layer's set-up builds and runs its shaders on this GPU: a start that dies there leaves the marker, and later starts on this driver convert on the CPU
+    //   (DM_VK_BC_GPU=1 tries again)
+    if (!f2.features.textureCompressionBC) {
+        const char *be = getenv("DM_VK_BC_GPU");
+        if (mark_file(drv_mark("bc_gpu_crashed"), "", 0) && !be) VLOG("[RED] BC layer: the driver crashed setting it up at an earlier start: BC textures converted on the CPU (DM_VK_BC_GPU=1 tries again)");
+        else {
+            mark_file(drv_mark("bc_gpu_crashed"), "setting up the BC layer (its shaders built and checked on this GPU); if this file is still here the driver crashed doing so, and later starts convert on the CPU\n", 1);
+            bc_gpu_info bi = { g_dev, g_q, g_qf, vkGetDeviceProcAddr, &g_memp, vk_logf }; g_bcgpu = bc_gpu_init(&bi);
+            mark_file(drv_mark("bc_gpu_crashed"), "", -1);
+        }
+    }
     if (g_host_import) {
         VkPhysicalDeviceExternalMemoryHostPropertiesEXT hp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT };
         VkPhysicalDeviceProperties2 pp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &hp }; vkGetPhysicalDeviceProperties2(g_pd, &pp);
@@ -497,13 +540,33 @@ static void defer_add(dfr d) {
     if (g_ndfr == g_cdfr) { g_cdfr = g_cdfr ? g_cdfr * 2 : 256; g_dfr = realloc(g_dfr, g_cdfr * sizeof *g_dfr); }
     g_dfr[g_ndfr++] = d; pthread_mutex_unlock(&g_dfmu);
 }
+// View quarantine (Arm's own driver with dynamic rendering): vkCmdBeginRendering keeps state per image-view handle value, and a value the driver hands out again after
+// vkDestroyImageView hits that stale entry - the pass can leave its attachment unwritten (Arm erratum 3786926, r49p1-r51; MaliBridge MK-06 saw it on a G720 r44p1 too, a
+// stale picture once images were being made and destroyed). Destroyed views and images wait in a FIFO, views ahead of their images, so a handle value does not come back
+// soon; the memory under them is freed at once (only handles are held). DM_VK_VIEW_QUARANTINE=n sets its size, 0 turns it off
+typedef struct { uint64_t h; uint8_t img; } qent;
+static qent *g_vq; static int g_vqcap = -1; static size_t g_vqhead, g_vqcount;
+static int quarantine_on(void) {
+    if (g_vqcap < 0) { const char *e = getenv("DM_VK_VIEW_QUARANTINE"); g_vqcap = e ? atoi(e) : g_arm_rel && g_dynren ? 2048 : 0;
+        if (g_vqcap > 0 && !(g_vq = calloc((size_t)g_vqcap, sizeof *g_vq))) g_vqcap = 0;
+        if (g_vqcap > 0) VLOG("image views: the last %d destroyed views and images kept back (Arm's driver: a reused view handle hits stale rendering state)", g_vqcap); }
+    return g_vqcap > 0;
+}
+static void q_put(int img, uint64_t h) {   // caller holds g_dfmu
+    if (g_vqcount == (size_t)g_vqcap) { qent e = g_vq[g_vqhead]; g_vqhead = (g_vqhead + 1) % (size_t)g_vqcap; g_vqcount--;
+        if (e.img) vkDestroyImage(g_dev, (VkImage)(uintptr_t)e.h, NULL); else vkDestroyImageView(g_dev, (VkImageView)(uintptr_t)e.h, NULL); }
+    g_vq[(g_vqhead + g_vqcount) % (size_t)g_vqcap] = (qent){ h, (uint8_t)img }; g_vqcount++;
+}
 static void defer_drain(void) {
-    uint64_t done = atomic_load(&g_done);
+    uint64_t done = atomic_load(&g_done); int qon = quarantine_on(); VkImage imgs[64]; int nimg = 0;
     pthread_mutex_lock(&g_dfmu);
     for (int i = 0; i < g_ndfr;) {
         dfr d = g_dfr[i];
         if (d.fence > done) { i++; continue; }
+        if (qon && d.kind == DF_IMAGE && nimg == 64) { i++; continue; }   // (the next drain takes it: its views go into the FIFO ahead of it)
         g_dfr[i] = g_dfr[--g_ndfr];
+        if (qon && d.kind == DF_VIEW) { q_put(0, (uint64_t)(uintptr_t)d.h.view); vk_free(d.a); continue; }
+        if (qon && d.kind == DF_IMAGE) { imgs[nimg++] = d.h.img; vk_free(d.a); continue; }
         switch (d.kind) {
             case DF_IMAGE: vkDestroyImage(g_dev, d.h.img, NULL); break; case DF_VIEW: vkDestroyImageView(g_dev, d.h.view, NULL); break;
             case DF_BUFFER: vkDestroyBuffer(g_dev, d.h.buf, NULL); break; case DF_BUFVIEW: vkDestroyBufferView(g_dev, d.h.bview, NULL); break;
@@ -512,6 +575,7 @@ static void defer_drain(void) {
         }
         vk_free(d.a);
     }
+    for (int k = 0; k < nimg; k++) q_put(1, (uint64_t)(uintptr_t)imgs[k]);   // (after every view of this drain: a view never outlives its image's handle)
     pthread_mutex_unlock(&g_dfmu);
 }
 
@@ -523,6 +587,10 @@ typedef struct { uintptr_t lo, hi, base; VkBuffer buf; VkDeviceMemory mem; VkDev
 static pool_ent *g_pools; static int g_npool, g_cpool; static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static atomic_int g_nshadow;   // mirrored pools alive
 static int g_plast = -1;
+// The pools by base address for pool_find's binary search (pool_index.h), kept in step with g_pools under g_mu. DM_VK_POOL_LINEAR=1 goes back to the linear scan
+#define PS_BASE(i) (g_pools[i].base)
+#define PS_SIZE(i) (g_pools[i].size)
+#include "pool_index.h"
 // Pool memory of the mremap route is never given back to the driver: Adreno hands the mappings of freed allocations out again, and one whose pages had been moved
 // crashed the next pool (loading a save, leaving the house in Shield) or lost the device. A freed pool's buffer and memory, its pages moved back where the driver
 // mapped them, wait here for the next pool of the same size
@@ -753,13 +821,13 @@ bind:
     if (!reused) VKCHECK(vkBindBufferMemory(g_dev, e.buf, e.mem, 0));
     pthread_mutex_lock(&g_mu);
     if (g_npool == g_cpool) { g_cpool = g_cpool ? g_cpool * 2 : 64; g_pools = realloc(g_pools, g_cpool * sizeof *g_pools); }
-    g_pools[g_npool++] = e; g_plast = -1;
+    g_pools[g_npool++] = e; ps_add(g_npool - 1); g_plast = -1;
     pthread_mutex_unlock(&g_mu);
 }
 void mtl_pool_del(const void *mem) {
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < g_npool; i++) if (g_pools[i].key == mem) {
-        pool_ent e = g_pools[i]; g_pools[i] = g_pools[--g_npool]; g_plast = -1;
+        pool_ent e = g_pools[i]; ps_remove(i); int last = --g_npool; g_pools[i] = g_pools[last]; if (i != last) ps_moved(last, i); g_plast = -1;
         pthread_mutex_unlock(&g_mu);
         // The game gets its pages back as ordinary memory with the same content (the driver's pages there replaced in one step, never leaving a gap another thread's
         // mapping could take); the GPU buffer and its memory go once the GPU is done with them. The placeholder at the driver's old address is the driver's to unmap
@@ -804,10 +872,21 @@ void mtl_pool_del(const void *mem) {
     }
     pthread_mutex_unlock(&g_mu);
 }
+static int pool_find_linear(uint64_t addr, uint64_t len) {
+    for (int i = 0; i < g_npool; i++) if (addr >= g_pools[i].base && addr + len <= g_pools[i].base + g_pools[i].size) return i;
+    return -1;
+}
 static int pool_find(uint64_t addr, uint64_t len) {   // caller holds g_mu
     if (g_plast >= 0 && g_plast < g_npool && addr >= g_pools[g_plast].base && addr + len <= g_pools[g_plast].base + g_pools[g_plast].size) return g_plast;
-    for (int i = 0; i < g_npool; i++) if (addr >= g_pools[i].base && addr + len <= g_pools[i].base + g_pools[i].size) return g_plast = i;
-    return -1;
+    static int linear = -1, checks; if (linear < 0) { const char *e = getenv("DM_VK_POOL_LINEAR"); linear = e && atoi(e); }
+    if (linear || g_psix_n != g_npool) { int i = pool_find_linear(addr, len); return i >= 0 ? (g_plast = i) : -1; }
+    int i = ps_find(addr, len);   // (binary search: the last pool whose base is at or below addr)
+    if (checks < 4000) {   // the first lookups of a run checked against the scan: a difference turns the binary search off for this run (the scan's answer is used)
+        int s = pool_find_linear(addr, len); checks++;
+        if (s != i) { linear = 1; VLOG("[RED] memory pools: the sorted index disagreed with the scan for %#llx (%d against %d): the scan from now on", (unsigned long long)addr, i, s); }
+        i = s;
+    }
+    return i >= 0 ? (g_plast = i) : -1;
 }
 // GPU buffer + offset of [addr, addr + len); 0 when it is in no pool
 static int pool_buf(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *left) {
@@ -847,6 +926,7 @@ typedef struct {
     wb_t *wb; int nwb, cwb;        // mirrored pools: ranges the GPU writes in this submission (copied back to the game's pages at completion)
     VkDescriptorPool *dp; int ndp, cdp;   // g_nopush: this submission's descriptor pools (dp[cdp] in use), reset when it is reused
     uint64_t frame;                 // the frame it belongs to (GPU time per frame, mtl_gpu_ms)
+    VkFence vf;                     // without timeline semaphores (g_tlsem 0): the fence its submission signals, waited for by the completion thread
 } sub_t;
 #define NSUB 6
 static sub_t g_subs[NSUB]; static sub_t *g_sub; static int g_sub_next;
@@ -896,17 +976,35 @@ static void gpu_ts_done(sub_t *s) {
     if (vkGetQueryPoolResults(g_dev, g_tsq, (uint32_t)i * 2, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0]) atomic_fetch_add(&g_gpu[s->frame % GRING].ns, (uint64_t)((t[1] - t[0]) * g_tsper));
     atomic_fetch_sub(&g_gpu[s->frame % GRING].pending, 1);
 }
+// A GPU wait (a timeline semaphore, else a fence) that does not give up on an error a wait may not return: Arm's driver waits with ppoll() and does not restart it when a
+// signal interrupts it, and the wait ends with VK_ERROR_INITIALIZATION_FAILED (-3) (MaliBridge MK-01: every 7-10 s on a Mali-G925 under Android's runtime). Such a wait is
+// waited again (naps from 0.5 ms to 20 ms) until its own deadline, or 30 s for one without; success, a timeout at the deadline, a lost device or no memory come back as they
+// are. On a driver that follows the spec this costs one comparison
+static VkResult vk_wait(const VkSemaphoreWaitInfo *wi, VkFence f, uint64_t timeout) {
+    uint64_t t0 = mono_ns(), left = timeout; useconds_t nap = 500;
+    for (;;) {
+        VkResult r = wi ? vkWaitSemaphores(g_dev, wi, left) : vkWaitForFences(g_dev, 1, &f, VK_TRUE, left);
+        if (r == VK_SUCCESS || r == VK_ERROR_DEVICE_LOST || r == VK_ERROR_OUT_OF_HOST_MEMORY || r == VK_ERROR_OUT_OF_DEVICE_MEMORY) return r;
+        uint64_t el = mono_ns() - t0;
+        if (r == VK_TIMEOUT && (timeout != UINT64_MAX || el >= 30000000000ull)) return r;   // (an early timeout of a wait with no deadline: not done, waited again)
+        if (r != VK_TIMEOUT) RED_ONCE(112, "a GPU wait ended with %d, which a wait may not return (Arm's driver: a signal interrupted it): waited again", (int)r);
+        if (timeout != UINT64_MAX && el >= timeout) return VK_TIMEOUT;
+        if (timeout == UINT64_MAX && el >= 30000000000ull) return r;
+        usleep(nap); nap = nap * 2 > 20000 ? 20000 : nap * 2;
+        left = timeout == UINT64_MAX ? UINT64_MAX : timeout - el;
+    }
+}
 static void *completion_main(void *unused) {
     (void)unused;
     for (;;) {
         pthread_mutex_lock(&g_cmu);
         while (!g_nin) pthread_cond_wait(&g_ccv, &g_cmu);
-        sub_t *s = g_inflight[0]; uint64_t want = s->fence;
+        sub_t *s = g_inflight[0]; uint64_t want = s->fence; VkFence vf = s->vf;
         pthread_mutex_unlock(&g_cmu);
         VkSemaphoreWaitInfo wi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_tl, .pValues = &want };
-        VkResult r = vkWaitSemaphores(g_dev, &wi, 2000000000ull);
+        VkResult r = g_tlsem ? vk_wait(&wi, VK_NULL_HANDLE, 2000000000ull) : vk_wait(NULL, vf, 2000000000ull);
         if (r == VK_TIMEOUT) continue;
-        if (r) VDIE("vkWaitSemaphores failed: %d (device lost?)", r);
+        if (r) VDIE("%s failed: %d (device lost?)", g_tlsem ? "vkWaitSemaphores" : "vkWaitForFences", r);
         post_apply(s); gpu_ts_done(s);
         pthread_mutex_lock(&g_cmu);
         memmove(g_inflight, g_inflight + 1, (size_t)--g_nin * sizeof *g_inflight);
@@ -919,7 +1017,7 @@ static void *completion_main(void *unused) {
 static void completion_start(void) {
     VkSemaphoreTypeCreateInfo st = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE };
     VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st };
-    VKCHECK(vkCreateSemaphore(g_dev, &sci, NULL, &g_tl));
+    if (g_tlsem) VKCHECK(vkCreateSemaphore(g_dev, &sci, NULL, &g_tl));
     for (int i = 0; i < NSUB; i++) {
         VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, .queueFamilyIndex = g_qf };
         VKCHECK(vkCreateCommandPool(g_dev, &pci, NULL, &g_subs[i].pool));
@@ -1133,11 +1231,12 @@ static int fd_export_mark(int op) {
     return f != NULL;
 }
 static int mirror_ordered(void);
-static void queue_submit(VkCommandBuffer *cbs, uint32_t n, uint64_t signal) {
+static void queue_submit(VkCommandBuffer *cbs, uint32_t n, uint64_t signal, VkFence vf) {
     VkTimelineSemaphoreSubmitInfo ts = { .sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, .signalSemaphoreValueCount = 1, .pSignalSemaphoreValues = &signal };
     VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &ts, .commandBufferCount = n, .pCommandBuffers = cbs, .signalSemaphoreCount = 1, .pSignalSemaphores = &g_tl };
+    if (!g_tlsem) { si.pNext = NULL; si.signalSemaphoreCount = 0; si.pSignalSemaphores = NULL; }   // (the fence vf says it is done instead)
     if (!mirror_ordered()) shadow_sync();   // (ordered: the submission's own command buffer copies them, shadow_sync_ordered)
-    pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, VK_NULL_HANDLE); pthread_mutex_unlock(&g_qmu);
+    pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, g_tlsem ? VK_NULL_HANDLE : vf); pthread_mutex_unlock(&g_qmu);
     if (r && g_host_import && host_import_mark(1)) VLOG("[RED] vkQueueSubmit failed with imported host memory: the next start will not import it");
     if (r && g_heapmap > 0 && heap_import_mark(1)) VLOG("[RED] vkQueueSubmit failed with dma-buf pools: the next start moves the driver's mappings instead");
     if (r) VDIE("vkQueueSubmit failed: %d", r);
@@ -1146,7 +1245,11 @@ static void queue_submit(VkCommandBuffer *cbs, uint32_t n, uint64_t signal) {
 static uint64_t submit_tracked(sub_t *s, VkCommandBuffer *cbs, uint32_t n) {
     pthread_mutex_lock(&g_cmu);
     uint64_t f = ++g_fence; s->fence = f;
-    queue_submit(cbs, n, f);
+    if (!g_tlsem) {   // a new fence for this submission (the slot is reused only after its last submission completed, so the old fence is no longer waited on)
+        if (s->vf) vkDestroyFence(g_dev, s->vf, NULL);
+        VkFenceCreateInfo fi = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO }; s->vf = VK_NULL_HANDLE; VKCHECK(vkCreateFence(g_dev, &fi, NULL, &s->vf));
+    }
+    queue_submit(cbs, n, f, s->vf);
     g_inflight[g_nin++] = s; pthread_cond_broadcast(&g_ccv);
     pthread_mutex_unlock(&g_cmu);
     return f;
@@ -1227,7 +1330,7 @@ static void once_end(VkCommandBuffer cb) {   // ordered after everything submitt
     shadow_sync();
     pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, f); pthread_mutex_unlock(&g_qmu);
     if (r) VDIE("one-off submit failed: %d", r);
-    vkWaitForFences(g_dev, 1, &f, VK_TRUE, UINT64_MAX); vkDestroyFence(g_dev, f, NULL);
+    vk_wait(NULL, f, UINT64_MAX); vkDestroyFence(g_dev, f, NULL);
     vkFreeCommandBuffers(g_dev, g_once_pool, 1, &cb);
     pthread_mutex_unlock(&g_once_mu);
 }
@@ -1313,8 +1416,14 @@ static void img_init(vtex *t, int zero) {
 // into, so render targets and everything the screen is made of keep their size. Views shift their levels down by the same count; copies into or out of such a texture are
 // left out (not seen in Shield)
 static uint64_t g_drop_n, g_drop_saved;   // textures stored without their largest level, bytes not stored (the memory readout)
+// Arm's own driver before r49 closed the game three frames in with half textures (Mali-G615 MC2 on r44p1: #63 #65 #71 #82, the same crash every time); the same phones
+// run with full textures (#77, #21) and r49p1 runs half (#53): there half is used only when the player chose it, not when the phone's profile did (DM_VK_TEX_QUALITY_AUTO)
 static int tex_quality_half(void) {
-    static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_TEX_QUALITY"); v = e && !strcmp(e, "half"); if (v) VLOG("texture quality half: the game's large textures without their largest mip level"); }
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_VK_TEX_QUALITY"); v = e && !strcmp(e, "half");
+        if (v && g_arm_rel && g_arm_rel < 49 && getenv("DM_VK_TEX_QUALITY_AUTO")) { v = 0;
+            VLOG("texture quality full, not the phone profile's half: Arm's driver r%dp%d closed the game with half textures (Mali-G615 MC2, #82); DM_VK_TEX_QUALITY=half in env.txt uses it anyway", g_arm_rel, g_arm_p); }
+        else if (v) VLOG("texture quality half: the game's large textures without their largest mip level"); }
     return v;
 }
 static vtex *tex_new(const tex_t *t, int pkg) {
@@ -1997,6 +2106,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
     static int gbias = -1; if (gbias < 0) { const char *e = getenv("DM_VK_GATHER_BIAS"); gbias = e ? atoi(e) != 0 : g_props.vendorID == 0x5143; if (gbias) VLOG("texture gathers nudged by 1/512 of a texel (Adreno rounding)"); }
     if (gbias) { size_t nw; uint32_t *c2 = spv_gather_bias(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }
     if (g_fctl) { size_t nw; uint32_t *c2 = spv_float_controls(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }
+    if (g_clampzero) { size_t nw; uint32_t *c2 = spv_clamp_zero(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; atomic_fetch_add(&g_clampzero_n, 1); } }   // (Arm erratum 3779215)
     if (spst == 0 || spst == 2) { size_t nw; uint32_t *c2 = spv_init_outputs(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // outputs start at (0, 0, 0, 1) as on the hardware
     if (st == 0 && glcode) {
         size_t nw;
@@ -2005,6 +2115,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
         uint32_t *c2 = spv_image_caps(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
         if (gbias && (c2 = spv_gather_bias(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
         if (g_fctl && (c2 = spv_float_controls(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
+        if (g_clampzero && (c2 = spv_clamp_zero(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
         c2 = spv_init_outputs(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
         VkShaderModuleCreateInfo gci = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = ngl, .pCode = glcode };
         VkResult gr = vkCreateShaderModule(g_dev, &gci, NULL, &s->glmod);
@@ -2498,6 +2609,14 @@ static VkBlendFactor bfac(int f) {
         case 0x61: return VK_BLEND_FACTOR_CONSTANT_COLOR; case 0x62: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR; case 0x63: return VK_BLEND_FACTOR_CONSTANT_ALPHA; case 0x64: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA; }
     return VK_BLEND_FACTOR_ONE;
 }
+// The blend factor on this device: without dual-source blending a second output's factor is the first output's (g_dualsrc: mtl_init)
+static VkBlendFactor bfac_dev(int f) {
+    VkBlendFactor v = bfac(f);
+    if (g_dualsrc || v < VK_BLEND_FACTOR_SRC1_COLOR || v > VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA) return v;
+    RED_ONCE(111, "the game blends with its second shader output (blend factor %d) and the driver has no dual-source blending: the first output's instead (DM_VK_DUALSRC=keep to compare)", (int)v);
+    return v == VK_BLEND_FACTOR_SRC1_COLOR ? VK_BLEND_FACTOR_SRC_COLOR : v == VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR ? VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR
+         : v == VK_BLEND_FACTOR_SRC1_ALPHA ? VK_BLEND_FACTOR_SRC_ALPHA : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+}
 static VkBlendOp bop(int e) { switch (e) { case 2: return VK_BLEND_OP_SUBTRACT; case 3: return VK_BLEND_OP_REVERSE_SUBTRACT; case 4: return VK_BLEND_OP_MIN; case 5: return VK_BLEND_OP_MAX; } return VK_BLEND_OP_ADD; }
 // vertex format for a shader input of class ct (0 float, 1 uint, 2 sint): an integer format of the other signedness is read with the same width and the input's sign
 static VkFormat vfmt_for(int nvn_fmt, int ct) {
@@ -2738,7 +2857,7 @@ static VkPipeline pso_make(vprog *pr, pkey k, const sst *ss) {
         if (fs && fs->color_known && !(fs->color_mask >> i & 1)) m = 0;   // outputs the shader does not write keep their content (nvn_mtl.m pso_desc)
         cb[i].colorWriteMask = m;
         if (k.blend_en >> i & 1 && m && !fmt_int_class(cf[i])) { cb[i].blendEnable = VK_TRUE;   // integer targets never blend (Vulkan: undefined)
-            cb[i].srcColorBlendFactor = bfac(k.blend[i].src_rgb); cb[i].dstColorBlendFactor = bfac(k.blend[i].dst_rgb); cb[i].srcAlphaBlendFactor = bfac(k.blend[i].src_a); cb[i].dstAlphaBlendFactor = bfac(k.blend[i].dst_a);
+            cb[i].srcColorBlendFactor = bfac_dev(k.blend[i].src_rgb); cb[i].dstColorBlendFactor = bfac_dev(k.blend[i].dst_rgb); cb[i].srcAlphaBlendFactor = bfac_dev(k.blend[i].src_a); cb[i].dstAlphaBlendFactor = bfac_dev(k.blend[i].dst_a);
             cb[i].colorBlendOp = bop(k.blend[i].eq_rgb); cb[i].alphaBlendOp = bop(k.blend[i].eq_a); }
     }
     VkPipelineColorBlendStateCreateInfo bs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .logicOpEnable = k.logic_en, .logicOp = (VkLogicOp)k.logic_op,
@@ -3030,7 +3149,8 @@ static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark) {
         if (x1 <= x0 || y1 <= y0) return; sc = (VkRect2D){{(int32_t)x0, (int32_t)y0}, {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0)}}; }
     vkCmdSetScissor(cb, 0, 1, &sc);
     if (g_eds) {   // (without extended dynamic state these are built into the pipeline: pso_get's sst, the same values)
-    vkCmdSetCullMode(cb, S.poly.cull == NVN_FACE_FRONT ? VK_CULL_MODE_FRONT_BIT : S.poly.cull == NVN_FACE_BACK ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
+    // (points and lines never cull, so none is sent for them: Arm's driver culled them with a dynamic cull mode and those draws vanished, erratum 3786517, r41-r51)
+    vkCmdSetCullMode(cb, topo_class(topo) < 2 ? VK_CULL_MODE_NONE : S.poly.cull == NVN_FACE_FRONT ? VK_CULL_MODE_FRONT_BIT : S.poly.cull == NVN_FACE_BACK ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
     int ccw = S.poly.front == NVN_FRONT_FACE_CCW; if (atomic_load(&g_origin_ll)) ccw = !ccw;   // lower-left: the y flip relative to GL window coordinates reverses the winding
     vkCmdSetFrontFace(cb, ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE);
     vkCmdSetPrimitiveTopology(cb, topo);
@@ -3924,7 +4044,7 @@ static void present_window_locked(vtex *x, const int crop[4]) {
     int srgb = x->fmt == VK_FORMAT_R8G8B8A8_SRGB || x->fmt == VK_FORMAT_B8G8R8A8_SRGB;
     if (!swap_ensure(win, srgb)) return;
     uint32_t sl = W.slot++ % 3;
-    vkWaitForFences(g_dev, 1, &W.fence[sl], VK_TRUE, UINT64_MAX);
+    vk_wait(NULL, W.fence[sl], UINT64_MAX);
     uint32_t ii; VkResult r = vkAcquireNextImageKHR(g_dev, W.sc, UINT64_MAX, W.acq[sl], VK_NULL_HANDLE, &ii);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) { swap_destroy(); return; }
     if (r && r != VK_SUBOPTIMAL_KHR) return;

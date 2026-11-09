@@ -11,6 +11,7 @@
 #include <mach/mach.h>
 #include <stdatomic.h>
 #include <time.h>
+#include "crash_line.h"   // the first line of a crash record and the handler's reads that cannot fault
 
 static _Atomic uint64_t g_watch_last_ns;
 static _Atomic uint64_t g_watch_count;
@@ -79,15 +80,19 @@ void crash_off(const char *tag, uint64_t a) {   // Also used by diag.c
         const char *b = strrchr(di.dli_fname, '/'); fprintf(stderr, " %s%s%s+%#lx", tag, *tag ? "=" : "", b ? b + 1 : di.dli_fname, (unsigned long)(a - (uint64_t)di.dli_fbase)); }
     else fprintf(stderr, " %s%s%#llx", tag, *tag ? "=" : "", a);
 }
-// Frame pointer backtrace: x29 chain [fp]=previous frame's fp, [fp+8]=return address; only 8-byte aligned, monotonically increasing frames are walked
+// The crash record's first line: written before anything in the handler that could fault again or wait (dladdr and the linker's lock, stdio's lock, the dumps).
+// crash_line.h makes it with a fixed buffer and one write()
+static void crash_first_line(int sig, siginfo_t *si, ucontext_t *uc) {
+    char b[768];
+    size_t n = crash_line_format(b, sizeof b, sig, (uint64_t)(uintptr_t)si->si_addr, (uint64_t)DM_UC_SS(uc).__pc, (uint64_t)DM_UC_SS(uc).__lr, (uint64_t)DM_UC_SS(uc).__sp);
+    if (write(2, b, n) < 0) {}
+}
+// Frame pointer backtrace: x29 chain [fp]=previous frame's fp, [fp+8]=return address; only 8-byte aligned, monotonically increasing frames are walked, each read without
+// faulting (crash_line.h frame_walk: code built without frame pointers, a GPU driver, leaves anything in x29)
 void dm_backtrace(uint64_t fp) {
+    uint64_t ra[32]; int n = frame_walk(fp, ra, 32);
     fprintf(stderr, "[dm] bt:");
-    for (int i = 0; i < 32 && fp && !(fp & 7); i++) {
-        uint64_t nfp = ((uint64_t *)fp)[0], ra = ((uint64_t *)fp)[1];
-        off("", ra);
-        if (nfp <= fp) break;
-        fp = nfp;
-    }
+    for (int i = 0; i < n; i++) off("", ra[i]);
     fputc('\n', stderr);
 }
 // ---------- Page fault hooks (write-protect dirty page tracking) ----------
@@ -140,6 +145,8 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     }
     crash_gate(sig);
     if (dm_crash_note) dm_crash_note(module_of((void *)DM_UC_SS(uc).__pc) != NULL);
+    crash_first_line(sig, si, uc);
+    if (dm_crash_log_copy) dm_crash_log_copy();   // (that line into the copy a player finds at once, in case the record below cannot finish)
     // The stderr lock may be held by another thread (stuck or suspended): the fprintf below would hang with it, the time limit's SIGALRM could not end the run, and the log would get nothing.
     // If it still cannot be taken after 1 s, write a single line with write() (pc / lr as module offsets) and exit. When this thread itself holds the lock, ftrylockfile still succeeds (file locks are recursive), unaffected
     for (int i = 0; ftrylockfile(stderr); i++) {
@@ -150,6 +157,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
             n += m ? snprintf(b + n, sizeof b - n, " %s=%s+%#llx", k ? "lr" : "pc", m->name, at[k] - (uint64_t)m->base) : snprintf(b + n, sizeof b - n, " %s=%#llx", k ? "lr" : "pc", at[k]); }
         n += snprintf(b + n, sizeof b - n, "\n");
         if (write(2, b, (size_t)n) < 0) {}
+        if (dm_crash_log_copy) dm_crash_log_copy();
         _exit(128 + sig);
     }
     funlockfile(stderr);
@@ -168,18 +176,23 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     }
     dm_backtrace(DM_UC_SS(uc).__fp);
     // Stack scan: when the frame chain is broken (a return address was overwritten, pc = lr lands on garbage) the backtrace prints nothing; scan 512 words up from sp and list everything that resolves to a module / host symbol (nearest callers first)
-    {   uint64_t sp = DM_UC_SS(uc).__sp;   // The frame just popped (when a return address was overwritten, the bad value and the leftovers of whatever overwrote it sit below sp)
+    {   uint64_t sp = DM_UC_SS(uc).__sp, w[32];   // The frame just popped (when a return address was overwritten, the bad value and the leftovers of whatever overwrote it sit below sp)
         fprintf(stderr, "[dm] fp=%#llx  0x100 bytes below sp:", (unsigned long long)DM_UC_SS(uc).__fp);
-        for (int i = -32; i < 0 && sp && !(sp & 7); i++) fprintf(stderr, "%s%llx", (i + 32) % 4 ? " " : "\n[dm]   ", (unsigned long long)((uint64_t *)sp)[i]);
+        if (sp && !(sp & 7) && rd_safe(sp - sizeof w, w, sizeof w)) for (int i = 0; i < 32; i++) fprintf(stderr, "%s%llx", i % 4 ? " " : "\n[dm]   ", (unsigned long long)w[i]);
         fputc('\n', stderr); }
     {   uint64_t sp = DM_UC_SS(uc).__sp; int n = 0;
         fprintf(stderr, "[dm] stack scan sp=%#llx:", (unsigned long long)sp);
-        for (int i = -32; i < 512 && n < 24 && sp && !(sp & 7); i++) {
-            uint64_t v = ((uint64_t *)sp)[i]; Dl_info di;
-            if (v < 0x100000000ull || (v & 3)) continue;
-            int mod = -1; for (int k = 0; k < g_nmod; k++) { uint64_t b = (uint64_t)(uintptr_t)g_mod[k].base; if (v >= b && v < b + g_mod[k].size) mod = k; }
-            if (mod >= 0) { fprintf(stderr, " [%+d]%s+%#llx", i * 8, g_mod[mod].name, (unsigned long long)(v - (uint64_t)(uintptr_t)g_mod[mod].base)); n++; }
-            else if (dladdr((void *)v, &di) && di.dli_sname && di.dli_fname && strstr(di.dli_fname, "dmhost")) { fprintf(stderr, " [%+d]%s+%#llx", i * 8, di.dli_sname, (unsigned long long)(v - (uint64_t)di.dli_saddr)); n++; }
+        // 32 words at a time from 0x100 bytes below sp, each read without faulting: the scan ends where the thread's stack does (a short driver thread's stack ended
+        //   within the 4 KB this scans)
+        for (int c = -1; c < 16 && n < 24 && sp && !(sp & 7); c++) {
+            uint64_t w[32]; if (!rd_safe(sp + (uint64_t)((int64_t)c * (int64_t)sizeof w), w, sizeof w)) { if (c < 0) continue; break; }
+            for (int k = 0; k < 32 && n < 24; k++) {
+                int i = c * 32 + k; uint64_t v = w[k]; Dl_info di;
+                if (v < 0x100000000ull || (v & 3)) continue;
+                int mod = -1; for (int j = 0; j < g_nmod; j++) { uint64_t b = (uint64_t)(uintptr_t)g_mod[j].base; if (v >= b && v < b + g_mod[j].size) mod = j; }
+                if (mod >= 0) { fprintf(stderr, " [%+d]%s+%#llx", i * 8, g_mod[mod].name, (unsigned long long)(v - (uint64_t)(uintptr_t)g_mod[mod].base)); n++; }
+                else if (dladdr((void *)v, &di) && di.dli_sname && di.dli_fname && strstr(di.dli_fname, "dmhost")) { fprintf(stderr, " [%+d]%s+%#llx", i * 8, di.dli_sname, (unsigned long long)(v - (uint64_t)di.dli_saddr)); n++; }
+            }
         }
         fputc('\n', stderr); }
     if (g_dump_hook) g_dump_hook();

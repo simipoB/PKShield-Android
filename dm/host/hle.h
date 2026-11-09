@@ -37,6 +37,11 @@ typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
     static ret cname(__VA_ARGS__)
 // Same as above, but the implementation runs on this thread's big host stack (hle_bigstack.c): what is registered is a stub generated at compile time (the implementation's address goes into x16, then a jump to dm_bigstack_enter).
 // For take-overs with large stack use (the file system sizes its buffers by PATH_MAX): a game thread's stack can be as small as 8 KB. Only register arguments are carried over (<= 8 integer, <= 8 floating point); not for variadic functions
+// The guest's call site inside an HLE_FORCE_BIG implementation: past the big-stack switch the return address is the switch's (dm_bigstack_enter), and the game's is in
+// the frame the switch left on the original stack, one frame up (its x29 / x30); called without a switch (a host thread), the return address is the caller's already
+extern const char dm_bigstack_enter[];
+#define HLE_CALLER() ({ void *r_ = __builtin_return_address(0); \
+    if ((const char *)r_ >= dm_bigstack_enter && (const char *)r_ < dm_bigstack_enter + 0x100) { void **fp_ = (void **)__builtin_frame_address(0); r_ = ((void **)fp_[0])[1]; } r_; })
 #define HLE_FORCE_BIG(mangled, why, ret, cname, ...)                                               \
     static ret cname(__VA_ARGS__) __attribute__((used));                                          \
     extern const char cname##_bs[];                                                               \

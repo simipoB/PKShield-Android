@@ -250,13 +250,15 @@ static Result au_open_at(void *g, void *ev, const char *name, const uint8_t *par
     if (real_audio()) { static pthread_once_t wd = PTHREAD_ONCE_INIT; au_open(a); pthread_once(&wd, au_watchdog_start); }
     return RES_OK;
 }
-HLE_FORCE("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKNS0_17AudioOutParameterE", "connect to the audout service; host AudioUnit / silent sink",
-          Result, h_au_Open, void *g, void *ev, const char *name, const uint8_t *param) { return au_open_at(g, ev, name, param, __builtin_return_address(0)); }
+// Opening, starting, stopping and closing reach the phone's audio stack (AAudio, AudioTrack and its AIDL conversions), which needs a host-sized stack: on the game's audio
+// thread it ran past the stack's end inside AudioTrack::setBufferSizeInFrames (#89: an Infinix with a Mali-G57, SIGSEGV at sp). They run on the big host stack (HLE_FORCE_BIG)
+HLE_FORCE_BIG("_ZN2nn5audio12OpenAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventEPKcRKNS0_17AudioOutParameterE", "connect to the audout service; host AudioUnit / silent sink",
+          Result, h_au_Open, void *g, void *ev, const char *name, const uint8_t *param) { return au_open_at(g, ev, name, param, HLE_CALLER()); }
 // The two default-device overloads (Engage, SDK 12): as OpenAudioOut with the default device name; the overload without an event binds no release event (the game polls GetReleasedAudioOutBuffer)
-HLE_FORCE("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE", "connect to the audout service (default device); same as OpenAudioOut",
-          Result, h_au_OpenDef, void *g, void *ev, const uint8_t *param) { return au_open_at(g, ev, NULL, param, __builtin_return_address(0)); }
-HLE_FORCE("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE", "connect to the audout service (default device, no event); same as OpenAudioOut",
-          Result, h_au_OpenDef0, void *g, const uint8_t *param) { return au_open_at(g, NULL, NULL, param, __builtin_return_address(0)); }
+HLE_FORCE_BIG("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutEPNS_2os11SystemEventERKNS0_17AudioOutParameterE", "connect to the audout service (default device); same as OpenAudioOut",
+          Result, h_au_OpenDef, void *g, void *ev, const uint8_t *param) { return au_open_at(g, ev, NULL, param, HLE_CALLER()); }
+HLE_FORCE_BIG("_ZN2nn5audio19OpenDefaultAudioOutEPNS0_8AudioOutERKNS0_17AudioOutParameterE", "connect to the audout service (default device, no event); same as OpenAudioOut",
+          Result, h_au_OpenDef0, void *g, const uint8_t *param) { return au_open_at(g, NULL, NULL, param, HLE_CALLER()); }
 static Result au_start_at(void *g, void *lr) {
     aout *a = ao(g);
     pthread_mutex_lock(&g_aos_lock);
@@ -269,7 +271,7 @@ static Result au_start_at(void *g, void *lr) {
     pthread_mutex_unlock(&g_aos_lock);
     return RES_OK;
 }
-HLE_FORCE("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "start playback", Result, h_au_Start, void *g) { return au_start_at(g, __builtin_return_address(0)); }
+HLE_FORCE_BIG("_ZN2nn5audio13StartAudioOutEPNS0_8AudioOutE", "start playback", Result, h_au_Start, void *g) { return au_start_at(g, HLE_CALLER()); }
 static void au_stop_at(void *g, void *lr) {   // lr NULL: the stop inside Close, not logged separately
     aout *a = ao(g);
     pthread_mutex_lock(&g_aos_lock);
@@ -278,7 +280,7 @@ static void au_stop_at(void *g, void *lr) {   // lr NULL: the stop inside Close,
     backend_stop(a);   // the AudioUnit, or the silent sink (including one that took over during suspension)
     pthread_mutex_unlock(&g_aos_lock);
 }
-HLE_FORCE("_ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE", "stop playback", void, h_au_Stop, void *g) { au_stop_at(g, __builtin_return_address(0)); }
+HLE_FORCE_BIG("_ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE", "stop playback", void, h_au_Stop, void *g) { au_stop_at(g, HLE_CALLER()); }
 static void au_close(void *g, void *lr) {
     au_note(ao(g), "Close", lr);
     au_stop_at(g, NULL);
@@ -294,7 +296,7 @@ static void au_close(void *g, void *lr) {
     if (a->rel_sem) dispatch_release(a->rel_sem);
     pthread_mutex_destroy(&a->m); free(a);
 }
-HLE_FORCE("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", "close the audio output", void, h_au_Close, void *g) { au_close(g, __builtin_return_address(0)); }
+HLE_FORCE_BIG("_ZN2nn5audio13CloseAudioOutEPNS0_8AudioOutE", "close the audio output", void, h_au_Close, void *g) { au_close(g, HLE_CALLER()); }
 HLE_FORCE("_ZN2nn5audio16GetAudioOutStateEPKNS0_8AudioOutE", "playback state", int, h_au_State, const void *g) { return atomic_load_explicit(&ao(g)->state, memory_order_acquire); }
 // Pokémon Legends: Z-A (SDK 19): Wwise's sink wakeup thread (main+0x30faae8) asks after every release event and marks the sink starved at 0; the SDK's own version read the audout session the host never made
 HLE_FORCE("_ZN2nn5audio22GetAudioOutBufferCountEPKNS0_8AudioOutE", "buffers appended and not yet played to the end (the one playing included)", unsigned, h_au_BufCount, const void *g) {

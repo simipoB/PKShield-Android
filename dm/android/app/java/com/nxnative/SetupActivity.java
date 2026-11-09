@@ -77,18 +77,19 @@ public final class SetupActivity extends Activity {
             if (n[0].equals("mods")) Toast.makeText(this, n[1], Toast.LENGTH_LONG).show();
             else if (n[0].equals("driver")) { block = true; final String gpu = n[1];
                 new android.app.AlertDialog.Builder(this).setTitle(T.t(this, "The game closed while starting its graphics"))
-                    .setMessage(T.t(this, "Last time, %s closed while starting its graphics on this phone's own driver (%s). ", gameName(), gpu) + driverAdvice(gpu))
-                    .setPositiveButton("Choose a driver", (d, w) -> pick(PICK_DRIVER, false))
-                    .setNeutralButton("Start anyway", (d, w) -> startGame())
-                    .setNegativeButton("Close", null).show(); }
+                    .setMessage(T.t(this, "Last time, %s closed while starting its graphics on this phone's own driver (%s). ", gameName(), gpu) + driverAdvice(this, gpu))
+                    .setPositiveButton(T.t(this, "Choose a driver"), (d, w) -> pick(PICK_DRIVER, false))
+                    .setNeutralButton(T.t(this, "Start anyway"), (d, w) -> startGame())
+                    .setNegativeButton(T.t(this, "Close"), null).show(); }
         }
         return block;
     }
-    private static String driverAdvice(String gpu) {
+    // (translated: the dialog came half in English in the Portuguese app, #82)
+    private static String driverAdvice(android.content.Context c, String gpu) {
         String g = gpu.toLowerCase(java.util.Locale.ROOT);
-        if (g.contains("adreno")) return "A recent Mesa Turnip package for Adreno usually fixes this: choose its .zip as the graphics driver.";
-        if (g.matches(".*mali-g(57|68|77|78|52|72|76).*")) return "FristOneRR's PanVK driver supports this Mali: download its .zip from the developer's GitHub Releases and choose it as the graphics driver.";
-        return "No replacement driver supports this GPU yet. Please report it with the log in Download (the -log-previous.txt file), so the app can be fixed for it.";
+        if (g.contains("adreno")) return T.t(c, "A recent Mesa Turnip package for Adreno usually fixes this: choose its .zip as the graphics driver.");
+        if (g.matches(".*mali-g(57|68|77|78|52|72|76).*")) return T.t(c, "FristOneRR's PanVK driver supports this Mali: download its .zip from the developer's GitHub Releases and choose it as the graphics driver.");
+        return T.t(c, "No replacement driver supports this GPU yet. Please report it with the log in Download (the -log-previous.txt file), so the app can be fixed for it.");
     }
     // a game set up (its folder has the ready file and the shader pack): the dual launcher's list
     private boolean isReady(String id) {
@@ -127,6 +128,7 @@ public final class SetupActivity extends Activity {
         // the app's icon with two games: the launcher, once one of them is set up; before that (the first start after installing) the setup screen, which says what to do
         else if (!running && !asked && GameSettings.games(this).size() > 1 && !readyGames().isEmpty()) { launcher(official); return; }
         else if (!running && !asked) { List<String> ready = readyGames(); if (ready.size() == 1) GameSettings.choose(this, ready.get(0)); else if (ready.size() > 1) asked = true; }
+        cleanLeftovers();   // (before the game may start straight away: a stopped setup's leftovers, in the background)
         if (ready()) setupShortcut();
         if (ready() && !asked && !running && notices()) asked = true;   // the last run crashed starting its graphics: this screen offers a driver instead of starting the game
         if (ready() && !asked && !running) { gameIcon(); if (!pendingWork(gameDir())) { startGame(); return; } }
@@ -156,6 +158,10 @@ public final class SetupActivity extends Activity {
                                            + "\n" + T.t(this, "No game files or keys come with this app; yours never leave the phone.")
                                          : T.t(this, "Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone."), 14, 0xFFA9AFBA, false);
         note.setGravity(Gravity.CENTER); note.setPadding(0, px(6), 0, px(6));
+        // the author, linked to the official page (a copy uploaded elsewhere keeps it unless the APK is changed, and a changed APK says "Unofficial build" above)
+        TextView by = text(root, "SimipoB", 13, acc, false); by.setGravity(Gravity.CENTER); by.setPadding(0, 0, 0, px(6));
+        by.setPaintFlags(by.getPaintFlags() | android.graphics.Paint.UNDERLINE_TEXT_FLAG);
+        by.setOnClickListener(v -> { try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/simipoB/Galar-Native-Android"))); } catch (Exception e) { } });
         LinearLayout c1 = card(root, "1", T.t(this, "Your game files"), acc);
         text(c1, T.t(this, "The base game (.nsp or .xci), the %s update and any DLC. You can choose them all at once.", GameSettings.version(this)), 13, 0xFFA9AFBA, false);
         gameText = text(c1, "", 14, 0xFFF2F3F5, false); gameText.setPadding(0, px(8), 0, px(8));
@@ -348,6 +354,32 @@ public final class SetupActivity extends Activity {
     // a driver package into the app's private storage (libadrenotools loads drivers only from there): its meta.json names the library
     private void installDriver(Uri u, String name) { status.setText(DriverPackages.install(this, u, name)); refresh(); }   // (DriverPackages: shared with the in-game menu)
     private static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) deleteTree(c); f.delete(); }
+    private static long treeSize(File f) { if (f.isFile()) return f.length(); long s = 0; File[] k = f.listFiles(); if (k != null) for (File c : k) s += treeSize(c); return s; }
+    // What a setup that stopped leaves behind (#47: 26 GB for a 10 GB game): its unpacked game in setup_work (about 12 GB; any later setup unpacks the game again, so it
+    //   is never read once the app has restarted) and its scan, and the loose shader folder (vk/) of setups made before the shader pack. Not while a setup runs, nor
+    //   within 10 minutes of its log changing (a setup still going); a translation a later "Set up again" can keep (translated.json, setup_game.py) stays
+    private void cleanLeftovers() {
+        if (running) return;
+        final List<File> dirs = new ArrayList<>(); File root = GameSettings.root(this); List<String[]> gs = GameSettings.games(this);
+        for (int i = 0; i < gs.size(); i++) dirs.add(i == 0 ? root : new File(root, gs.get(i)[0]));
+        new Thread(() -> {
+            long freed = 0;
+            for (File game : dirs) {
+                File work = new File(game, "setup_work"), log = new File(work, "setup.log");
+                if (running || (log.isFile() && System.currentTimeMillis() - log.lastModified() < 10 * 60 * 1000L)) continue;
+                boolean keepXlate = new File(work, "translated.json").isFile();
+                File[] w = work.listFiles();
+                if (w != null) for (File f : w) { String n = f.getName();
+                    boolean drop = n.equals("extract") || n.equals("shader_pkg") || n.equals("cas") || n.equals("aoc") || n.startsWith("dmsh_")
+                        || (!keepXlate && (n.equals("vk") || n.equals("shader_cache")));
+                    if (drop && !running) { freed += treeSize(f); deleteTree(f); } }
+                File vk = new File(game, "vk");
+                if (vk.isDirectory() && new File(game, "shaders.pak").isFile() && new File(game, "ready").isFile() && !running) { freed += treeSize(vk); deleteTree(vk); }
+            }
+            if (freed > (64L << 20)) { final String gb = String.format(java.util.Locale.ROOT, "%.1f", freed / 1e9);
+                runOnUiThread(() -> { if (status != null && status.getText().length() == 0) status.setText(T.t(this, "Freed %s GB left over from an earlier setup.", gb)); }); }
+        }).start();
+    }
     private void refresh() {
         if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? T.t(this, "the phone's own Vulkan driver") : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")");
                                   if (maliBox != null) maliBox.setVisibility(MaliDriver.isPanvk(d) ? android.view.View.VISIBLE : android.view.View.GONE); }

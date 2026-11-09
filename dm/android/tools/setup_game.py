@@ -52,6 +52,31 @@ def watch_translation(found_map, work, built, stop):
         done = min(done, total - 1)   # the map also lists shaders that wait for capture, so the count can fall short of it: 100% is the step's end
         if done != shown: shown = done; print(f'PROGRESS {done}/{total}', flush=True)
 
+def watch_files(d, end, total, stop):
+    """'PROGRESS done/total' lines while a step writes one file per shader into d (vk_meta.py: a .vkr for each .spv); it prints nothing until it ends"""
+    shown = -1
+    while not stop.wait(5):
+        try: done = sum(e.name.endswith(end) for e in os.scandir(d))
+        except OSError: done = 0
+        done = min(done, total - 1)
+        if done != shown: shown = done; print(f'PROGRESS {done}/{total}', flush=True)
+
+def translated_mark(work):
+    return os.path.join(work, 'translated.json')
+
+def found_digest(work):
+    """What the shader scan found, as one hash: a translation made for the same list (and chain) can be kept by the next setup of the same dump"""
+    try: return hashlib.sha256(open(os.path.join(work, 'shader_map.found.tsv'), 'rb').read()).hexdigest()
+    except OSError: return ''
+
+def translation_kept(work, chain):
+    """A fresh setup of the dump the last one translated (the same shaders, the same chain): its translated shaders are kept and only what is missing is
+    translated, instead of hours of translating everything again (#100: a setup stopped after the translation was all done)"""
+    import json
+    try: m = json.load(open(translated_mark(work), encoding='utf-8'))
+    except (OSError, ValueError): return False
+    return m.get('chain') == chain and m.get('found') == found_digest(work) and bool(m.get('found'))
+
 def explain_failure(log_path, files):
     """The unpacker's known failures in words a player can act on (from the end of setup.log), and whether setting up anyway (--allow-damaged) can get past
     it; ('', False) when it is none of them"""
@@ -131,6 +156,17 @@ def main():
             if allow and not a.allow_damaged: print('OFFER allow-damaged', flush=True)   # the setup screen offers "Set up anyway"
             elif allow: hint = 'even set up anyway, your files could not be read: ' + hint.split(':')[0] + '. Copy them again in full or dump them again from your Switch'
             raise RuntimeError(f'{name} failed ({r.returncode}){": " + hint if hint else ""}; see {log.name}')
+    def write_translated(work, chain):   # the translation is done: a fresh setup of the same dump keeps it (translation_kept)
+        import json
+        json.dump({'chain': chain, 'found': found_digest(work)}, open(translated_mark(work), 'w', encoding='utf-8'))
+    def reflect(vk, built):
+        # the replay's reflection (a .vkr for each translated shader), read straight from the shader build's folder (built: its <key>_b.json). Copying those files
+        #   (38,500 for Sword) into vk first took hours on a phone's shared storage, with nothing on the screen (#100: the setup sat after the translation was done)
+        nspv = sum(f.endswith('.spv') and not f.endswith('.gl.spv') for f in os.listdir(vk))
+        log.write(f'reflection for {nspv} shaders\n')
+        stop5 = threading.Event(); threading.Thread(target=watch_files, args=(vk, '.vkr', max(nspv, 1), stop5), daemon=True).start()
+        try: run([py, os.path.join(DM, 'android/tools/vk_meta.py'), built, vk, built])
+        finally: stop5.set()
     keys = os.path.join(a.keys, 'prod.keys')
     if not os.path.isfile(keys): raise RuntimeError(f'no prod.keys in {a.keys}')
     ex = os.path.join(a.work, 'extract')
@@ -261,7 +297,9 @@ def main():
         except OSError: shutil.copyfile(dp, tmp)
         if missing:
             vk = os.path.join(a.work, 'vk', 'b-' + chain); cache = os.path.join(a.work, 'shader_cache')
-            if not resumed: shutil.rmtree(os.path.dirname(vk), ignore_errors=True); shutil.rmtree(cache, ignore_errors=True)
+            kept = not resumed and translation_kept(a.work, chain)
+            if kept: log.write('the shaders the last setup of this dump translated are kept: only what is missing is translated\n')
+            if not resumed and not kept: shutil.rmtree(os.path.dirname(vk), ignore_errors=True); shutil.rmtree(cache, ignore_errors=True)
             os.makedirs(vk, exist_ok=True)
             gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
             xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=a.work) if gate else dict(XLATE=tool('dmsh_xlate'))
@@ -270,18 +308,20 @@ def main():
                          DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'), DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
                          DMSH_PAIRS=os.path.join(a.work, 'shader_pairs.found.tsv'), MAIN=os.path.join(exefs, 'main')))
             built = os.path.join(cache, 'b-' + chain)
-            for f in os.listdir(built):
-                if f.endswith('_b.json'): shutil.copyfile(os.path.join(built, f), os.path.join(vk, f))
+            write_translated(a.work, chain)
             step(5)
-            run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
+            reflect(vk, built)
             small = os.path.join(a.work, 'shaders.new.pak'); run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, small])
             pak_merge(tmp, small); os.remove(small)
         else: step(5)
         os.replace(tmp, target)
     else:
         vk = os.path.join(a.work, 'vk', 'b-' + chain); cache = os.path.join(a.work, 'shader_cache')
-        if not resumed:
+        kept = not resumed and translation_kept(a.work, chain)
+        if kept: log.write('the shaders the last setup of this dump translated are kept: only what is missing is translated\n')
+        if not resumed and not kept:
             shutil.rmtree(os.path.dirname(vk), ignore_errors=True); shutil.rmtree(cache, ignore_errors=True)
+        if not resumed:
             for d in glob.glob(os.path.join(a.work, 'dmsh_*')): shutil.rmtree(d, ignore_errors=True)   # an interrupted run's scratch dir would count toward the progress
         os.makedirs(vk, exist_ok=True)
         stop = threading.Event(); found = os.path.join(a.work, 'shader_map.found.tsv')
@@ -298,11 +338,10 @@ def main():
                      MAIN=os.path.join(exefs, 'main')))
         finally: stop.set()
         built = os.path.join(cache, 'b-' + chain)
-        for f in os.listdir(built):
-            if f.endswith('_b.json'): shutil.copyfile(os.path.join(built, f), os.path.join(vk, f))
+        write_translated(a.work, chain)
 
         step(5)
-        run([py, os.path.join(DM, 'android/tools/vk_meta.py'), vk, vk, built])
+        reflect(vk, built)
         # the pack compressed (zlib per shader, the engine inflates each as it loads it: nvn_vk.c pak_blob): about 3.4 times smaller on the phone (Violet 2.9 GB → 0.85 GB, Sword 2.3 → 0.7)
         raw = os.path.join(a.work, 'shaders.raw.pak')
         run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, raw])
@@ -322,6 +361,8 @@ def main():
     if os.path.realpath(rom) != os.path.realpath(romfs):
         shutil.rmtree(rom, ignore_errors=True); os.replace(romfs, rom)   # same storage: a rename, nothing copied
     for d in ('shader_pkg', 'cas', 'vk', 'shader_cache', 'extract', 'aoc'): shutil.rmtree(os.path.join(a.work, d), ignore_errors=True)   # only setup.log stays
+    try: os.remove(translated_mark(a.work))   # (its translation went with shader_cache)
+    except FileNotFoundError: pass
     # the new pack holds every capture there is, so the launcher's list of captures already added is stale: the next start checks them against the pack again
     try: os.remove(os.path.join(a.out, 'captures_done'))
     except FileNotFoundError: pass
