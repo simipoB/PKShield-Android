@@ -18,7 +18,7 @@ static const char *get(const char *name) {
     FILE *f = fopen(p, "r"); if (!f) return NULL; size_t k = fread(b, 1, sizeof b - 1, f); b[k] = 0; fclose(f); return b;
 }
 static void fresh_env(const char *ver, const char *drv) {
-    unsetenv("DM_VK_TEX_QUALITY"); unsetenv("DM_VK_BC_GPU"); unsetenv("DM_VK_BC_TRANSCODE"); unsetenv("DM_VK_FLOAT_CONTROLS");
+    unsetenv("DM_VK_TEX_QUALITY"); unsetenv("DM_VK_UBO_SNAPSHOT"); unsetenv("DM_VK_BC_GPU"); unsetenv("DM_VK_BC_TRANSCODE"); unsetenv("DM_VK_FLOAT_CONTROLS");
     if (ver) setenv("DM_APP_VERSION", ver, 1); else unsetenv("DM_APP_VERSION");
     if (drv) setenv("DM_VK_DRIVER", drv, 1); else unsetenv("DM_VK_DRIVER");
 }
@@ -35,15 +35,15 @@ int main(void) {
     fresh_env("55", NULL); put("boot_state", CRASH);
     CHECK(safe_start(D) == 1, "a crash in the driver after the device came up, before play: a level up");
     CHECK(get("safe_start") && !strcmp(get("safe_start"), "1\nstock|55\n"), "level 1 kept for the phone's own driver and version 55");
-    CHECK(is("DM_VK_TEX_QUALITY", "full") && is("DM_VK_BC_GPU", NULL), "level 1: full textures only");
+    CHECK(is("DM_VK_TEX_QUALITY", "full") && is("DM_VK_UBO_SNAPSHOT", NULL) && is("DM_VK_BC_GPU", NULL), "level 1: full textures only");
 
     fresh_env("55", NULL); put("boot_state", CRASH);
     CHECK(safe_start(D) == 1 && !strcmp(get("safe_start"), "2\nstock|55\n"), "crashed again: level 2");
-    CHECK(is("DM_VK_TEX_QUALITY", "full") && is("DM_VK_BC_GPU", "0") && is("DM_VK_BC_TRANSCODE", NULL), "level 2: also BC textures on the CPU");
+    CHECK(is("DM_VK_TEX_QUALITY", "full") && is("DM_VK_UBO_SNAPSHOT", "1") && is("DM_VK_BC_GPU", NULL), "level 2: also uniform buffers copied (#105)");
 
     fresh_env("55", NULL); put("boot_state", NULL);   // (a start that played removes boot_state)
     CHECK(safe_start(D) == 0 && !strcmp(get("safe_start"), "2\nstock|55\n"), "a good start: the level is kept");
-    CHECK(is("DM_VK_TEX_QUALITY", "full") && is("DM_VK_BC_GPU", "0"), "a good start: level 2's settings still set");
+    CHECK(is("DM_VK_TEX_QUALITY", "full") && is("DM_VK_UBO_SNAPSHOT", "1"), "a good start: level 2's settings still set");
 
     static const struct { const char *state, *what; } no[] = {
         { "start driver stock mods 0\ndevice\ncrashed in the game's code\n", "a crash in the game's own code: not the driver's, no level up" },
@@ -65,11 +65,11 @@ int main(void) {
     CHECK(safe_start(D) == 0 && !get("safe_start") && is("DM_VK_TEX_QUALITY", NULL), "a driver package: the phone's own driver's level does not apply");
 
     fresh_env("56", NULL); put("safe_start", "1\nstock|56\n"); put("boot_state", CRASH); setenv("DM_VK_TEX_QUALITY", "half", 1);   // (env.txt set it)
-    CHECK(safe_start(D) == 1 && is("DM_VK_TEX_QUALITY", "half") && is("DM_VK_BC_GPU", "0"), "the player's own setting (half textures in env.txt) wins; level 2's other setting applies");
+    CHECK(safe_start(D) == 1 && is("DM_VK_TEX_QUALITY", "half") && is("DM_VK_UBO_SNAPSHOT", "1"), "the player's own setting (half textures in env.txt) wins; level 2's other setting applies");
 
-    fresh_env("56", NULL); put("safe_start", "4\nstock|56\n"); put("boot_state", CRASH);
-    CHECK(safe_start(D) == 0 && !strcmp(get("safe_start"), "4\nstock|56\n"), "at the top level a crash goes no further (the driver dialog shows instead)");
-    CHECK(is("DM_VK_TEX_QUALITY", "full") && is("DM_VK_BC_GPU", "0") && is("DM_VK_BC_TRANSCODE", "off") && is("DM_VK_FLOAT_CONTROLS", "0"), "level 4: all four settings");
+    fresh_env("56", NULL); put("safe_start", "5\nstock|56\n"); put("boot_state", CRASH);
+    CHECK(safe_start(D) == 0 && !strcmp(get("safe_start"), "5\nstock|56\n"), "at the top level a crash goes no further (the driver dialog shows instead)");
+    CHECK(is("DM_VK_TEX_QUALITY", "full") && is("DM_VK_UBO_SNAPSHOT", "1") && is("DM_VK_BC_GPU", "0") && is("DM_VK_BC_TRANSCODE", "off") && is("DM_VK_FLOAT_CONTROLS", "0"), "level 5: all five settings");
 
     fresh_env("56", NULL); put("safe_start", "9\nstock|56\n"); put("boot_state", NULL);
     CHECK(safe_start(D) == 0 && is("DM_VK_TEX_QUALITY", NULL), "a level out of range in the file: taken as none");
