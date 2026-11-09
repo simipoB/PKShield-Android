@@ -276,3 +276,13 @@ Freed %s GB left over from an earlier setup.	%s Go restants d’une configuratio
 Min / max as on the Switch	Min / max comme sur la Switch
 Auto: on with ARM's driver (v0.57)	Auto : activé avec le pilote d'ARM (v0.57)
 Off: the shaders as before v0.57	Désactivé : les shaders comme avant la v0.57
+About	À propos
+Official build	Version officielle
+Unofficial build	Version non officielle
+Signed with the %s release key.	Signée avec la clé de publication de %s.
+This copy was not signed by the %s project (signer %s). It may have been changed.	Cette copie n'a pas été signée par le projet %s (signataire %s). Elle a peut-être été modifiée.
+Official downloads: %s	Téléchargements officiels : %s
+Credits	Crédits
+Free software under the MIT License. This notice must stay with every copy.	Logiciel libre sous licence MIT. Cet avis doit accompagner chaque copie.
+Show the license	Voir la licence
+Third-party code	Code tiers

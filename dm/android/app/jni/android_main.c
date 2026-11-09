@@ -661,11 +661,19 @@ static void host_start(void) {
     char p[1200], q[1200];
     snprintf(p, sizeof p, "%s/log.txt", g_files); snprintf(q, sizeof q, "%s/log.prev.txt", g_files); rename(p, q);
     if (freopen(p, "w", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
+    // the log's first lines: the credits (the app is MIT: its copyright notice stays with every copy; the full text is in the menu, About) and, once env.txt is
+    //   read, whether this is an official build (BuildSigner's DM_BUILD_SIGNER), so a log attached to an issue says at once whether it comes from a repack
+    { const char *v = getenv("DM_APP_VERSION");
+      fprintf(stderr, "boot: app version code %s. Copyright (c) 2026 jhaizhou (d2r-mobile, nxnative) and the Galar Native (formerly PKShield Android) contributors. "
+                      "MIT License (menu, About). Official downloads: github.com/simipoB/Galar-Native-Android/releases\n", v && *v ? v : "?"); }
     { char d[256]; snprintf(d, sizeof d, DL "/%s-log-previous.txt", g_stem); copy_file(q, d); }
     snprintf(g_crash_src, sizeof g_crash_src, "%s/log.txt", g_files); snprintf(g_crash_dl, sizeof g_crash_dl, DL "/%s-log.txt", g_stem);
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
     { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);
+    { const char *s = getenv("DM_BUILD_SIGNER");
+      if (s && !strcmp(s, "official")) fprintf(stderr, "boot: build: official (signed with the release key)\n");
+      else fprintf(stderr, "boot: build: UNOFFICIAL (%s): not a release from github.com/simipoB/Galar-Native-Android, it may have been changed\n", s && *s ? s : "signer unknown"); }
     g_safe_advanced = safe_start(g_files);   // (after env.txt: the player's settings win; before the phone profile: its defaults do not)
     // why Android ended the previous run (GameActivity, ApplicationExitInfo): reason 2 a signal, 3 low memory, 4 / 5 a crash, 6 not responding, 10 / 11 the player /
     //   the app, 13 other (Samsung's game manager, heat), 14 frozen
