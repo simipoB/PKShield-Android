@@ -294,3 +294,6 @@ Auto: on for this phone	Auto: ligado neste celular
 Auto: off for this phone (HD texture mods need 12 GB of memory)	Auto: desligado neste celular (mods de texturas HD precisam de 12 GB de memória)
 On: your HD texture mods load (more memory, slower area loads)	Ligado: seus mods de texturas HD são carregados (mais memória, carregamento de áreas mais lento)
 Off: the game's own textures (your HD texture mods stay installed)	Desligado: as texturas originais do jogo (seus mods de texturas HD continuam instalados)
+L3 / R3 buttons	Botões L3 / R3
+Off: no L3 / R3 on screen (a controller's stick buttons still work)	Desligado: sem L3 / R3 na tela (os botões dos analógicos de um controle continuam funcionando)
+On: L3 and R3 above the sticks (move them with Move the touch controls)	Ligado: L3 e R3 acima dos analógicos (mova-os com Mover os controles de toque)

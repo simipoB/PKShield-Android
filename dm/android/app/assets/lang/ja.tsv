@@ -294,3 +294,6 @@ Auto: on for this phone	自動：この端末ではオン
 Auto: off for this phone (HD texture mods need 12 GB of memory)	自動：この端末ではオフ（HD テクスチャ MOD には 12 GB のメモリが必要です）
 On: your HD texture mods load (more memory, slower area loads)	オン：HD テクスチャ MOD を読み込みます（メモリ使用量が増え、エリアの読み込みが遅くなります）
 Off: the game's own textures (your HD texture mods stay installed)	オフ：ゲーム本来のテクスチャ（HD テクスチャ MOD はインストールされたままです）
+L3 / R3 buttons	L3 / R3 ボタン
+Off: no L3 / R3 on screen (a controller's stick buttons still work)	オフ：画面に L3 / R3 を表示しない（コントローラーのスティック押し込みは使えます）
+On: L3 and R3 above the sticks (move them with Move the touch controls)	オン：スティックの上に L3 と R3（「タッチ操作の配置を変更」で動かせます）

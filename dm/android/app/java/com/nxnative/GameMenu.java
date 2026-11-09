@@ -282,6 +282,9 @@ public final class GameMenu {
         choice(a, "DM_RUMBLE", t(a, "Rumble"), new String[][] { { "", t(a, "On"), t(a, "On: the controller's motor, else the phone's") }, { "pad", t(a, "Controllers only"), "" },
                                                                  { "off", t(a, "Off"), "" } });
         heading(a, t(a, "Touch controls"));
+        // L3 / R3 (pressing the sticks, touch_ui.c): off by default, Sword and Shield hardly use them (the left stick whistles in the Wild Area)
+        choice(a, "DM_TOUCH_L3R3", t(a, "L3 / R3 buttons"), new String[][] { { "", t(a, "Off"), t(a, "Off: no L3 / R3 on screen (a controller's stick buttons still work)") },
+                                                                             { "on", t(a, "On"), t(a, "On: L3 and R3 above the sticks (move them with Move the touch controls)") } });
         // the short click when a touch button is pressed (touch_ui.c): by default it goes with Rumble, so Rumble Off silences the phone entirely (#114)
         choice(a, "DM_TOUCH_HAPTIC", t(a, "Vibrate on press"), new String[][] { { "", t(a, "Like rumble"), t(a, "Like rumble: off when Rumble is Off") },
                                                                                 { "on", t(a, "On"), "" }, { "off", t(a, "Off"), "" } });
