@@ -68,7 +68,7 @@ public final class GameMenu {
     private static Dialog dlg; private static Activity act; private static LinearLayout rail, body; private static ScrollView scroll; private static TextView status;
     private static String page = "display"; private static final Set<String> RESTART = new HashSet<>();   // settings changed that apply from the next start
     private static final String[][] TABS = { { "display", "Display" }, { "perf", "Performance" }, { "controls", "Controls" }, { "mods", "Mods" }, { "saves", "Saves" },
-                                             { "online", "Online" }, { "system", "System" } };
+                                             { "online", "Online" }, { "system", "System" }, { "about", "About" } };
 
     // android_main.c: what 0 = the menu, 1 = the controller buttons
     public static void show(Activity a, int what) { a.runOnUiThread(() -> open(a, what == 1 ? "remap" : null)); }
@@ -136,6 +136,7 @@ public final class GameMenu {
             case "saves": saves(a); break;
             case "online": online(a); break;
             case "driver": driver(a); break;
+            case "about": about(a); break;
             default: system(a);
         }
     }
@@ -416,6 +417,46 @@ public final class GameMenu {
             if (sv.isEmpty() || cd.isEmpty()) { say(t(a, "Enter both the server and the room code.")); return; }
             GameSettings.set(a, "DM_RELAY", sv); GameSettings.set(a, "DM_RELAY_ROOM", cd.replaceAll("\\s+", "")); RESTART.add("DM_RELAY_ROOM"); go("online"); });
         if (!room.isEmpty()) button(a, r, t(a, "Leave room"), false, () -> { GameSettings.set(a, "DM_RELAY_ROOM", ""); RESTART.add("DM_RELAY_ROOM"); go("online"); });
+    }
+    // About: whether this copy is an official build (BuildSigner: signed with the release key), the credits, and the licences the APK carries (assets/licenses,
+    //   build_apk.py). The app is MIT: its copyright and licence notice must stay with every copy, so a repack that strips this page breaks the licence
+    private static String asset(Activity a, String name) {
+        try (java.io.InputStream in = a.getAssets().open(name)) {
+            java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream(); byte[] b = new byte[8192]; for (int n; (n = in.read(b)) > 0; ) o.write(b, 0, n); return o.toString("UTF-8");
+        } catch (Exception e) { return ""; }
+    }
+    private static void reveal(Activity a, LinearLayout c, String label, String full) {   // a licence's text, folded until tapped
+        TextView txt = text(a, full, 11, SUB, false); txt.setTypeface(Typeface.MONOSPACE); txt.setTextIsSelectable(true); txt.setVisibility(View.GONE);
+        TextView b = text(a, label, 13, accent(a), true); b.setPadding(0, dp(a, 8), 0, dp(a, 2));
+        b.setOnClickListener(v -> txt.setVisibility(txt.getVisibility() == View.GONE ? View.VISIBLE : View.GONE));
+        c.addView(b); c.addView(txt);
+    }
+    private static void about(Activity a) {
+        String[] app = GameSettings.app(a), sg = BuildSigner.digests(a); boolean official = BuildSigner.official(sg);
+        String ver = ""; try { ver = a.getPackageManager().getPackageInfo(a.getPackageName(), 0).versionName; } catch (Exception e) { }
+        String dl = "https://" + app[1] + "/releases";
+        heading(a, app[0] + (ver == null || ver.isEmpty() ? "" : " v" + ver));
+        LinearLayout c = card(a); titleRow(a, c, official ? t(a, "Official build") : t(a, "Unofficial build"), null);
+        c.addView(text(a, official ? t(a, "Signed with the %s release key.", app[0])
+                                   : t(a, "This copy was not signed by the %s project (signer %s). It may have been changed.", app[0], sg.length > 0 && sg[0].length() >= 16 ? sg[0].substring(0, 16) : "?"),
+                       13, SUB, false));
+        TextView link = text(a, t(a, "Official downloads: %s", dl), 13, accent(a), false); link.setPadding(0, dp(a, 6), 0, 0);
+        link.setOnClickListener(v -> { try { a.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(dl))); } catch (Exception e) { } });
+        c.addView(link);
+        // the credits: the copyright lines of the app's licence, then the licence itself
+        String own = asset(a, "licenses/LICENSE.txt"); StringBuilder who = new StringBuilder();
+        for (String l : own.split("\n")) if (l.trim().startsWith("Copyright")) who.append(l.trim()).append('\n');
+        if (who.length() == 0) who.append("Copyright (c) 2026 jhaizhou (d2r-mobile, nxnative)\nCopyright (c) 2026 the Galar Native (formerly PKShield Android) contributors\n");
+        heading(a, t(a, "Credits"));
+        LinearLayout cc = card(a); cc.addView(text(a, who.toString().trim(), 14, TEXT, false));
+        TextView mit = text(a, t(a, "Free software under the MIT License. This notice must stay with every copy."), 13, SUB, false); mit.setPadding(0, dp(a, 6), 0, 0); cc.addView(mit);
+        if (!own.isEmpty()) reveal(a, cc, t(a, "Show the license"), own);
+        // the third-party code and fonts (licenses/index.tsv: file, name, what it is)
+        heading(a, t(a, "Third-party code"));
+        for (String row : asset(a, "licenses/index.tsv").split("\n")) {
+            String[] f = row.split("\t"); if (f.length < 3 || f[0].equals("LICENSE.txt")) continue;
+            LinearLayout tc = card(a); titleRow(a, tc, f[1], null); tc.addView(text(a, f[2], 13, SUB, false)); reveal(a, tc, t(a, "Show the license"), asset(a, "licenses/" + f[0]));
+        }
     }
     private static void system(Activity a) {
         heading(a, t(a, "Graphics driver"));

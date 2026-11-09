@@ -276,3 +276,13 @@ Freed %s GB left over from an earlier setup.	以前のセットアップで残�
 Min / max as on the Switch	Switchと同じ最小／最大
 Auto: on with ARM's driver (v0.57)	自動：ARMのドライバーでオン (v0.57)
 Off: the shaders as before v0.57	オフ：v0.57以前のシェーダー
+About	このアプリについて
+Official build	公式ビルド
+Unofficial build	非公式ビルド
+Signed with the %s release key.	%s のリリース鍵で署名されています。
+This copy was not signed by the %s project (signer %s). It may have been changed.	このコピーは %s プロジェクトの署名ではありません（署名者 %s）。改変されている可能性があります。
+Official downloads: %s	公式ダウンロード: %s
+Credits	クレジット
+Free software under the MIT License. This notice must stay with every copy.	MIT ライセンスのフリーソフトウェアです。この表示はすべてのコピーに含める必要があります。
+Show the license	ライセンスを表示
+Third-party code	サードパーティのコード
