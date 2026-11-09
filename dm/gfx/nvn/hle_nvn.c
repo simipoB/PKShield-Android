@@ -389,6 +389,7 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
     OLOG("Texture %p %ux%ux%u lv%u fmt=%#x tgt=%d flags=%#x size=%#llx", (void *)t, o->d.width, o->d.height, o->d.depth,
          o->d.levels, o->d.format, o->d.target, o->d.flags, o->L.size);
     ft_add(o);
+    { extern void mtl_tex_preupload(const tex_t *t) __attribute__((weak)); if (mtl_tex_preupload) mtl_tex_preupload(o); }   // (nvn_vk.c: uploaded ahead by a worker)
     return 1;
 }
 NVN(nvnTextureFinalize, void, NVNtexture *t) { rq_drain(); ft_del(TX(t)->serial); mtl_tex_release(TX(t)); TX(t)->magic = 0; }

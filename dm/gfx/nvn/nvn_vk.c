@@ -23,6 +23,7 @@
 #include "vk_dispatch.h"
 #include <pthread.h>
 #include <semaphore.h>
+#include <sys/resource.h>
 #include <stdatomic.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -1416,6 +1417,7 @@ typedef struct vtex {
     int fixed_fmt; VkFormat twin;          // 1: not mutable (depth / stencil), 2: mutable within fmt / twin only (tex_make: keeps UBWC)
     int drop;                              // mip levels left out (texture quality half: the image is the game's levels from this one on)
     struct vtex *alt; int alt_fmt;         // BC decoded / transcoded on this GPU, viewed as another BC kind (tex_view_for): the same blocks converted for that kind
+    _Atomic int pre;                       // uploaded ahead (mtl_tex_preupload) and not drawn yet: counted in g_pre_unused
 } vtex;
 static _Atomic int g_cap;   // the frame capture's state (Frame capture, before pass_end)
 static void cap_tex(int tid, const tex_t *t, const vtex *x, int vfmt, VkFormat f);
@@ -1430,8 +1432,10 @@ static uint64_t g_pkg_uploads, g_pkg_reuploads, g_up_bytes;
 
 static void vtex_ref(vtex *t) { if (t) atomic_fetch_add(&t->refs, 1); }
 static atomic_long g_live_tex, g_live_tex_bytes;   // memory accounting (mem_report)
+static _Atomic long g_pre_unused;   // bytes of textures uploaded ahead and not drawn yet (the worker's budget, mtl_tex_preupload)
 static void vtex_unref(vtex *t) {
     if (!t || atomic_fetch_sub(&t->refs, 1) != 1) return;
+    if (atomic_exchange(&t->pre, 0)) atomic_fetch_sub(&g_pre_unused, (long)t->a.size);
     atomic_fetch_sub(&g_live_tex, 1); atomic_fetch_sub(&g_live_tex_bytes, (long)t->a.size);
     for (int i = 0; i < t->nviews; i++) defer_add((dfr){ .kind = DF_VIEW, .h.view = t->views[i].v });
     if (t->bview) defer_add((dfr){ .kind = DF_BUFVIEW, .h.bview = t->bview });
@@ -1707,6 +1711,53 @@ static void serial_put(uint64_t k, vtex *x) {   // takes a reference for the tab
     g_ser_gen++;
 }
 void mtl_tex_init(const tex_t *t) { if (!t->serial) return; pthread_mutex_lock(&g_smu); nvn_hm_put(&g_tex_live, &t->serial, (void *)1); pthread_mutex_unlock(&g_smu); }
+// ================= Packaged textures uploaded ahead (DM_VK_PREUPLOAD=0: off) =================
+// A texture from the game's packages was uploaded the first time a draw sampled it: deswizzled (and on GPUs without BC converted) on the game's own thread inside that frame.
+// Streaming a new area brings hundreds at once (Legends: Arceus flying over the Fieldlands: 350 textures, 86 MB in ten seconds, frames of 100 ms to 1.1 s, a 30 fps that
+// dipped to 26). Now each one is handed, as the game initializes it (hle_nvn.c nvnTextureInitialize, after its packaged data is in place), to a worker that uploads it
+// through a one-off command buffer (pkg_upload off the submit thread: once_begin / once_end, ordered after everything submitted) and files it under its serial; the first
+// draw then finds it uploaded. One that changes afterwards is caught by the dirty pages as before (pkg_upload protects them before it reads) and uploaded again at its first
+// use; one used before the worker got to it is uploaded there as before and the worker's copy dropped. The worker runs below the game's threads' priority
+enum { PRE_N = 2048 };
+static tex_t g_pre[PRE_N]; static unsigned g_pre_head, g_pre_tail; static pthread_mutex_t g_pre_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_pre_cv = PTHREAD_COND_INITIALIZER;
+static _Atomic uint64_t g_pre_done, g_pre_late, g_pre_full;
+// how much the worker may keep uploaded ahead and not drawn yet: 512 MB on phones of 11.5 GB and up, 256 MB from 7.5 GB, 96 MB below (6 GB phones are tight, 4 GB a wall:
+//   docs/device-data.txt); DM_VK_PREUPLOAD_MB sets it. Over it, a texture waits for its first use as before
+static long pre_budget(void) {
+    static long b = -1; if (b >= 0) return b;
+    const char *e = getenv("DM_VK_PREUPLOAD_MB"); long mb = e ? atol(e) : 0;
+    if (!e) { long kb = 0; FILE *f = fopen("/proc/meminfo", "r"); char ln[128]; while (f && fgets(ln, sizeof ln, f)) if (sscanf(ln, "MemTotal: %ld kB", &kb) == 1) break; if (f) fclose(f);
+              double gb = kb / 1048576.0; mb = gb >= 11.0 ? 512 : gb >= 7.0 ? 256 : 96; }   // (MemTotal is a little under the phone's rating: 12 GB shows about 11)
+    b = mb << 20; VLOG("packaged textures: up to %ld MB uploaded ahead and not drawn yet", mb); return b;
+}
+static int pre_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_PREUPLOAD"); v = !(e && !strcmp(e, "0")); VLOG("packaged textures: %s", v ? "uploaded ahead by a worker as the game creates them" : "uploaded at their first use (DM_VK_PREUPLOAD=0)"); } return v; }
+static void *pre_main(void *unused) {
+    (void)unused; setpriority(PRIO_PROCESS, (id_t)gettid(), 4);   // (below the game's threads: it only saves them work)
+    for (;;) {
+        pthread_mutex_lock(&g_pre_mu);
+        while (g_pre_tail == g_pre_head) pthread_cond_wait(&g_pre_cv, &g_pre_mu);
+        tex_t c = g_pre[g_pre_tail++ % PRE_N];
+        pthread_mutex_unlock(&g_pre_mu);
+        pthread_mutex_lock(&g_smu); int want = nvn_hm_get(&g_tex_live, &c.serial) && !serial_get(c.serial); pthread_mutex_unlock(&g_smu);
+        if (!want) { atomic_fetch_add(&g_pre_late, 1); continue; }   // (released, or already uploaded by its first use)
+        if (atomic_load(&g_pre_unused) + (long)c.L.size > pre_budget()) { atomic_fetch_add(&g_pre_full, 1); continue; }   // (over the budget: its first use uploads it)
+        vtex *x = pkg_upload(&c); if (!x) continue;
+        pthread_mutex_lock(&g_smu);
+        if (nvn_hm_get(&g_tex_live, &c.serial) && !serial_get(c.serial)) { atomic_store(&x->pre, 1); atomic_fetch_add(&g_pre_unused, (long)x->a.size); serial_put(c.serial, x); atomic_fetch_add(&g_pre_done, 1); g_pkg_uploads++; }
+        else atomic_fetch_add(&g_pre_late, 1);
+        pthread_mutex_unlock(&g_smu); vtex_unref(x);
+    }
+    return NULL;
+}
+void mtl_tex_preupload(const tex_t *t) {   // hle_nvn.c nvnTextureInitialize: a texture whose content is in place
+    if (!t->serial || !t->mem || !t->has_layout || t->d.target == NVN_TEXTURE_TARGET_BUFFER || !g_dev || !pre_on()) return;
+    static int started;
+    pthread_mutex_lock(&g_pre_mu);
+    if (!started) { started = 1; pthread_t th; if (pthread_create(&th, NULL, pre_main, NULL)) { started = -1; } else pthread_detach(th); }
+    if (started < 0 || g_pre_head - g_pre_tail >= PRE_N) { atomic_fetch_add(&g_pre_full, 1); pthread_mutex_unlock(&g_pre_mu); return; }   // (full: uploaded at its first use)
+    g_pre[g_pre_head++ % PRE_N] = *t; pthread_cond_signal(&g_pre_cv);
+    pthread_mutex_unlock(&g_pre_mu);
+}
 void mtl_tex_release(tex_t *t) {
     if (!t->serial) return;
     pthread_mutex_lock(&g_smu); nvn_hm_del(&g_tex_live, &t->serial); vtex *x = nvn_hm_del(&g_by_serial, &t->serial); if (x) { vtex_unref(x); g_ser_gen++; } pthread_mutex_unlock(&g_smu);
@@ -1744,6 +1795,7 @@ static vtex *tex_res(const tex_t *t) {
             uint64_t now = nvn_dirty_now();
             int clean = have->span && (now == have->seen || !nvn_dirty_since_span(have->span, t->mem, t->L.size, have->stamp));
             have->seen = now;
+            if (atomic_exchange(&have->pre, 0)) atomic_fetch_sub(&g_pre_unused, (long)have->a.size);   // (uploaded ahead: now drawn)
             if (clean) { pthread_mutex_unlock(&g_smu); return have; }
             { static int nl; if (nl < 400 && getenv("DM_VK_REUP")) { nl++; VLOG("re-upload ser=%llu %ux%u format %#x target %d flags %#x layout %d pool flags %#x span %p seen %llu now %llu", (unsigned long long)t->serial, t->d.width, t->d.height,
                 t->d.format, t->d.target, t->d.flags, t->has_layout, t->pool ? t->pool->flags : 0, have->span, (unsigned long long)have->seen, (unsigned long long)now); } }
@@ -4505,6 +4557,8 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
         pthread_t t; void *saver(void *a); if (pthread_create(&t, NULL, saver, &busy)) atomic_store(&busy, 0); else pthread_detach(t); } }
     if (n % 1800 == 0) { VLOG("pipelines built during play so far: %d", atomic_load(&g_pso_ingame)); mem_report(); }
     if (n % 1800 == 0 && (g_nanmm || g_clampzero)) VLOG("shaders changed so far: %d for NaN in min / max / saturate, %d for Arm erratum 3779215", atomic_load(&g_nanmm_n), atomic_load(&g_clampzero_n));
+    if ((n == 1 || n % 300 == 0) && atomic_load(&g_pre_done) + atomic_load(&g_pre_late) + atomic_load(&g_pre_full))
+        VLOG("textures uploaded ahead %llu (%ld MB of them not drawn yet), used before the worker got to them %llu, left to their first use (budget or queue full) %llu", (unsigned long long)atomic_load(&g_pre_done), atomic_load(&g_pre_unused) >> 20, (unsigned long long)atomic_load(&g_pre_late), (unsigned long long)atomic_load(&g_pre_full));
     if (n == 1 || n % 300 == 0) VLOG("present %llu: %llu render target sets (%llu kept the open pass, %llu passes begun), %llu draws so far; textures uploaded %llu (re-uploaded %llu, %.1f MB)%s", (unsigned long long)n, (unsigned long long)g_stat_passes, (unsigned long long)g_stat_rt_same, (unsigned long long)g_stat_begins,
                                      (unsigned long long)g_stat_draws, (unsigned long long)g_pkg_uploads, (unsigned long long)g_pkg_reuploads, g_up_bytes / 1048576.0,
                                      g_bcgpu ? (snprintf(g_bc_line, sizeof g_bc_line, "; BC layer: %llu levels, %llu copies", (unsigned long long)g_bc_gpu_levels, (unsigned long long)g_bc_gpu_copies), g_bc_line) : "");
