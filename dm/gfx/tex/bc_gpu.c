@@ -27,7 +27,14 @@ static uint8_t g_ok[16][2];   // [kind + 6][mode]: checked on this GPU
 static void (*g_log)(const char *, ...);
 #define LOG(...) do { if (g_log) g_log(__VA_ARGS__); } while (0)
 
-int bc_gpu_can(int kind, int mode) { return kind >= -6 && kind <= 7 && mode >= 0 && mode <= 1 && g_ok[kind + 6][mode]; }
+// DM_VK_BC_GPU_KINDS=6,-6 (a test switch): only the kinds listed go through the layer, the rest on the CPU
+static int kind_listed(int kind) {
+    static int mask = -1;
+    if (mask < 0) { const char *e = getenv("DM_VK_BC_GPU_KINDS"); mask = e && *e ? 0 : 0x3fff;
+        for (const char *p = e; p && *p;) { char *q; long k = strtol(p, &q, 10); if (q == p) break; if (k >= -6 && k <= 7) mask |= 1 << (k + 6); p = *q ? q + 1 : q; } }
+    return mask >> (kind + 6) & 1;
+}
+int bc_gpu_can(int kind, int mode) { return kind >= -6 && kind <= 7 && mode >= 0 && mode <= 1 && g_ok[kind + 6][mode] && kind_listed(kind); }
 // bytes out per block: decoded, 16 texels; transcoded, the block (EAC R11 8, the rest 16) or BC6H's 16 B10G11R11 texels
 static int out_bytes(int kind, int mode) { return !mode ? 16 * bc_texel_bytes(kind) : kind == 6 ? 64 : kind == 4 || kind == -4 ? 8 : 16; }
 static int out_blocks(int kind, int mode) { return mode && kind != 6; }

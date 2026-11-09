@@ -535,6 +535,25 @@ uint32_t *spv_float_controls(const uint32_t *code, size_t words, size_t *out_wor
     *out_words = w; return o;
 }
 
+// Maxwell's min / max (FMNMX) give the operand that is not NaN, and its saturate (.SAT) gives 0 for NaN; the translator writes them as GLSL.std.450 FMin / FMax / FClamp,
+// whose result for a NaN operand SPIR-V leaves undefined. Mesa's compilers (Turnip, PanVK) happen to give Maxwell's answer; a driver may instead pass the NaN on, and a NaN
+// the game's shaders count on min / max / saturate to drop then reaches the picture. A copy with NMin / NMax / NClamp, which give Maxwell's answer by definition (the
+// Mali white scene, #110: every lit surface at the format's maximum on Arm's own driver). Same length; NULL when the module has none
+uint32_t *spv_nan_minmax(const uint32_t *code, size_t words, size_t *out_words) {
+    enum { OpExtInstImport = 11, OpExtInst = 12, FMin = 37, FMax = 40, FClamp = 43, NMin = 79, NMax = 80, NClamp = 81 };
+    if (words < 5 || code[0] != 0x07230203u) return NULL;
+    uint32_t glsl = 0; size_t hits = 0;
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) return NULL; const uint32_t *x = code + i;
+        if (op == OpExtInstImport && n >= 3 && !strncmp((const char *)(x + 2), "GLSL.std.450", 4 * (n - 2))) glsl = x[1];
+        else if (op == OpExtInst && n >= 5 && glsl && x[3] == glsl && (x[4] == FMin || x[4] == FMax || x[4] == FClamp)) hits++;
+        i += n; }
+    if (!hits) return NULL;
+    uint32_t *o = malloc(4 * words); if (!o) return NULL; memcpy(o, code, 4 * words);
+    for (size_t i = 5; i < words; i += o[i] >> 16) { uint32_t n = o[i] >> 16, *x = o + i;
+        if ((x[0] & 0xffff) == OpExtInst && n >= 5 && x[3] == glsl) x[4] = x[4] == FMin ? NMin : x[4] == FMax ? NMax : x[4] == FClamp ? NClamp : x[4]; }
+    *out_words = words; return o;
+}
+
 // Arm erratum 3779215 (Mali, Arm's own driver r38p1 to r49p0 and r50p0 to r51p0; fixed in r49p1 and r52p0): a min / max / clamp whose limit is a constant zero, of a value
 // selected at run time between compile-time constants, is compiled as a plain min or max: the value is no longer clamped. A copy in which that zero is one the compiler cannot
 // see as a constant: a Private variable per type, stored with the zero at the top of every entry point and loaded at the top of each function that uses it. Written from the
