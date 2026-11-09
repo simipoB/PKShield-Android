@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Publishes an APK to the official download site (site/, Cloudflare Pages): uploads it to the R2 bucket and puts it first in releases.json, which the
+# Publishes an APK to the official download site (site/, a Cloudflare Worker): uploads it to the R2 bucket and puts it first in releases.json, which the
 # site's version list and its download function read. The APK must be signed with the release key (BuildSigner.RELEASE_CERT): an APK from anywhere
 # else is refused. Needs Node.js (npx wrangler) logged in to the Cloudflare account (npx wrangler login), and apksigner for the key check.
 # Usage: publish_cf.py <apk> --version 0.58 [--notes <release page URL>] [--bucket galar-native-apks] [--apksigner <path>] [--dry-run]
