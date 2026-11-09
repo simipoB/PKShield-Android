@@ -21,6 +21,7 @@ using LibHac.Tools.Fs;
 using LibHac.Tools.FsSystem;
 using LibHac.Tools.FsSystem.NcaUtils;
 using LibHac.Tools.FsSystem.RomFs;
+using LibHac.Tools.Ncm;
 using Path = System.IO.Path;
 
 static class P {
@@ -44,7 +45,9 @@ static class P {
         // A merged dump (one XCI / NSP holding the base game, an update and DLC) has both in one file; separate files give one each
         var progs = basePkg.Concat(updPkg ?? new List<Nca>()).Where(n => n.Header.ContentType == NcaContentType.Program).ToList();
         Nca baseProg = progs.FirstOrDefault(n => !IsPatch(n)) ?? throw new Exception("no base game program in the files (only an update?)");
-        Nca updProg = progs.FirstOrDefault(IsPatch);
+        // the newest update when the files hold more than one (OrderByDescending keeps the file order among equal or unknown versions)
+        var patches = progs.Where(IsPatch).OrderByDescending(TitleVer).ToList(); Nca updProg = patches.FirstOrDefault();
+        if (patches.Count > 1) Console.WriteLine($"{patches.Count} updates in the files (title versions {string.Join(", ", patches.Select(p => TitleVer(p)))}): the newest is used");
         if (updPkg != null && updProg == null) throw new Exception("no update program in the update file");
         if (updPkg == null && updProg != null) Console.WriteLine("update found among the chosen files: applied over the base game");
         if (aocDir != null) Aoc(ks, basePkg.Concat(updPkg ?? new List<Nca>()).ToList(), aocDir, false, baseProg.Header.TitleId);   // DLC packed in the same files (merged dumps)
@@ -147,7 +150,7 @@ static class P {
             CheckComplete(path, st0);
             var p = new PartitionFileSystem(); p.Initialize(st0).ThrowIfFailure(); pfs = p;
         }
-        var ncas = new List<Nca>();
+        var ncas = new List<Nca>(); var byId = new Dictionary<string, Nca>(StringComparer.OrdinalIgnoreCase);
         foreach (DirectoryEntryEx e in pfs.EnumerateEntries("*", SearchOptions.Default)) {
             using var f = new UniqueRef<IFile>();
             pfs.OpenFile(ref f.Ref, e.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
@@ -156,10 +159,26 @@ static class P {
                 byte[] t = new byte[0x2c0]; st.Read(0, t).ThrowIfFailure();
                 if (t[0x281] != 0) { Console.Error.WriteLine($"[RED] {e.Name} is not a common ticket; supply the title key separately"); continue; }
                 ks.ExternalKeySet.Add(new RightsId(t.AsSpan(0x2a0, 0x10)), new AccessKey(t.AsSpan(0x180, 0x10))).ThrowIfFailure();
-            } else if (e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) ncas.Add(new Nca(ks, st));
+            } else if (e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) { var n = new Nca(ks, st); ncas.Add(n); byId[e.Name.Split('.')[0]] = n; }
+        }
+        // each content's title version, from the package's content meta (CNMT): a dump can hold more than one update of the game (a cartridge with the Expansion Pass
+        //   carries its own older update next to the one the player chose, #120), and the program and the control data must come from the same, newest one
+        foreach (Nca m in ncas.Where(n => n.Header.ContentType == NcaContentType.Meta)) {
+            try {
+                IFileSystem mfs = m.OpenFileSystem(0, IntegrityCheckLevel.None);
+                foreach (DirectoryEntryEx ce in mfs.EnumerateEntries("*.cnmt", SearchOptions.Default)) {
+                    using var cf = new UniqueRef<IFile>();
+                    mfs.OpenFile(ref cf.Ref, ce.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
+                    var cnmt = new Cnmt(cf.Release().AsStream());
+                    foreach (CnmtContentEntry c in cnmt.ContentEntries)
+                        if (byId.TryGetValue(Convert.ToHexString(c.NcaId), out Nca n)) g_ver[n] = cnmt.TitleVersion.Version;
+                }
+            } catch (Exception ex) { Console.Error.WriteLine($"content meta not read ({ex.Message}): the update is picked by its order in the files"); }
         }
         return ncas;
     }
+    static readonly Dictionary<Nca, uint> g_ver = new();   // NCA → its package's title version (CNMT), where known
+    static uint TitleVer(Nca n) => g_ver.TryGetValue(n, out uint v) ? v : 0;
     // An NSP cut short (a copy or download that stopped early): its PFS0 header lists every file's offset and size, so the full length is known before anything is read
     static void CheckComplete(string path, IStorage st) {
         byte[] h = new byte[0x10]; st.Read(0, h).ThrowIfFailure(); st.GetSize(out long have).ThrowIfFailure();

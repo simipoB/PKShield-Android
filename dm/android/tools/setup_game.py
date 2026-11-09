@@ -236,6 +236,7 @@ def main():
         # the game's version, checked now rather than as a failure ten minutes later in the shader steps: the code (main's build ID) must be one the profile knows
         with open(os.path.join(exefs, 'main'), 'rb') as f: build_id = f.read(0x50)[0x40:0x50].hex()
         builds = PROFILE.builds(); want = ', '.join(sorted(b['display'] for b in builds.values()))
+        log.write(f'main build ID {build_id}\n')   # (with the unpacker's "N updates in the files" line: which update's code was taken)
         if build_id not in {b.get('main') for b in builds.values()}:
             have = ''
             try: have = open(os.path.join(ex, 'control.nacp'), 'rb').read()[0x3060:0x3070].split(b'\0')[0].decode()
