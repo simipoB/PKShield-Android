@@ -32,6 +32,7 @@
 #include <math.h>
 #include <ctype.h>
 #include <strings.h>
+#include <malloc.h>   // mallopt: the allocator's large-block cache (env.txt read)
 #include <sys/system_properties.h>
 #include "dm_input.h"
 #include "front.h"
@@ -711,6 +712,15 @@ static void host_start(void) {
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
     { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);
+    // The allocator's cache of large blocks, made big enough for the GPU driver's: on a Galaxy S25+ (Adreno 830) a third of the game thread's time went to the driver
+    //   mapping and unmapping memory, calloc → mmap and free → munmap in every vkCmdBeginRendering (about 250 a frame) and in every command pool reset, because its
+    //   blocks were larger than scudo's secondary cache keeps (simpleperf, 2026-11-09). Cached, they are reused; the pages go back to the system on Android's own
+    //   timer (M_DECAY_TIME 1) instead of at once. DM_MALLOC_TUNE=0: the system's defaults
+    { const char *mt = getenv("DM_MALLOC_TUNE");
+      if (!(mt && !strcmp(mt, "0"))) {
+          int a = mallopt(M_DECAY_TIME, 1), b = mallopt(M_CACHE_COUNT_MAX, 128), c = mallopt(M_CACHE_SIZE_MAX, 64 << 20);
+          fprintf(stderr, "boot: allocator: large blocks cached for reuse (decay %s, cache count %s, cache size 64 MB %s)\n", a ? "on" : "refused", b ? "128" : "refused", c ? "set" : "refused");
+      } }
     { const char *s = getenv("DM_BUILD_SIGNER");
       if (s && !strcmp(s, "official")) fprintf(stderr, "boot: build: official (signed with the release key)\n");
       else fprintf(stderr, "boot: build: UNOFFICIAL (%s): not a release from github.com/simipoB/Galar-Native-Android, it may have been changed\n", s && *s ? s : "signer unknown"); }

@@ -1060,8 +1060,13 @@ static void completion_start(void) {
     VkSemaphoreTypeCreateInfo st = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE };
     VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st };
     if (g_tlsem) VKCHECK(vkCreateSemaphore(g_dev, &sci, NULL, &g_tl));
+    // The submission pools without the transient hint: with it the driver gave its memory back at every reset and mapped it again (Adreno 830, a Galaxy S25+:
+    //   vkResetCommandPool was 13-16 % of the game thread, most of it munmap / mmap; without the hint it fell under 3 %, simpleperf 2026-11-09). Each pool is reset
+    //   once per submission and reused, which is what the memory is kept for. DM_VK_POOL_TRANSIENT=1: the hint as before
+    const char *pt = getenv("DM_VK_POOL_TRANSIENT"); int transient = pt && !strcmp(pt, "1");
+    if (transient) VLOG("submission command pools with the transient hint (DM_VK_POOL_TRANSIENT=1)");
     for (int i = 0; i < NSUB; i++) {
-        VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT, .queueFamilyIndex = g_qf };
+        VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = transient ? VK_COMMAND_POOL_CREATE_TRANSIENT_BIT : 0, .queueFamilyIndex = g_qf };
         VKCHECK(vkCreateCommandPool(g_dev, &pci, NULL, &g_subs[i].pool));
         VkCommandBufferAllocateInfo cai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = g_subs[i].pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 1 };
         VKCHECK(vkAllocateCommandBuffers(g_dev, &cai, &g_subs[i].cb)); VKCHECK(vkAllocateCommandBuffers(g_dev, &cai, &g_subs[i].ucb));
