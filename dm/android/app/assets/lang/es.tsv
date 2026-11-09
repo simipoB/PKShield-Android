@@ -289,3 +289,6 @@ Third-party code	Código de terceros
 Vibrate on press	Vibrar al pulsar
 Like rumble	Como la vibración
 Like rumble: off when Rumble is Off	Como la vibración: desactivado si la vibración está desactivada
+L3 / R3 buttons	Botones L3 / R3
+Off: no L3 / R3 on screen (a controller's stick buttons still work)	Desactivado: sin L3 / R3 en pantalla (los botones de los sticks de un mando siguen funcionando)
+On: L3 and R3 above the sticks (move them with Move the touch controls)	Activado: L3 y R3 sobre los sticks (muévelos con Mover los controles táctiles)

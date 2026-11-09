@@ -289,3 +289,6 @@ Third-party code	サードパーティのコード
 Vibrate on press	押したときに振動
 Like rumble	振動設定に合わせる
 Like rumble: off when Rumble is Off	振動設定に合わせる：振動がオフのときはオフ
+L3 / R3 buttons	L3 / R3 ボタン
+Off: no L3 / R3 on screen (a controller's stick buttons still work)	オフ：画面に L3 / R3 を表示しない（コントローラーのスティック押し込みは使えます）
+On: L3 and R3 above the sticks (move them with Move the touch controls)	オン：スティックの上に L3 と R3（「タッチ操作の配置を変更」で動かせます）
