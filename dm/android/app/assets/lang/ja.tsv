@@ -286,3 +286,6 @@ Credits	クレジット
 Free software under the MIT License. This notice must stay with every copy.	MIT ライセンスのフリーソフトウェアです。この表示はすべてのコピーに含める必要があります。
 Show the license	ライセンスを表示
 Third-party code	サードパーティのコード
+Vibrate on press	押したときに振動
+Like rumble	振動設定に合わせる
+Like rumble: off when Rumble is Off	振動設定に合わせる：振動がオフのときはオフ

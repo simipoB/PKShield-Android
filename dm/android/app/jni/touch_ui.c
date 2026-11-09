@@ -165,7 +165,18 @@ void touch_ui_init(ANativeActivity *a) {
     static int once; if (once++) return;   // a second GameActivity in the same process (the first handed over to the setup screen): one haptic thread
     pthread_t t; if (!pthread_create(&t, NULL, haptic_main, NULL)) pthread_detach(t);
 }
-static void click_locked(void) { g_hpend = 1; pthread_cond_signal(&g_hcv); }   // callers hold g_mu
+// the click on a press: DM_TOUCH_HAPTIC on / off, or by default as DM_RUMBLE (Off silences it too: the player asked for no vibration, #114). -1: not read yet
+static int g_haptic = -1, g_rumble_off = -1;
+static int haptic_on(void) {
+    if (g_haptic < 0) { const char *h = getenv("DM_TOUCH_HAPTIC"); g_haptic = h && !strcmp(h, "off") ? 0 : h && !strcmp(h, "on") ? 1 : 2; }
+    if (g_rumble_off < 0) { const char *r = getenv("DM_RUMBLE"); g_rumble_off = r && !strcmp(r, "off"); }
+    return g_haptic == 1 || (g_haptic == 2 && !g_rumble_off);
+}
+void touch_ui_haptic_setting(const char *key, const char *value) {   // (touch_ui_setting, under g_mu)
+    if (!strcmp(key, "DM_TOUCH_HAPTIC")) g_haptic = value && !strcmp(value, "off") ? 0 : value && !strcmp(value, "on") ? 1 : 2;
+    else if (!strcmp(key, "DM_RUMBLE")) g_rumble_off = value && !strcmp(value, "off");
+}
+static void click_locked(void) { if (!haptic_on()) return; g_hpend = 1; pthread_cond_signal(&g_hcv); }   // callers hold g_mu
 void dm_rumble(float left, float right) {   // hle_hid.c: the game's two motors; one strength for the one motor Android drives
     float a = left > right ? left : right;
     pthread_mutex_lock(&g_mu);
@@ -408,6 +419,9 @@ void touch_ui_setting(const char *key, const char *value) {
     pthread_mutex_lock(&g_mu);
     if (!strcmp(key, "DM_TOUCH_OPACITY")) g_opacity = value ? clampf((float)atof(value) / 100.0f, 0.2f, 1.0f) : 1.0f;
     else if (!strcmp(key, "DM_TOUCH_FADE")) g_fade = value ? fmaxf(0.0f, (float)atof(value)) : 3.0f;
+#ifdef __ANDROID__
+    else { void touch_ui_haptic_setting(const char *, const char *); touch_ui_haptic_setting(key, value); }   // DM_TOUCH_HAPTIC, DM_RUMBLE
+#endif
     g_touch_t = now_s();
     pthread_mutex_unlock(&g_mu);
 }
