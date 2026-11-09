@@ -273,3 +273,6 @@ No replacement driver supports this GPU yet. Please report it with the log in Do
 Faster rendering (experimental)	Renderizado más rápido (experimental)
 On: the graphics work runs on its own thread, next to the game's. Not tested on every phone yet: if the game misbehaves, turn it off and tell us on GitHub	Activado: el trabajo gráfico se ejecuta en su propio hilo, junto al del juego. Aún no se ha probado en todos los teléfonos: si el juego falla, desactívalo y avísanos en GitHub
 Freed %s GB left over from an earlier setup.	Se liberaron %s GB que quedaban de una configuración anterior.
+Min / max as on the Switch	Mín / máx como en la Switch
+Auto: on with ARM's driver (v0.57)	Auto: activado con el driver de ARM (v0.57)
+Off: the shaders as before v0.57	Desactivado: los shaders como antes de la v0.57
