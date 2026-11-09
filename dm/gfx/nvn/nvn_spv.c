@@ -534,3 +534,94 @@ uint32_t *spv_float_controls(const uint32_t *code, size_t words, size_t *out_wor
     }
     *out_words = w; return o;
 }
+
+// Arm erratum 3779215 (Mali, Arm's own driver r38p1 to r49p0 and r50p0 to r51p0; fixed in r49p1 and r52p0): a min / max / clamp whose limit is a constant zero, of a value
+// selected at run time between compile-time constants, is compiled as a plain min or max: the value is no longer clamped. A copy in which that zero is one the compiler cannot
+// see as a constant: a Private variable per type, stored with the zero at the top of every entry point and loaded at the top of each function that uses it. Written from the
+// erratum's description (MaliBridge MK-32's notes); tests: gfx/tests/t_clamp_zero.sh. NULL when the module has no such op
+uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words) {
+    enum { OpExtInstImport = 11, OpExtInst = 12, OpEntryPoint = 15, OpTypeFloat = 22, OpTypePointer = 32, OpConstantTrue = 41, OpConstantFalse = 42, OpConstant = 43,
+           OpConstantComposite = 44, OpConstantNull = 46, OpFunction = 54, OpFunctionParameter = 55, OpFunctionEnd = 56, OpVariable = 59, OpLoad = 61, OpStore = 62,
+           OpSelect = 169, OpLabel = 248, OpLine = 8, OpNoLine = 317, Private = 6, MAXT = 16, MAXEP = 16 };
+    enum { K_CONST = 1, K_ZERO = 2, K_FLOAT = 4, K_SEL = 8 };
+    if (words < 5 || code[0] != 0x07230203u) return NULL;
+    uint32_t bound = code[3]; if (!bound || bound > (1u << 22)) return NULL;
+    uint8_t *k = calloc(bound, 1), *fw = calloc(bound, 1); uint32_t *pp = calloc(bound, 4);   // what each id is; a float type's width in bytes; the Private pointer to a type
+    typedef struct { size_t at; uint8_t mask, t; } hit;   // an op's position, the operands (x[5 + j]) to replace, its type's index in tl
+    struct { uint32_t type, zero, ptr, var, load; } tl[MAXT]; int nt = 0;
+    hit *h = NULL; size_t nh = 0, ch = 0; uint32_t glsl = 0, ep[MAXEP]; int nep = 0; size_t first_fn = 0;
+    if (!k || !fw || !pp) goto none;
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) goto none; const uint32_t *x = code + i;
+        if (op == OpExtInstImport && n >= 3 && !strncmp((const char *)(x + 2), "GLSL.std.450", 4 * (n - 2))) glsl = x[1];
+        else if (op == OpEntryPoint && n >= 3 && nep < MAXEP) ep[nep++] = x[2];
+        else if (op == OpTypeFloat && n >= 3 && x[1] < bound) { k[x[1]] |= K_FLOAT; fw[x[1]] = (uint8_t)(x[2] / 8); }
+        else if (op == OpTypePointer && n >= 4 && x[1] < bound && x[3] < bound && x[2] == Private && !pp[x[3]]) pp[x[3]] = x[1];
+        else if ((op == OpConstant || op == OpConstantComposite || op == OpConstantNull || op == OpConstantTrue || op == OpConstantFalse) && n >= 3 && x[1] < bound && x[2] < bound) {
+            int z = op == OpConstantNull;
+            if (op == OpConstant) {   // zero, either sign for a float
+                z = 1; for (uint32_t j = 3; j < n; j++) { uint32_t v = x[j];
+                    if ((k[x[1]] & K_FLOAT) && j == n - 1) v &= fw[x[1]] == 2 ? 0x7fffu : 0x7fffffffu;
+                    if (v) z = 0; } }
+            if (op == OpConstantComposite) { z = n > 3; for (uint32_t j = 3; j < n; j++) if (x[j] >= bound || !(k[x[j]] & K_ZERO)) z = 0; }
+            k[x[2]] |= K_CONST | (z ? K_ZERO : 0);
+        }
+        else if (op == OpSelect && n == 6 && x[2] < bound && x[4] < bound && x[5] < bound && (k[x[4]] & K_CONST) && (k[x[5]] & K_CONST)) k[x[2]] |= K_SEL;
+        else if (op == OpFunction && !first_fn) first_fn = i;
+        else if (op == OpExtInst && n >= 7 && x[3] == glsl && glsl) {
+            uint32_t in = x[4], zero = 0; uint8_t mask = 0;
+            #define ZERO(id) ((id) < bound && (k[id] & K_ZERO))
+            #define SEL(id) ((id) < bound && (k[id] & K_SEL))
+            if (n == 7 && ((in >= 37 && in <= 42) || in == 79 || in == 80)) {   // FMin UMin SMin FMax UMax SMax NMin NMax
+                if (ZERO(x[5]) && SEL(x[6])) { mask |= 1; zero = x[5]; }
+                if (ZERO(x[6]) && SEL(x[5])) { mask |= 2; zero = x[6]; } }
+            else if (n == 8 && ((in >= 43 && in <= 45) || in == 81) && SEL(x[5])) {   // FClamp UClamp SClamp NClamp
+                if (ZERO(x[6])) { mask |= 2; zero = x[6]; }
+                if (ZERO(x[7])) { mask |= 4; zero = x[7]; } }
+            #undef ZERO
+            #undef SEL
+            if (mask) {
+                int t; for (t = 0; t < nt && tl[t].type != x[1]; t++) {}
+                if (t == nt) { if (nt == MAXT) goto next; tl[nt].type = x[1]; tl[nt].zero = zero; tl[nt].ptr = x[1] < bound ? pp[x[1]] : 0; nt++; }
+                if (nh == ch) { ch = ch ? ch * 2 : 16; hit *g = realloc(h, ch * sizeof *h); if (!g) goto none; h = g; }
+                h[nh++] = (hit){ i, mask, (uint8_t)t };
+            }
+        }
+      next:
+        i += n; }
+    if (!nh || !first_fn || !nep) goto none;
+    {
+    uint32_t next = bound; int iface = code[1] >= 0x10400;   // SPIR-V 1.4 and up: an entry point lists every global it uses, Private ones too
+    for (int t = 0; t < nt; t++) { if (!tl[t].ptr) tl[t].ptr = next++ | 0x80000000u; tl[t].var = next++; }   // (high bit: a pointer type to declare)
+    size_t cap = words + 64 + (size_t)nt * (8 + nep) + 8 * nh; uint32_t *o = malloc(4 * cap); if (!o) goto none;
+    size_t w = 5, hi = 0; memcpy(o, code, 20);
+    int in_fn = 0, is_ep = 0, done_top = 0; size_t fn_end = 0; uint8_t need[MAXT];
+    #define ROOM(m) do { if (w + (m) > cap) { cap = cap * 2 + (m); uint32_t *o2 = realloc(o, 4 * cap); if (!o2) { free(o); goto none; } o = o2; } } while (0)
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; const uint32_t *x = code + i;
+        if (i == first_fn) { ROOM((size_t)nt * 8);   // the new globals, after every type and constant
+            for (int t = 0; t < nt; t++) { if (tl[t].ptr & 0x80000000u) { tl[t].ptr &= 0x7fffffffu; o[w++] = 4u << 16 | OpTypePointer; o[w++] = tl[t].ptr; o[w++] = Private; o[w++] = tl[t].type; }
+                o[w++] = 4u << 16 | OpVariable; o[w++] = tl[t].ptr; o[w++] = tl[t].var; o[w++] = Private; } }
+        if (op == OpEntryPoint && iface) { ROOM(n + nt); o[w++] = (n + (uint32_t)nt) << 16 | op; memcpy(o + w, x + 1, 4 * (n - 1)); w += n - 1; for (int t = 0; t < nt; t++) o[w++] = tl[t].var; i += n; continue; }
+        if (op == OpFunction) {
+            in_fn = 1; done_top = 0; is_ep = 0; for (int e = 0; e < nep; e++) if (ep[e] == x[2]) is_ep = 1;
+            for (fn_end = i; fn_end < words && (code[fn_end] & 0xffff) != OpFunctionEnd; fn_end += code[fn_end] >> 16) if (!(code[fn_end] >> 16)) break;
+            memset(need, 0, sizeof need); for (size_t q = hi; q < nh && h[q].at < fn_end; q++) need[h[q].t] = 1;
+        }
+        else if (in_fn && !done_top && op != OpLabel && op != OpVariable && op != OpFunctionParameter && op != OpLine && op != OpNoLine) {   // the first block, after its variables
+            ROOM((size_t)nt * 7); done_top = 1;
+            if (is_ep) for (int t = 0; t < nt; t++) { o[w++] = 3u << 16 | OpStore; o[w++] = tl[t].var; o[w++] = tl[t].zero; }
+            for (int t = 0; t < nt; t++) if (need[t]) { tl[t].load = next++; o[w++] = 4u << 16 | OpLoad; o[w++] = tl[t].type; o[w++] = tl[t].load; o[w++] = tl[t].var; }
+        }
+        if (op == OpFunctionEnd) in_fn = 0;
+        ROOM(n); memcpy(o + w, x, 4 * n);
+        if (hi < nh && h[hi].at == i) { for (int j = 0; j < 3; j++) if (h[hi].mask >> j & 1) o[w + 5 + j] = tl[h[hi].t].load; hi++; }
+        w += n; i += n;
+    }
+    #undef ROOM
+    o[3] = next; *out_words = w;
+    free(k); free(fw); free(pp); free(h);
+    return o;
+    }
+  none:
+    free(k); free(fw); free(pp); free(h);
+    return NULL;
+}

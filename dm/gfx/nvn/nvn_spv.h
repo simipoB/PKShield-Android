@@ -43,3 +43,6 @@ uint32_t *spv_image_caps(const uint32_t *code, size_t words, size_t *out_words);
 uint32_t *spv_gather_bias(const uint32_t *code, size_t words, size_t *out_words);
 // A copy whose entry points ask for SignedZeroInfNanPreserve on 32-bit floats (SPV_KHR_float_controls): drivers keep infinities and NaN as they are. NULL if not patched
 uint32_t *spv_float_controls(const uint32_t *code, size_t words, size_t *out_words);
+// A copy in which a constant-zero limit of a min / max / clamp of a value selected between constants is a zero the compiler cannot fold (Arm erratum 3779215, see nvn_spv.c).
+// NULL if there is none
+uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words);

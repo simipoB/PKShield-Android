@@ -149,6 +149,8 @@ static int g_bcgpu;   // the BC layer is on (mtl_init)
 static int g_fctl_ext, g_drvprops_ext;   // a Vulkan 1.1 driver with VK_KHR_shader_float_controls / VK_KHR_driver_properties (enabled at device creation)
 static int g_fctl;    // every shader asks for SignedZeroInfNanPreserve (spv_float_controls; mtl_init decides)
 static int g_arm_rel, g_arm_p;   // Arm's own Mali driver: its release, r<rel>p<p> (driverVersion is VK_MAKE_VERSION(rel, p, 0): 0xb001000 = r44p1); 0 for any other driver
+static int g_arm_beta;           // ... a beta build of it (driverInfo "v1.r49p1-03bet0": the G925's)
+static int g_clampzero; static _Atomic int g_clampzero_n;   // shaders get spv_clamp_zero (Arm erratum 3779215: mtl_init decides); how many it changed
 static int g_dualsrc = 1;        // the device blends with a second shader output (dualSrcBlend): Arm's own Mali driver has none (r44p1)
 // Markers of a set-up step that crashed the driver (mark_file below), one set per driver kind: a crash on a driver package does not change the phone's own driver
 static const char *drv_mark(const char *base) {
@@ -400,7 +402,7 @@ void mtl_init(void) {
         // Samsung's Xclipse driver too: the probe self-test (float-controls) found inf - inf not NaN without them on Xclipse 540 and 940, and every check right with them
         const char *e = getenv("DM_VK_FLOAT_CONTROLS"); int arm = drvp ? dp.driverID == VK_DRIVER_ID_ARM_PROPRIETARY : g_props.vendorID == 0x13B5;
         int sec = drvp ? dp.driverID == VK_DRIVER_ID_SAMSUNG_PROPRIETARY : g_props.vendorID == 0x144D;
-        arm_known = 1; if (arm) { g_arm_rel = (int)(g_props.driverVersion >> 22); g_arm_p = (int)(g_props.driverVersion >> 12 & 0x3ff); }
+        arm_known = 1; if (arm) { g_arm_rel = (int)(g_props.driverVersion >> 22); g_arm_p = (int)(g_props.driverVersion >> 12 & 0x3ff); g_arm_beta = drvp && strstr(dp.driverInfo, "bet") != NULL; }
         g_fctl = fc.shaderSignedZeroInfNanPreserveFloat32 && (e ? atoi(e) != 0 : arm || sec);
         // The test shader below crashed a driver (#89: Mali-G57, the start ended right after this line): a start that dies there leaves the marker, and later starts on
         //   this driver go without float controls (DM_VK_FLOAT_CONTROLS=1 tries again)
@@ -429,6 +431,11 @@ void mtl_init(void) {
     }
     // A driver without Vulkan 1.2 or the float-controls extension: Arm's own when it is ARM's vendor ID and not a driver package (PanVK reports ARM's ID too)
     if (!arm_known && g_props.vendorID == 0x13B5 && !(getenv("DM_VK_DRIVER") && *getenv("DM_VK_DRIVER"))) { g_arm_rel = (int)(g_props.driverVersion >> 22); g_arm_p = (int)(g_props.driverVersion >> 12 & 0x3ff); }
+    // Arm erratum 3779215 (r38p1 to r49p0 and r50p0 to r51p0, fixed in r49p1 and r52p0; a beta r49p1, the G925's, is not known to have the fix): a clamp to zero of a value
+    //   selected between constants compiled as a plain min or max. Shaders on those drivers get spv_clamp_zero; DM_VK_CLAMP_ZERO=0 / 1 decides on any driver
+    { int v = g_arm_rel * 100 + g_arm_p; const char *e = getenv("DM_VK_CLAMP_ZERO");
+      g_clampzero = e ? atoi(e) != 0 : g_arm_rel && ((v >= 3801 && v < 4901) || (g_arm_beta && v >= 4901 && v < 4902) || (v >= 5000 && v < 5101));
+      if (g_clampzero) VLOG("shaders: a clamp to zero of a value selected between constants gets a zero the compiler cannot fold (Arm erratum 3779215%s)", e ? ", DM_VK_CLAMP_ZERO" : g_arm_beta ? ", a beta driver" : ""); }
     // Dual-source blending (the game's blend factors SRC1_*) needs dualSrcBlend; Arm's own driver has none (r44p1), and a pipeline using it there is undefined: those
     //   factors become the first output's (bfac_dev), named once in the log. DM_VK_DUALSRC=keep passes them as they are
     g_dualsrc = f2.features.dualSrcBlend || (getenv("DM_VK_DUALSRC") && !strcmp(getenv("DM_VK_DUALSRC"), "keep"));
@@ -531,13 +538,33 @@ static void defer_add(dfr d) {
     if (g_ndfr == g_cdfr) { g_cdfr = g_cdfr ? g_cdfr * 2 : 256; g_dfr = realloc(g_dfr, g_cdfr * sizeof *g_dfr); }
     g_dfr[g_ndfr++] = d; pthread_mutex_unlock(&g_dfmu);
 }
+// View quarantine (Arm's own driver with dynamic rendering): vkCmdBeginRendering keeps state per image-view handle value, and a value the driver hands out again after
+// vkDestroyImageView hits that stale entry - the pass can leave its attachment unwritten (Arm erratum 3786926, r49p1-r51; MaliBridge MK-06 saw it on a G720 r44p1 too, a
+// stale picture once images were being made and destroyed). Destroyed views and images wait in a FIFO, views ahead of their images, so a handle value does not come back
+// soon; the memory under them is freed at once (only handles are held). DM_VK_VIEW_QUARANTINE=n sets its size, 0 turns it off
+typedef struct { uint64_t h; uint8_t img; } qent;
+static qent *g_vq; static int g_vqcap = -1; static size_t g_vqhead, g_vqcount;
+static int quarantine_on(void) {
+    if (g_vqcap < 0) { const char *e = getenv("DM_VK_VIEW_QUARANTINE"); g_vqcap = e ? atoi(e) : g_arm_rel && g_dynren ? 2048 : 0;
+        if (g_vqcap > 0 && !(g_vq = calloc((size_t)g_vqcap, sizeof *g_vq))) g_vqcap = 0;
+        if (g_vqcap > 0) VLOG("image views: the last %d destroyed views and images kept back (Arm's driver: a reused view handle hits stale rendering state)", g_vqcap); }
+    return g_vqcap > 0;
+}
+static void q_put(int img, uint64_t h) {   // caller holds g_dfmu
+    if (g_vqcount == (size_t)g_vqcap) { qent e = g_vq[g_vqhead]; g_vqhead = (g_vqhead + 1) % (size_t)g_vqcap; g_vqcount--;
+        if (e.img) vkDestroyImage(g_dev, (VkImage)(uintptr_t)e.h, NULL); else vkDestroyImageView(g_dev, (VkImageView)(uintptr_t)e.h, NULL); }
+    g_vq[(g_vqhead + g_vqcount) % (size_t)g_vqcap] = (qent){ h, (uint8_t)img }; g_vqcount++;
+}
 static void defer_drain(void) {
-    uint64_t done = atomic_load(&g_done);
+    uint64_t done = atomic_load(&g_done); int qon = quarantine_on(); VkImage imgs[64]; int nimg = 0;
     pthread_mutex_lock(&g_dfmu);
     for (int i = 0; i < g_ndfr;) {
         dfr d = g_dfr[i];
         if (d.fence > done) { i++; continue; }
+        if (qon && d.kind == DF_IMAGE && nimg == 64) { i++; continue; }   // (the next drain takes it: its views go into the FIFO ahead of it)
         g_dfr[i] = g_dfr[--g_ndfr];
+        if (qon && d.kind == DF_VIEW) { q_put(0, (uint64_t)(uintptr_t)d.h.view); vk_free(d.a); continue; }
+        if (qon && d.kind == DF_IMAGE) { imgs[nimg++] = d.h.img; vk_free(d.a); continue; }
         switch (d.kind) {
             case DF_IMAGE: vkDestroyImage(g_dev, d.h.img, NULL); break; case DF_VIEW: vkDestroyImageView(g_dev, d.h.view, NULL); break;
             case DF_BUFFER: vkDestroyBuffer(g_dev, d.h.buf, NULL); break; case DF_BUFVIEW: vkDestroyBufferView(g_dev, d.h.bview, NULL); break;
@@ -546,6 +573,7 @@ static void defer_drain(void) {
         }
         vk_free(d.a);
     }
+    for (int k = 0; k < nimg; k++) q_put(1, (uint64_t)(uintptr_t)imgs[k]);   // (after every view of this drain: a view never outlives its image's handle)
     pthread_mutex_unlock(&g_dfmu);
 }
 
@@ -930,6 +958,24 @@ static void gpu_ts_done(sub_t *s) {
     if (vkGetQueryPoolResults(g_dev, g_tsq, (uint32_t)i * 2, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0]) atomic_fetch_add(&g_gpu[s->frame % GRING].ns, (uint64_t)((t[1] - t[0]) * g_tsper));
     atomic_fetch_sub(&g_gpu[s->frame % GRING].pending, 1);
 }
+// A GPU wait (a timeline semaphore, else a fence) that does not give up on an error a wait may not return: Arm's driver waits with ppoll() and does not restart it when a
+// signal interrupts it, and the wait ends with VK_ERROR_INITIALIZATION_FAILED (-3) (MaliBridge MK-01: every 7-10 s on a Mali-G925 under Android's runtime). Such a wait is
+// waited again (naps from 0.5 ms to 20 ms) until its own deadline, or 30 s for one without; success, a timeout at the deadline, a lost device or no memory come back as they
+// are. On a driver that follows the spec this costs one comparison
+static VkResult vk_wait(const VkSemaphoreWaitInfo *wi, VkFence f, uint64_t timeout) {
+    uint64_t t0 = mono_ns(), left = timeout; useconds_t nap = 500;
+    for (;;) {
+        VkResult r = wi ? vkWaitSemaphores(g_dev, wi, left) : vkWaitForFences(g_dev, 1, &f, VK_TRUE, left);
+        if (r == VK_SUCCESS || r == VK_ERROR_DEVICE_LOST || r == VK_ERROR_OUT_OF_HOST_MEMORY || r == VK_ERROR_OUT_OF_DEVICE_MEMORY) return r;
+        uint64_t el = mono_ns() - t0;
+        if (r == VK_TIMEOUT && (timeout != UINT64_MAX || el >= 30000000000ull)) return r;   // (an early timeout of a wait with no deadline: not done, waited again)
+        if (r != VK_TIMEOUT) RED_ONCE(112, "a GPU wait ended with %d, which a wait may not return (Arm's driver: a signal interrupted it): waited again", (int)r);
+        if (timeout != UINT64_MAX && el >= timeout) return VK_TIMEOUT;
+        if (timeout == UINT64_MAX && el >= 30000000000ull) return r;
+        usleep(nap); nap = nap * 2 > 20000 ? 20000 : nap * 2;
+        left = timeout == UINT64_MAX ? UINT64_MAX : timeout - el;
+    }
+}
 static void *completion_main(void *unused) {
     (void)unused;
     for (;;) {
@@ -938,7 +984,7 @@ static void *completion_main(void *unused) {
         sub_t *s = g_inflight[0]; uint64_t want = s->fence;
         pthread_mutex_unlock(&g_cmu);
         VkSemaphoreWaitInfo wi = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, .semaphoreCount = 1, .pSemaphores = &g_tl, .pValues = &want };
-        VkResult r = vkWaitSemaphores(g_dev, &wi, 2000000000ull);
+        VkResult r = vk_wait(&wi, VK_NULL_HANDLE, 2000000000ull);
         if (r == VK_TIMEOUT) continue;
         if (r) VDIE("vkWaitSemaphores failed: %d (device lost?)", r);
         post_apply(s); gpu_ts_done(s);
@@ -1261,7 +1307,7 @@ static void once_end(VkCommandBuffer cb) {   // ordered after everything submitt
     shadow_sync();
     pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, f); pthread_mutex_unlock(&g_qmu);
     if (r) VDIE("one-off submit failed: %d", r);
-    vkWaitForFences(g_dev, 1, &f, VK_TRUE, UINT64_MAX); vkDestroyFence(g_dev, f, NULL);
+    vk_wait(NULL, f, UINT64_MAX); vkDestroyFence(g_dev, f, NULL);
     vkFreeCommandBuffers(g_dev, g_once_pool, 1, &cb);
     pthread_mutex_unlock(&g_once_mu);
 }
@@ -2037,6 +2083,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
     static int gbias = -1; if (gbias < 0) { const char *e = getenv("DM_VK_GATHER_BIAS"); gbias = e ? atoi(e) != 0 : g_props.vendorID == 0x5143; if (gbias) VLOG("texture gathers nudged by 1/512 of a texel (Adreno rounding)"); }
     if (gbias) { size_t nw; uint32_t *c2 = spv_gather_bias(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }
     if (g_fctl) { size_t nw; uint32_t *c2 = spv_float_controls(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }
+    if (g_clampzero) { size_t nw; uint32_t *c2 = spv_clamp_zero(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; atomic_fetch_add(&g_clampzero_n, 1); } }   // (Arm erratum 3779215)
     if (spst == 0 || spst == 2) { size_t nw; uint32_t *c2 = spv_init_outputs(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // outputs start at (0, 0, 0, 1) as on the hardware
     if (st == 0 && glcode) {
         size_t nw;
@@ -2045,6 +2092,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
         uint32_t *c2 = spv_image_caps(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
         if (gbias && (c2 = spv_gather_bias(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
         if (g_fctl && (c2 = spv_float_controls(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
+        if (g_clampzero && (c2 = spv_clamp_zero(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
         c2 = spv_init_outputs(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
         VkShaderModuleCreateInfo gci = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = ngl, .pCode = glcode };
         VkResult gr = vkCreateShaderModule(g_dev, &gci, NULL, &s->glmod);
@@ -3078,7 +3126,8 @@ static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark) {
         if (x1 <= x0 || y1 <= y0) return; sc = (VkRect2D){{(int32_t)x0, (int32_t)y0}, {(uint32_t)(x1 - x0), (uint32_t)(y1 - y0)}}; }
     vkCmdSetScissor(cb, 0, 1, &sc);
     if (g_eds) {   // (without extended dynamic state these are built into the pipeline: pso_get's sst, the same values)
-    vkCmdSetCullMode(cb, S.poly.cull == NVN_FACE_FRONT ? VK_CULL_MODE_FRONT_BIT : S.poly.cull == NVN_FACE_BACK ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
+    // (points and lines never cull, so none is sent for them: Arm's driver culled them with a dynamic cull mode and those draws vanished, erratum 3786517, r41-r51)
+    vkCmdSetCullMode(cb, topo_class(topo) < 2 ? VK_CULL_MODE_NONE : S.poly.cull == NVN_FACE_FRONT ? VK_CULL_MODE_FRONT_BIT : S.poly.cull == NVN_FACE_BACK ? VK_CULL_MODE_BACK_BIT : VK_CULL_MODE_NONE);
     int ccw = S.poly.front == NVN_FRONT_FACE_CCW; if (atomic_load(&g_origin_ll)) ccw = !ccw;   // lower-left: the y flip relative to GL window coordinates reverses the winding
     vkCmdSetFrontFace(cb, ccw ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE);
     vkCmdSetPrimitiveTopology(cb, topo);
@@ -3972,7 +4021,7 @@ static void present_window_locked(vtex *x, const int crop[4]) {
     int srgb = x->fmt == VK_FORMAT_R8G8B8A8_SRGB || x->fmt == VK_FORMAT_B8G8R8A8_SRGB;
     if (!swap_ensure(win, srgb)) return;
     uint32_t sl = W.slot++ % 3;
-    vkWaitForFences(g_dev, 1, &W.fence[sl], VK_TRUE, UINT64_MAX);
+    vk_wait(NULL, W.fence[sl], UINT64_MAX);
     uint32_t ii; VkResult r = vkAcquireNextImageKHR(g_dev, W.sc, UINT64_MAX, W.acq[sl], VK_NULL_HANDLE, &ii);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) { swap_destroy(); return; }
     if (r && r != VK_SUBOPTIMAL_KHR) return;
