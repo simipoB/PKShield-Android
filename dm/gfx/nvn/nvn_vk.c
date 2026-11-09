@@ -238,8 +238,9 @@ void mtl_init(void) {
             if (old11) for (unsigned k = 0; k < sizeof deps11 / sizeof *deps11; k++) if (has_ext(de, nde, deps11[k])) dext[ndext++] = deps11[k];
         }
         if ((x_eds = has_ext(de, nde, "VK_EXT_extended_dynamic_state"))) dext[ndext++] = "VK_EXT_extended_dynamic_state";
-        VLOG("Vulkan %u.%u device: timeline semaphores%s%s through their extensions", VK_API_VERSION_MAJOR(g_api), VK_API_VERSION_MINOR(g_api),
-             x_dynren ? ", dynamic rendering" : "", x_eds ? ", extended dynamic state" : "");
+        if (g_tlsem || x_dynren || x_eds)   // (only what it has: the line said "timeline semaphores" on an Adreno 613 driver without them, #99)
+            VLOG("Vulkan %u.%u device: %s%s%s through their extensions", VK_API_VERSION_MAJOR(g_api), VK_API_VERSION_MINOR(g_api), g_tlsem ? "timeline semaphores" : "",
+                 x_dynren ? (g_tlsem ? ", dynamic rendering" : "dynamic rendering") : "", x_eds ? (g_tlsem || x_dynren ? ", extended dynamic state" : "extended dynamic state") : "");
         // float controls and the driver's identity (the Mali white fix, spv_float_controls) are extensions on a Vulkan 1.1 driver: older Mali-G52 / G72 / G76 phones
         if (old11) { if (has_ext(de, nde, "VK_KHR_shader_float_controls")) { dext[ndext++] = "VK_KHR_shader_float_controls"; g_fctl_ext = 1; }
                      if (has_ext(de, nde, "VK_KHR_driver_properties")) { dext[ndext++] = "VK_KHR_driver_properties"; g_drvprops_ext = 1; } }
