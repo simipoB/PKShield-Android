@@ -201,9 +201,18 @@ void touch_ui_edit(void);
 // setenv (other threads read the environment meanwhile); the rest wait for the next start. Returns whether it took effect now
 static int g_bg_off = -1;   // DM_BACKGROUND=off: pause in the background (default: keep playing); the settings panel changes it at once
 static int bg_play(void) { if (g_bg_off < 0) { const char *e = getenv("DM_BACKGROUND"); g_bg_off = e && !strcmp(e, "off"); } return !g_bg_off; }
+extern int dm_fps_live __attribute__((weak));   // loader.c: the live frame-rate target (30 / 60), 0 when the start has none (another game, a fixed 90 / 120, DM_FPS_LIVE=0)
+static void window_rate(ANativeWindow *w);
 JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env, jclass c, jstring jk, jstring jv) {
     (void)c; const char *k = (*env)->GetStringUTFChars(env, jk, NULL), *v0 = (*env)->GetStringUTFChars(env, jv, NULL); const char *v = *v0 ? v0 : NULL; int now = 1;
     if (!strcmp(k, "DM_BACKGROUND")) g_bg_off = v && !strcmp(v, "off");
+    else if (!strcmp(k, "DM_FPS_TARGET")) {   // 30 / 60 at once with the live frame rate (the hold limit, the window's rate, the display pacing); otherwise the next start
+        int t = v ? atoi(v) : 0; if (!v) { const char *a = getenv("DM_AUTO_FPS"); t = a && atoi(a) >= 60 ? 60 : 30; }   // (Auto: the phone profile's)
+        if (&dm_fps_live && __atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED) && (t == 30 || t == 60)) {
+            __atomic_store_n(&dm_fps_live, t, __ATOMIC_RELAXED); window_rate(atomic_load(&g_window));
+            fprintf(stderr, "frame rate: %d fps, switched while playing\n", t);
+        } else now = 0;
+    }
     else if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE") || !strcmp(k, "DM_TOUCH_HAPTIC") || !strcmp(k, "DM_TOUCH_L3R3")) touch_ui_setting(k, v);
     else if (!strcmp(k, "DM_RUMBLE")) { touch_ui_setting(k, v); now = 0; }   // (the touch click follows it at once; the game's motors are GameActivity's, GameMenu decides)
     else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
@@ -357,6 +366,7 @@ static void *boot_guard_main(void *p) {
 static void window_rate(ANativeWindow *w) {
     if (!w) return;
     const char *e = getenv("DM_FPS_TARGET"); int fps = e ? atoi(e) : 0; float rate = fps >= 60 && fps <= 120 ? (float)fps : 30.0f;
+    { int lf = &dm_fps_live ? __atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED) : 0; if (lf) rate = (float)lf; }   // (the live target, once the game is loaded)
     // libnativewindow: setFrameRateWithChangeStrategy (Android 12+, ALWAYS: the display switches modes even when the switch is not seamless, so a 144 Hz screen goes
     // to 120 for 30 / 60 fps), else setFrameRate (Android 11); looked up, so a system without them only skips this
     typedef int32_t (*set_rate_fn)(ANativeWindow *, float, int8_t); typedef int32_t (*set_rate2_fn)(ANativeWindow *, float, int8_t, int8_t);
@@ -565,8 +575,11 @@ static void graphics_auto(void) {
         hot = st >= 3 || hr >= 0.95f; calm = st <= 1 && (hr < 0 || hr < 0.75f); }
     double fps = -1;
     if (g_fps_guard && dm_nvn_frame_count) { uint64_t fr = dm_nvn_frame_count(); if (primed) fps = (fr - last_fr) / 5.0; last_fr = fr; primed = 1; }
+    // decisions on an average, not one 5-s reading: on a hot phone the readings swung 25.6 / 15.4 / 21.6, and the 15.4 made the next reading look like a gain, so the
+    //   resolution went 85 → 70 → 60 % in ten seconds without a frame gained (a Galaxy S25+ held back by its CPU)
+    static double fps_avg; if (fps > 1) fps_avg = fps_avg > 1 ? 0.5 * fps_avg + 0.5 * fps : fps;
     // the floor is 30: frames are paced at 30 or 60 (hle_nvn.c vstep_tick / dyn_tick), so 720p comes in only when even 30 is missed
-    int short_ = fps > 1 && fps < 30 * 0.93, full = fps >= 30 * 0.97;   // (no frames at all: a load or a pause, not a slow scene)
+    int short_ = fps > 1 && fps_avg < 30 * 0.93, full = fps >= 30 * 0.97;   // (no frames at all: a load or a pause, not a slow scene)
     slow = short_ ? slow + 1 : 0;
     cool = calm && (!g_fps_guard || full) ? cool + 1 : 0;
     if (dm_res_scale_ready()) {   // the render scale (a cap set by hand, DM_RES_CAP or Lowest, is left alone)
@@ -575,20 +588,22 @@ static void graphics_auto(void) {
         since++;
         if (nogain > 0) nogain--;
         if (noheat > 0) noheat--;
-        if (probe && !--probe && fps > 1 && fps_was > 1 && lv > 0 && (probe_hot ? fps < fps_was - 1.0 : fps < fps_was + 1.0)) {   // the step did not help
+        // a step is tried for 15 s, then kept only if the average gained clearly (1.5 fps, or 6 %): a lower resolution only helps a GPU that is behind, not a CPU
+        double gain_need = fps_was * 0.06 > 1.5 ? fps_was * 0.06 : 1.5;
+        if (probe && !--probe && fps_avg > 1 && fps_was > 1 && lv > 0 && (probe_hot ? fps_avg < fps_was - 1.0 : fps_avg < fps_was + gain_need)) {   // the step did not help
             lv--; dm_res_factor_set(k_res_steps[lv]); slow = 0; since = 0;
             if (probe_hot) noheat = 60; else nogain = 60;
-            fprintf(stderr, "%s: the lighter picture %s (%.1f → %.1f fps): back to 3D render scale %d %%; %s for 5 minutes\n", probe_hot ? "graphics auto" : "fps guard",
-                    probe_hot ? "cost frames" : "did not help", fps_was, fps, (int)(k_res_steps[lv] * 100 + 0.5f),
+            fprintf(stderr, "%s: the lighter picture %s (%.1f → %.1f fps on average): back to 3D render scale %d %%; %s for 5 minutes\n", probe_hot ? "graphics auto" : "fps guard",
+                    probe_hot ? "cost frames" : "did not help", fps_was, fps_avg, (int)(k_res_steps[lv] * 100 + 0.5f),
                     probe_hot ? "heat lowers it no further" : "the slowdown is not the GPU's, so a short frame rate lowers it no further");
             return;
         }
         if (full) held++;
         if (held >= 24) wait = 12;   // two minutes held at this step: the next step down waits a minute again
-        int for_heat = hot && since >= 6 && !noheat, for_rate = slow >= 2 && !nogain;
+        int for_heat = hot && since >= 6 && !noheat && !probe, for_rate = slow >= 3 && !nogain && !probe;   // (one step at a time: the last one judged first)
         if ((for_heat || for_rate) && lv < NRES - 1) {
             if (!for_heat && held < 24 && wait < 192) wait *= 2;   // short again soon after a step up: wait twice as long next time
-            probe = 2; probe_hot = for_heat; fps_was = fps;
+            probe = 3; probe_hot = for_heat; fps_was = fps_avg > 1 ? fps_avg : fps;
             lv++; dm_res_factor_set(k_res_steps[lv]); cool = 0; held = 0; slow = 0; since = 0;
             if (for_heat) fprintf(stderr, "graphics auto: the phone is hot: 3D render scale %d %%\n", (int)(k_res_steps[lv] * 100 + 0.5f));
             else fprintf(stderr, "fps guard: %.1f fps, short of %d: 3D render scale %d %%; a step up after %d s steady\n", fps, g_fps_guard, (int)(k_res_steps[lv] * 100 + 0.5f), wait * 5);

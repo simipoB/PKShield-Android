@@ -533,11 +533,18 @@ static const struct { const char *build; uint64_t itv, dt; const char *game; } F
     { "a16802625e7826bf83b6f9708e475b91", 0x18a2d18, 0x203eeb8, "Shield 1.3.2" },
     { "a3b75bcd3311385aeed67fbeeb79cbb7", 0x18a2c88, 0x203eeb8, "Sword 1.3.2" },
 };
+// Live frame rate (DM_FPS_LIVE, on unless "0"): with the frame rate at 30, 60 or Auto the patch is applied at 60 Hz slots whatever the target, and the target lives in
+//   dm_fps_live (30 or 60), which the in-game menu changes while playing (android_main.c nativeSetting): at 30 every frame is held 2 slots and the game told
+//   interval 2, as the game itself does at 30 (hle_nvn.c vstep_tick, reported_hold); at 60 the hold is 1, 2 when frames run late. 90 / 120 (env.txt) stay fixed
+int dm_fps_live;   // 0: not live (the game's own 30, or a fixed 90 / 120)
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
-    const char *e = getenv("DM_FPS_TARGET"); int fps = e ? atoi(e) : 0;
-    if (fps < 60 || fps > 120) return 0;
+    const char *e = getenv("DM_FPS_TARGET"), *lv = getenv("DM_FPS_LIVE"); int live = !(lv && !strcmp(lv, "0"));
+    int want = e && *e ? atoi(e) : 0;
+    if (!want) { const char *a = getenv("DM_AUTO_FPS"); want = a && atoi(a) >= 60 ? 60 : 30; }   // (Frame rate on Auto: the phone profile's)
+    int fps = want > 60 && want <= 120 ? want : want == 60 || (live && want == 30) ? 60 : 0;
+    if (!fps) return 0;
     int si = -1; for (unsigned i = 0; i < sizeof FPS_SITES / sizeof *FPS_SITES; i++) if (!strncasecmp(m->build_id, FPS_SITES[i].build, 32)) si = (int)i;
-    if (si < 0) { LOG("[RED] %s: %d fps patch not applied (not Pokémon Sword / Shield 1.3.2's main)", m->name, fps); return 0; }
+    if (si < 0) { if (want >= 60) LOG("[RED] %s: %d fps patch not applied (not Pokémon Sword / Shield 1.3.2's main)", m->name, fps); return 0; }   // (at 30: nothing was asked for)
     const uint64_t itv = FPS_SITES[si].itv, dt = FPS_SITES[si].dt;
     // (the step word is rewritten every frame, so it must lie past the code area, which is sealed read + execute)
     if (itv + 4 > m->text_end || dt < m->text_end || dt + 4 > lim || overlaps_rewrite(m, itv, 4, p0, p1)) {
@@ -547,7 +554,9 @@ static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     wi = 0x52800021u; wd = (uint32_t)((1000000000ull + (uint64_t)fps - 1) / (uint64_t)fps);
     memcpy(m->base + itv, &wi, 4); memcpy(m->base + dt, &wd, 4);
     dm_step_hz = fps; dm_step_word = m->base + dt;
-    LOG("%s: %d fps patch for %s (present interval 1 at +%#llx, step %.2f ms at +%#llx, then paced by the host)", m->name, fps, FPS_SITES[si].game, (unsigned long long)itv, wd / 1e6, (unsigned long long)dt);
+    if (fps == 60 && live) __atomic_store_n(&dm_fps_live, want == 60 ? 60 : 30, __ATOMIC_RELAXED);
+    LOG("%s: %d fps patch for %s (present interval 1 at +%#llx, step %.2f ms at +%#llx, then paced by the host)%s", m->name, fps, FPS_SITES[si].game, (unsigned long long)itv, wd / 1e6,
+        (unsigned long long)dt, dm_fps_live ? (want == 60 ? "; live frame rate, now 60 (the menu switches 30 / 60 at once)" : "; live frame rate, now 30 (the menu switches 30 / 60 at once)") : "");
     return 2;
 }
 static uint8_t *slurp(const char *path, size_t *n) {
