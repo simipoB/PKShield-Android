@@ -6,6 +6,8 @@ t_deswizzle_eq: t_deswizzle_eq.c ../nvn_deswizzle.c ../nvn_deswizzle.h ../../nvn
 	clang $(CFLAGS) -o $@ t_deswizzle_eq.c ../nvn_deswizzle.c ../../nvn/nvn_tex.c -lm
 t_fmt_mtl: t_fmt_mtl.m ../nvn_fmt_mtl.c ../nvn_fmt_mtl.h
 	clang $(CFLAGS) -fobjc-arc -o $@ t_fmt_mtl.m ../nvn_fmt_mtl.c -framework Metal -framework Foundation
-run: t_tex t_fmt_mtl t_deswizzle_eq
-	./t_fmt_mtl && ./t_tex && ./t_deswizzle_eq
+t_upload_layout: t_upload_layout.c ../../nvn/tex_upload_layout.h
+	clang $(CFLAGS) -o $@ t_upload_layout.c
+run: t_tex t_fmt_mtl t_deswizzle_eq t_upload_layout
+	./t_fmt_mtl && ./t_tex && ./t_deswizzle_eq && ./t_upload_layout
 .PHONY: run

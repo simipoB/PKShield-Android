@@ -788,7 +788,9 @@ static void host_start(void) {
     chdir(g_files);
     fprintf(stderr, "boot: game files %s%s\n", g_game, inapk ? " (inside the installed APKs)" : "");
     pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setstacksize(&at, 64u << 20);
-    pthread_t t; pthread_create(&t, &at, host_thread, NULL); pthread_detach(t);
+    pthread_t t; int tr = pthread_create(&t, &at, host_thread, NULL); pthread_attr_destroy(&at);
+    if (tr) { fprintf(stderr, "boot: the game's thread could not be started (%d: %s)\n", tr, strerror(tr)); ALOG("host thread: %s", strerror(tr)); return; }   // (it was detached unchecked: a black screen with no word in the log)
+    pthread_detach(t);
     { pthread_t g; if (!pthread_create(&g, NULL, boot_guard_main, NULL)) pthread_detach(g); }
 }
 // ---------- The fastest cores for the threads a frame waits on. Left alone, the scheduler kept Violet's main thread moving over the middle cores of a Galaxy S25+ (2.7 GHz) with
@@ -816,7 +818,8 @@ static void *g_hint; static int g_hint_failed; static int64_t g_hint_target;
 static void *(*p_hint_mgr)(void); static void *(*p_hint_create)(void *, const int32_t *, size_t, int64_t);
 static int (*p_hint_target)(void *, int64_t); static int (*p_hint_report)(void *, int64_t);
 void front_frame_work(uint64_t busy_ns, uint64_t target_ns) {
-    if (g_hint_failed) return;
+    static int off = -1; if (off < 0) { const char *e = getenv("DM_PERF_HINT"); off = e && !strcmp(e, "off"); }   // DM_PERF_HINT=off: no performance hint session (a test switch)
+    if (off || g_hint_failed) return;
     if (!g_hint) {
         static int tried; if (tried++) return;
         setpriority(PRIO_PROCESS, (id_t)gettid(), -10);

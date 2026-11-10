@@ -40,6 +40,7 @@
 #include "nvn_spv.h"
 #include "nvn_ovl.h"
 #include "nvn_dirty.h"
+#include "tex_upload_layout.h"
 #include "../tex/nvn_fmt_vk.h"
 #include "../tex/nvn_deswizzle.h"
 #include "../tex/bc_decode.h"
@@ -1609,10 +1610,6 @@ static int tex_upload(vtex *x, const tex_t *t) {
     return r;
 }
 // a level / layer's bytes in an upload's staging: its texels as uploaded (o*: decoded or transcoded with BC), or with BC the blocks themselves if those are larger
-static VkDeviceSize up_slot(int bck, int bw, int bh, int bpb, int obw, int obh, int obpb, uint32_t w, uint32_t h, uint32_t z) {
-    VkDeviceSize out = (VkDeviceSize)((w + obw - 1) / obw) * obpb * ((h + obh - 1) / obh), blocks = (VkDeviceSize)((w + bw - 1) / bw) * bpb * ((h + bh - 1) / bh);
-    return z * (bck && blocks > out ? blocks : out);
-}
 static int tex_upload_(vtex *x, const tex_t *t, uint64_t *copy_ns) {
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh); if (!bpb) return -1;
     // BC on a GPU without it: the blocks are deswizzled into scratch and decoded into staging as plain texels (bc_decode.c)
@@ -1623,7 +1620,7 @@ static int tex_upload_(vtex *x, const tex_t *t, uint64_t *copy_ns) {
     // each level / layer's slot in staging: its converted texels, or with BC the blocks the BC layer reads from it if those are larger (a 1x1 level: 16 bytes of
     //   BC6H block, 8 of RGBA16F texel; with the converted size only, the next layer's blocks overwrote this one's second half before the GPU read it: the Mali white
     //   screen, BC6H cubemaps' 1x1 level, #110)
-    #define SLOT(w, h, z) up_slot(bck, bw, bh, bpb, obw, obh, obpb, w, h, z)
+    #define SLOT(w, h, z) nvn_upload_slot(bck, bw, bh, bpb, obw, obh, obpb, w, h, z)
     for (unsigned l = 0; l < x->levels; l++) { uint32_t w = x->w >> l ? x->w >> l : 1, h = x->h >> l ? x->h >> l : 1, z = x->is3d ? (x->d >> l ? x->d >> l : 1) : 1;
         total += SLOT(w, h, z) * layers; }
     // DM_VK_BC_GPU_VERIFY=<kind> (a test switch): the first 8 textures of that kind the BC layer converts, uploaded on their own and waited for, read back and compared
@@ -3797,9 +3794,16 @@ static int swap_ensure_now(void *win, int srgb) {
 #else
     (void)win; return 0;
 #endif
-    VkBool32 ok = VK_FALSE; vkGetPhysicalDeviceSurfaceSupportKHR(g_pd, g_qf, W.surf, &ok); if (!ok) { RED_ONCE(57, "the queue cannot present to the window"); return 0; }
-    VkSurfaceCapabilitiesKHR caps; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_pd, W.surf, &caps);
-    uint32_t nf = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(g_pd, W.surf, &nf, NULL); VkSurfaceFormatKHR fs[32]; if (nf > 32) nf = 32; vkGetPhysicalDeviceSurfaceFormatsKHR(g_pd, W.surf, &nf, fs);
+    // every answer of the window is checked: a failed query left caps / fs unset and the swapchain was made from garbage. VK_INCOMPLETE is a success (the list is
+    //   longer than the array here: its first entries are used). A failure leaves nothing behind (swap_destroy_now) and the next frame tries again
+    #define SC_FAIL(r) ((r) < 0)
+    VkBool32 ok = VK_FALSE; VkResult r = vkGetPhysicalDeviceSurfaceSupportKHR(g_pd, g_qf, W.surf, &ok);
+    if (SC_FAIL(r) || !ok) { RED_ONCE(57, "the queue cannot present to the window (%d)", r); swap_destroy_now(); return 0; }
+    VkSurfaceCapabilitiesKHR caps; r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_pd, W.surf, &caps);
+    if (SC_FAIL(r)) { RED_ONCE(113, "cannot query the window surface's capabilities: %d", r); swap_destroy_now(); return 0; }
+    uint32_t nf = 0; r = vkGetPhysicalDeviceSurfaceFormatsKHR(g_pd, W.surf, &nf, NULL); VkSurfaceFormatKHR fs[32]; if (nf > 32) nf = 32;
+    if (!SC_FAIL(r) && nf) r = vkGetPhysicalDeviceSurfaceFormatsKHR(g_pd, W.surf, &nf, fs);
+    if (SC_FAIL(r) || !nf) { RED_ONCE(61, "the window surface has no formats (%d)", r); swap_destroy_now(); return 0; }
     VkFormat want = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM; W.fmt = fs[0].format;
     for (uint32_t i = 0; i < nf; i++) if (fs[i].format == want) W.fmt = want;
     W.ext = caps.currentExtent;
@@ -3811,7 +3815,9 @@ static int swap_ensure_now(void *win, int srgb) {
     // the GPU mostly idle under FIFO, a steady rate with MAILBOX). DM_VK_PRESENT=fifo|mailbox|immediate to choose
     VkPresentModeKHR pm = VK_PRESENT_MODE_FIFO_KHR;
     { const char *e = getenv("DM_VK_PRESENT"); VkPresentModeKHR want = !e || !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
-      uint32_t npm = 0; vkGetPhysicalDeviceSurfacePresentModesKHR(g_pd, W.surf, &npm, NULL); VkPresentModeKHR pms[16]; if (npm > 16) npm = 16; vkGetPhysicalDeviceSurfacePresentModesKHR(g_pd, W.surf, &npm, pms);
+      uint32_t npm = 0; VkPresentModeKHR pms[16];   // (a failed query: FIFO, which every window has)
+      if (SC_FAIL(vkGetPhysicalDeviceSurfacePresentModesKHR(g_pd, W.surf, &npm, NULL))) npm = 0; if (npm > 16) npm = 16;
+      if (npm && SC_FAIL(vkGetPhysicalDeviceSurfacePresentModesKHR(g_pd, W.surf, &npm, pms))) npm = 0;
       for (uint32_t i = 0; i < npm; i++) if (pms[i] == want) pm = want; }
     uint32_t n = caps.minImageCount + (pm == VK_PRESENT_MODE_MAILBOX_KHR ? 2 : 1); if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;
     // Pre-rotation (DM_VK_PRETRANSFORM=1, opt-in until checked on phones): the panel's own orientation is portrait and the game landscape, so the compositor turns
@@ -3825,11 +3831,15 @@ static int swap_ensure_now(void *win, int srgb) {
         .imageExtent = W.ext, .imageArrayLayers = 1, .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = pre,
         .compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR, .presentMode = pm, .clipped = VK_TRUE };
-    VkResult r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
-    if (r) { RED_ONCE(58, "swapchain creation failed: %d", r); return 0; }
-    W.n = 8; vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
+    r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
+    if (r) { RED_ONCE(58, "swapchain creation failed: %d", r); W.sc = VK_NULL_HANDLE; swap_destroy_now(); return 0; }
+    W.n = 8; r = vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
+    if (SC_FAIL(r) || !W.n) { RED_ONCE(114, "cannot list the swapchain's images: %d", r); W.n = 0; swap_destroy_now(); return 0; }
     for (uint32_t i = 0; i < W.n; i++) { VkImageViewCreateInfo vci = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = W.img[i], .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = W.fmt,
-                                           .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } }; vkCreateImageView(g_dev, &vci, NULL, &W.view[i]); }
+                                           .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+        r = vkCreateImageView(g_dev, &vci, NULL, &W.view[i]);
+        if (r) { RED_ONCE(115, "swapchain image view %u creation failed: %d", i, r); W.view[i] = VK_NULL_HANDLE; swap_destroy_now(); W.n = 0; return 0; } }
+    #undef SC_FAIL
     if (!W.pool) {
         VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = g_qf }; vkCreateCommandPool(g_dev, &pci, NULL, &W.pool);
         VkCommandBufferAllocateInfo cai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = W.pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = 3 }; vkAllocateCommandBuffers(g_dev, &cai, W.cb);
