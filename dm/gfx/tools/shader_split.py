@@ -677,20 +677,30 @@ def nso_image(path):
         img[mo:mo + sz] = lz4.block.decompress(raw, uncompressed_size=sz) if flags >> i & 1 else raw
     return bytes(img)
 
-def mem_wait(w):   # worker w > 0 waits while the phone is short of memory (DM_GATE_FLOOR_MB + DM_GATE_MB free, as dmsh_gate.c), so 4 GB phones scan with what fits
-    if not w or 'DM_GATE_MB' not in os.environ: return
+_solo = None   # this worker's hold on the gate's solo lock (mem_wait), kept until it exits
+def mem_wait(w, gate=None):   # worker w > 0 waits while the phone is short of memory (DM_GATE_FLOOR_MB + DM_GATE_MB free, as dmsh_gate.c), so 4 GB phones scan with what fits
+    # A phone that never has that much free (a Moto G52: setup sat on "find the shaders" for 7 hours, #137) waited forever. Once worker 0 is done (gate/w0-done, written by
+    #   the parent whether it finished or was killed), the waiting workers run one at a time instead: the one holding gate/solo goes on, the others wait for it or for memory
+    global _solo
+    if not w or 'DM_GATE_MB' not in os.environ or _solo is not None: return
     need = int(os.environ.get('DM_GATE_FLOOR_MB', '300')) + int(os.environ['DM_GATE_MB'])
     while True:
         try:
             with open('/proc/meminfo') as f: free = next(int(l.split()[1]) // 1024 for l in f if l.startswith('MemAvailable:'))
         except (OSError, StopIteration, ValueError): return
         if free >= need: return
+        if gate and os.path.exists(os.path.join(gate, 'w0-done')):
+            import fcntl
+            fd = os.open(os.path.join(gate, 'solo'), os.O_RDWR | os.O_CREAT, 0o600)
+            try: fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); _solo = fd; return
+            except OSError: os.close(fd)
         time.sleep(0.25)
 def pmap(J, fn, items, initargs):   # fn over items in J worker processes, results in order; Android's Python has no named semaphores (no process pools), so there the workers are forked directly
     try:
         import multiprocessing.synchronize
     except ImportError:
-        import pickle, tempfile
+        import pickle, shutil, tempfile
+        gate = tempfile.mkdtemp(prefix='scan-gate-')   # mem_wait's marker and lock
         # Each result is written as soon as it is made, so a worker holds one file's shaders at a time and one the system kills keeps what it wrote. Android's low-memory
         # killer took one of 8 workers holding all their results (status 9, #43): the rest of a killed worker's share runs again alone, after the others are done
         def fork(part, w=0):
@@ -699,7 +709,7 @@ def pmap(J, fn, items, initargs):   # fn over items in J worker processes, resul
                 try:
                     _pool_init(*initargs)
                     with os.fdopen(fd, 'wb') as f:
-                        for x in part: mem_wait(w); pickle.dump(fn(x), f); f.flush()
+                        for x in part: mem_wait(w, gate); pickle.dump(fn(x), f); f.flush()
                     os._exit(0)
                 except BaseException:
                     import traceback; traceback.print_exc(); os._exit(1)
@@ -713,7 +723,10 @@ def pmap(J, fn, items, initargs):   # fn over items in J worker processes, resul
             os.unlink(tmp); return got
         parts = [items[w::J] for w in range(J)]
         kids = [fork(p, w) for w, p in enumerate(parts)]
-        done = [(os.waitpid(pid, 0)[1], collect(tmp)) for pid, tmp in kids]
+        done = []
+        for w, (pid, tmp) in enumerate(kids):
+            done.append((os.waitpid(pid, 0)[1], collect(tmp)))
+            if not w: open(os.path.join(gate, 'w0-done'), 'w').close()   # the others may now run one at a time even when memory stays short
         out = [None] * len(items)
         for w, (st, got) in enumerate(done):
             for _ in range(3):
@@ -722,6 +735,7 @@ def pmap(J, fn, items, initargs):   # fn over items in J worker processes, resul
                 pid, tmp = fork(parts[w][len(got):]); st = os.waitpid(pid, 0)[1]; got += collect(tmp)
             if st or len(got) != len(parts[w]): red(f'shader scan worker {w} failed ({st}, {len(got)} of {len(parts[w])} files)')
             out[w::J] = got
+        shutil.rmtree(gate, ignore_errors=True)
         return out
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=initargs) as ex: return list(ex.map(fn, items, chunksize=16))
 
