@@ -1,7 +1,8 @@
 #!/bin/bash
 # The present path's shaders → SPIR-V headers (glslangValidator -V; on Windows it runs in WSL from Ubuntu's glslang-tools package, unpacked without installing):
 #   ovl.vert / ovl.frag → ovl_spv.h (the touch overlay), scale.vert / scale.frag → scale_spv.h (the sharpening upscaler),
-#   sgsr.vert + dm/third_party/sgsr/sgsr1_shader_mobile.frag → sgsr_spv.h (Snapdragon Game Super Resolution 1, Qualcomm, BSD-3-Clause: dm/third_party/sgsr/LICENSE).
+#   sgsr.vert + dm/third_party/sgsr/sgsr1_shader_mobile.frag → sgsr_spv.h (Snapdragon Game Super Resolution 1, Qualcomm, BSD-3-Clause: dm/third_party/sgsr/LICENSE),
+#   fg.vert + fg_luma / fg_flow / fg_stat / fg_gen.frag → fgen_spv.h (frame generation: nvn_fgen.h; their .spv files are not kept).
 # SGSR's file is used as Qualcomm publishes it; only its two plain uniforms become Vulkan declarations here (ViewportInfo as a push-constant block, the sampler at binding 0)
 set -e
 O=$(cd "$(dirname "$0")" && pwd); T=$O/../../../third_party/sgsr
@@ -9,6 +10,15 @@ G=${GLSLANG:-glslangValidator}
 $G -V "$O/ovl.vert" -o "$O/ovl.vert.spv"; $G -V "$O/ovl.frag" -o "$O/ovl.frag.spv"
 $G -V "$O/scale.vert" -o "$O/scale.vert.spv"; $G -V "$O/scale.frag" -o "$O/scale.frag.spv"
 W=$(mktemp -d)
+for f in fg.vert fg_luma.frag fg_flow.frag fg_stat.frag fg_gen.frag; do $G -V "$O/$f" -o "$W/$f.spv"; done
+python3 - "$W" "$O/fgen_spv.h" <<'EOF'
+import struct, sys
+out = '// Generated from fg.vert and fg_luma / fg_flow / fg_stat / fg_gen.frag (glslangValidator -V): frame generation (nvn_fgen.h)\n'
+for name, f in (('fg_vert', 'fg.vert'), ('fg_luma_frag', 'fg_luma.frag'), ('fg_flow_frag', 'fg_flow.frag'), ('fg_stat_frag', 'fg_stat.frag'), ('fg_gen_frag', 'fg_gen.frag')):
+    b = open(sys.argv[1] + '/' + f + '.spv', 'rb').read(); w = struct.unpack('<%dI' % (len(b) // 4), b)
+    out += 'static const uint32_t %s_spv[] = {%s};\n' % (name, ','.join(hex(x) for x in w))
+open(sys.argv[2], 'w').write(out); print('fgen_spv.h')
+EOF
 python3 - "$T/sgsr1_shader_mobile.frag" "$W/sgsr.frag" <<'EOF'
 import sys
 s = open(sys.argv[1], encoding='utf-8').read()
