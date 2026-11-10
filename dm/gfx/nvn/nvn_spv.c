@@ -554,6 +554,52 @@ uint32_t *spv_nan_minmax(const uint32_t *code, size_t words, size_t *out_words) 
     *out_words = words; return o;
 }
 
+// The same answer written out, for a driver whose compiler does not honour the N forms: NMin / NMax / NClamp are in GLSL.std.450 from the start, but nothing checks that a
+// driver gives them their NaN rule, and Arm's own driver kept drawing the scene at the format's maximum with spv_nan_minmax on (#111, #128: v0.59, r49p1). A copy in which
+// every float min / max / clamp (F or N form, scalar or vector of 32-bit floats) is followed by the rule as OpIsNan + OpSelect, which float controls make the driver keep:
+//   min / max (a, b): a is NaN -> b; b is NaN -> a; else the op's own result        clamp (x, lo, hi): x is NaN -> lo; else the op's own result
+// The op keeps its place and operands under a new id (spv_clamp_zero's zero stays where that pass put it) and the last select takes the op's old id. bool / bvecN types
+// are added before the first function where the module has none. NULL when the module has no such op
+uint32_t *spv_nan_select(const uint32_t *code, size_t words, size_t *out_words) {
+    enum { OpExtInstImport = 11, OpExtInst = 12, OpTypeBool = 20, OpTypeFloat = 22, OpTypeVector = 23, OpFunction = 54, OpIsNan = 156, OpSelect = 169,
+           FMin = 37, FMax = 40, FClamp = 43, NMin = 79, NMax = 80, NClamp = 81 };
+    if (words < 5 || code[0] != 0x07230203u) return NULL;
+    uint32_t bound = code[3], glsl = 0, tbool = 0, bvec[5] = { 0 }; size_t hits = 0, extra = 0, first_fn = 0; int need[5] = { 0 };
+    uint8_t *nc = calloc(bound ? bound : 1, 1); if (!nc) return NULL;   // per type id: 1 a 32-bit float, 2..4 a vector of them, 0 anything else
+    #define NAN_OP(x, n) (glsl && (x)[3] == glsl && (x)[1] < bound && nc[(x)[1]] && ((((x)[4] == FMin || (x)[4] == FMax || (x)[4] == NMin || (x)[4] == NMax) && (n) == 7) || (((x)[4] == FClamp || (x)[4] == NClamp) && (n) == 8)))
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) { free(nc); return NULL; } const uint32_t *x = code + i;
+        if (op == OpExtInstImport && n >= 3 && !strncmp((const char *)(x + 2), "GLSL.std.450", 4 * (n - 2))) glsl = x[1];
+        else if (op == OpTypeBool && n == 2) tbool = x[1];
+        else if (op == OpTypeFloat && n >= 3 && x[2] == 32 && x[1] < bound) nc[x[1]] = 1;
+        else if (op == OpTypeVector && n == 4 && x[1] < bound && x[2] < bound && x[3] >= 2 && x[3] <= 4) { if (nc[x[2]] == 1) nc[x[1]] = (uint8_t)x[3]; else if (tbool && x[2] == tbool) bvec[x[3]] = x[1]; }
+        else if (op == OpFunction && !first_fn) first_fn = i;
+        else if (op == OpExtInst && n >= 7 && NAN_OP(x, n)) { hits++; need[nc[x[1]]] = 1; extra += n == 8 ? 10 : 20; }
+        i += n; }
+    if (!hits || !first_fn) { free(nc); return NULL; }
+    uint32_t *o = malloc(4 * (words + extra + 2 + 3 * 4)); if (!o) { free(nc); return NULL; }
+    uint32_t next = bound; size_t w = 0;
+    for (size_t i = 0; i < words;) {
+        size_t n = i < 5 ? 5 : code[i] >> 16; const uint32_t *x = code + i;
+        if (i == first_fn) {   // the types the selects need, where the module has none
+            if (!tbool) { tbool = next++; o[w++] = 2u << 16 | OpTypeBool; o[w++] = tbool; }
+            for (uint32_t k = 2; k <= 4; k++) if (need[k] && !bvec[k]) { bvec[k] = next++; o[w++] = 4u << 16 | OpTypeVector; o[w++] = bvec[k]; o[w++] = tbool; o[w++] = k; }
+        }
+        memcpy(o + w, x, 4 * n);
+        if (i >= 5 && (x[0] & 0xffff) == OpExtInst && n >= 7 && NAN_OP(x, n)) {
+            uint32_t T = x[1], res = x[2], k = nc[T], B = k == 1 ? tbool : bvec[k], m = next++;
+            o[w + 2] = m; w += n;
+            #define ISNAN(id, v) (o[w++] = 4u << 16 | OpIsNan, o[w++] = B, o[w++] = (id), o[w++] = (v))
+            #define SELECT(id, c, a, b) (o[w++] = 6u << 16 | OpSelect, o[w++] = T, o[w++] = (id), o[w++] = (c), o[w++] = (a), o[w++] = (b))
+            if (n == 8) { uint32_t nx = next++; ISNAN(nx, x[5]); SELECT(res, nx, x[6], m); }
+            else { uint32_t na = next++, nb = next++, t = next++; ISNAN(na, x[5]); ISNAN(nb, x[6]); SELECT(t, nb, x[5], m); SELECT(res, na, x[6], t); }
+            #undef ISNAN
+            #undef SELECT
+        } else w += n;
+        i += n; }
+    #undef NAN_OP
+    free(nc); o[3] = next; *out_words = w; return o;
+}
+
 // Arm erratum 3779215 (Mali, Arm's own driver r38p1 to r49p0 and r50p0 to r51p0; fixed in r49p1 and r52p0): a min / max / clamp whose limit is a constant zero, of a value
 // selected at run time between compile-time constants, is compiled as a plain min or max: the value is no longer clamped. A copy in which that zero is one the compiler cannot
 // see as a constant: a Private variable per type, stored with the zero at the top of every entry point and loaded at the top of each function that uses it. Written from the
