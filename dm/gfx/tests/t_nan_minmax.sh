@@ -1,5 +1,5 @@
 #!/bin/bash
-# spv_nan_minmax on hand-written modules: GLSL.std.450 FMin / FMax / FClamp become NMin / NMax / NClamp (scalars and vectors), the integer ones and the ops of another
+# spv_nan_minmax (and spv_nan_select, the same rule written out with isnan) on hand-written modules: GLSL.std.450 FMin / FMax / FClamp become NMin / NMax / NClamp (scalars and vectors), the integer ones and the ops of another
 # instruction set stay, a module without them is left alone, and every module that comes out is valid SPIR-V (spirv-val). Needs the NDK's shader tools:
 # NDK=<ndk> bash t_nan_minmax.sh
 set -u
@@ -112,6 +112,29 @@ if [ -f "$D/other.spv" ]; then
     out=$("$D/t" "$D/other.spv" "$D/other.out.spv"); "$T/spirv-dis" --raw-id "$D/other.out.spv" > "$D/other.dis"
     check '"$T/spirv-val" "$D/other.spv" && "$T/spirv-val" "$D/other.out.spv"' "with another instruction set: the input and the patched module validate"
     check 'grep -q " NMax " "$D/other.dis" && [ "$(grep -c "%dbg 37\|%dbg 40\|%dbg 43\|%[0-9]* 37 \|%[0-9]* 40 \|%[0-9]* 43 " "$D/other.dis")" -ge 3 ]' "another instruction set's ops 37 / 40 / 43 stay, GLSL's FMax changes"
+fi
+# spv_nan_select: the rule written out. On the plain module, and on the one spv_nan_minmax made (the engine's order)
+for src in all all.out; do
+    out=$("$D/t" "$D/$src.spv" "$D/$src.sel.spv" select); "$T/spirv-dis" "$D/$src.sel.spv" > "$D/sel.dis"
+    check '[ "${out#patched}" != "$out" ] && "$T/spirv-val" "$D/$src.sel.spv"' "written out ($src): patched and valid ($out)"
+    check '[ "$(grep -c "OpIsNan" "$D/sel.dis")" = 8 ] && [ "$(grep -c "OpSelect" "$D/sel.dis")" = 8 ]' "written out ($src): 2 isnan + 2 selects per min / max, 1 + 1 per clamp"
+    check '[ "$(grep -c "OpTypeBool" "$D/sel.dis")" = 1 ] && [ "$(grep -c "OpTypeVector %bool 2" "$D/sel.dis")" = 1 ]' "written out ($src): one bool and one bvec2 type added"
+    check 'grep -q "OpSelect %float %[0-9a-z_]* %float_0 %" "$D/sel.dis"' "written out ($src): a NaN into the scalar clamp gives its lower limit"
+    check 'grep -q " SMin " "$D/sel.dis" && grep -q " UMax " "$D/sel.dis" && grep -q " SClamp " "$D/sel.dis"' "written out ($src): the integer ones stay"
+done
+check '[ "$("$D/t" "$D/none.spv" "$D/none.sel.spv" select)" = none ]' "written out: a module without them: none"
+out=$("$D/t" "$D/all.sel.spv" "$D/twice.spv" select)
+check '"$T/spirv-val" "$D/twice.spv"' "written out twice: still valid ($out)"
+# real translated shaders, when given: SHADERS=<folder of .spv>: each one through both passes validates as before
+if [ -n "${SHADERS:-}" ]; then
+    n=0; bad=0
+    for f in "$SHADERS"/*.spv; do
+        "$T/spirv-val" "$f" 2>/dev/null || continue
+        cp "$f" "$D/g.spv"; r=$("$D/t" "$D/g.spv" "$D/g1.spv"); [ "$r" = none ] || cp "$D/g1.spv" "$D/g.spv"
+        r=$("$D/t" "$D/g.spv" "$D/g2.spv" select); [ "$r" = none ] && continue
+        n=$((n + 1)); "$T/spirv-val" "$D/g2.spv" || { bad=$((bad + 1)); echo "  invalid after the passes: $f"; }
+    done
+    check '[ "$bad" = 0 ] && [ "$n" -gt 0 ]' "game shaders in $SHADERS: $n patched, $bad invalid"
 fi
 rm -rf "$D"
 echo "$checks checks, $fails failed"; [ "$fails" = 0 ]

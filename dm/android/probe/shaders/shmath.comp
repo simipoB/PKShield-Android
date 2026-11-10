@@ -1,0 +1,33 @@
+#version 450
+// Shader maths the translated game shaders rely on, beyond float controls: Maxwell's min / max give the operand that is not NaN and its saturate gives 0 for NaN
+// (the engine's spv_nan_minmax: NMin / NMax / NClamp), pow written as exp2(log2(x) * y), and integers carried through float variables as their bits (vertex colours:
+// uint -> bits in a float -> uint -> float / 255). The inputs come from a buffer so no compiler can fold them. Built without optimisation (-O0) and run as compiled,
+// with float controls, and with float controls + the engine's NaN patch: what Arm's own compiler answers decides whether the Mali white screen (#110, #111, #128) is a
+// NaN the patch should have dropped.
+layout(local_size_x = 1) in;
+layout(std430, binding = 0) buffer B {
+    float v[8];    // 0 +inf, 1 NaN, 2 -0.0, 3 0.0, 4 1.0, 5 0.5, 6 2.2
+    uint u[8];     // 0: 255, 1: 128
+    uint r[16];
+};
+void main() {
+    float inf = v[0], nan = v[1], zero = v[3], one = v[4], half_ = v[5], gamma = v[6];
+    r[0] = floatBitsToUint(min(nan, one));                                // 1.0: min drops the NaN (first operand)
+    r[1] = floatBitsToUint(min(one, nan));                                // 1.0: (second operand)
+    r[2] = floatBitsToUint(max(nan, half_));                              // 0.5
+    r[3] = floatBitsToUint(max(half_, nan));                              // 0.5
+    r[4] = floatBitsToUint(clamp(nan, 0.0, 1.0));                         // 0.0: saturate of NaN
+    r[5] = floatBitsToUint(clamp(nan, zero, one));                        // 0.0: (limits not constants)
+    r[6] = floatBitsToUint(max(vec2(nan, half_), vec2(zero)).x);          // 0.0: the vector form
+    r[7] = floatBitsToUint(exp2(log2(zero) * gamma));                     // 0.0: pow(0, 2.2)
+    r[8] = floatBitsToUint(log2(zero));                                   // -inf
+    r[9] = floatBitsToUint(exp2(-inf));                                   // 0.0
+    float p00 = exp2(log2(zero) * zero);                                  // pow(0, 0) as the translator writes it: -inf * 0 is NaN
+    r[10] = isnan(p00) ? 1u : 0u;                                         // 1
+    r[11] = floatBitsToUint(clamp(p00 * one, 0.0, 1.0));                  // 0.0: the sky shader's blend factor (a NaN here is a white sky)
+    float carried = uintBitsToFloat(u[0]);                                // 255 as a float's bits (a denormal), kept in a float variable
+    r[12] = floatBitsToUint(carried);                                     // 255: the bits survive
+    r[13] = floatBitsToUint(float(floatBitsToUint(carried)) * 0.00392156886);   // 1.0: a vertex colour of 255
+    r[14] = floatBitsToUint(fma(half_, one, half_));                      // 1.0
+    r[15] = floatBitsToUint(mix(half_, one, clamp(nan, 0.0, 1.0)));       // 0.5: a blend by a saturated NaN
+}

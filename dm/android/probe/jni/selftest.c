@@ -2,6 +2,7 @@
 // No game files, no keys: safe to run on any phone, including shared ones (Samsung Remote Test Lab, Firebase Test Lab, AWS Device Farm).
 // Each test mirrors one engine path and prints one line: [PASS] / [WARN] / [FAIL] / [SKIP] / [INFO] name: what it means for the game.
 //   float-controls      nvn_vk.c mtl_init: shaders patched by spv_float_controls (SignedZeroInfNanPreserve); NaN / infinity checks with and without it
+//   shader-maths        spv_nan_minmax / spv_nan_select: NaN in min / max / saturate, pow as exp2(log2), integers carried in float variables, four ways
 //   end-of-submit-barrier  barrier_host: shader writes the CPU reads after the fence, with and without the barrier, coherent and cached memory
 //   reinterpreted-format   MUTABLE_FORMAT textures written as one format and sampled as another (compressed render targets: AFBC, DCC)
 //   3d-render-target    att_view: a 3D image's slices attached as a layered 2D array (the colour-grading tables; black 3D scenes when only slice 0 drew)
@@ -229,6 +230,58 @@ static void t_floatctl(void) {
     else if (!bad) R(PASS, N, "right with and without float controls");
     else if (arm) R(PASS, N, "needs float controls (without: %s); the engine asks for them on this driver", wrong);
     else R(WARN, N, "needs float controls (without: %s), but the engine only asks on ARM's and Samsung's drivers: this driver's profile should turn them on (DM_VK_FLOAT_CONTROLS=1)", wrong);
+}
+
+// ---- shader maths: NaN in min / max / saturate, pow as exp2(log2), integers carried in floats ----
+enum { SM_N = 16 };
+static const char *SM_NAME[SM_N] = { "min(NaN, 1)", "min(1, NaN)", "max(NaN, 0.5)", "max(0.5, NaN)", "saturate(NaN)", "clamp(NaN, lo, hi)", "max(vec2(NaN, ..), 0).x", "pow(0, 2.2)",
+    "log2(0)", "exp2(-inf)", "pow(0, 0) is NaN", "saturate(pow(0, 0))", "255 carried in a float", "carried 255 / 255", "fma(0.5, 1, 0.5)", "mix(0.5, 1, saturate(NaN))" };
+static const uint32_t SM_WANT[SM_N] = { 0x3f800000u, 0x3f800000u, 0x3f000000u, 0x3f000000u, 0, 0, 0, 0, 0xff800000u, 0, 1, 0, 255, 0x3f800000u, 0x3f800000u, 0x3f000000u };
+static VkResult run_shmath(const uint32_t *code, size_t words, uint32_t out[SM_N]) {
+    hbuf h; if (hbuf_make(&h, 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0) < 0 &&
+                  hbuf_make(&h, 128, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0) < 0) return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+    uint32_t *p = h.p; static const uint32_t in[16] = { 0x7f800000u, 0x7fc00000u, 0x80000000u, 0, 0x3f800000u, 0x3f000000u, 0x400ccccdu, 0,   255, 128, 0, 0, 0, 0, 0, 0 };
+    memcpy(p, in, sizeof in); memset(p + 16, 0xee, 4 * SM_N); hbuf_sync(&h, 1);
+    comp c; VkDescriptorType t = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; VkResult r = comp_make(&c, code, words, &t, 1, 0);
+    if (!r) {
+        ds_buffer(&c, 0, h.b); VkCommandBuffer cb = cb_begin();
+        vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c.pipe); vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, c.pl, 0, 1, &c.ds, 0, NULL);
+        vkCmdDispatch(cb, 1, 1, 1); barrier_host(cb);
+        if (!(r = cb_submit(cb))) { hbuf_sync(&h, 0); memcpy(out, p + 16, 4 * SM_N); }
+    }
+    comp_free(&c); hbuf_free(&h); return r;
+}
+static int sm_wrong(const uint32_t out[SM_N], char *list, size_t n) {
+    int bad = 0; list[0] = 0;
+    for (int i = 0; i < SM_N; i++) if (out[i] != SM_WANT[i]) { size_t l = strlen(list); snprintf(list + l, n - l, "%s%s (got %#x)", bad++ ? ", " : "", SM_NAME[i], out[i]); }
+    return bad;
+}
+// The test shader four ways: as compiled; with float controls; with float controls + spv_nan_minmax (NMin / NMax / NClamp: what v0.57-v0.59 gave Arm's driver);
+// and with spv_nan_select on top (the rule written out with isnan: what the engine gives Arm's driver now). The last one is the verdict
+static void t_shmath(void) {
+    const char *N = "shader-maths";
+    static const char *WAY[4] = { "as compiled", "float controls", "float controls + NMin / NMax / NClamp", "float controls + NMin / NMax / NClamp + isnan written out" };
+    int fcp = (s_api >= VK_API_VERSION_1_2 || s_ext_fctl), bad[4] = { -1, -1, -1, -1 }; char wrong[4][768]; VkResult rr[4] = { 0 };
+    if (fcp) { VkPhysicalDeviceFloatControlsProperties fc = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FLOAT_CONTROLS_PROPERTIES };
+        VkPhysicalDeviceProperties2 pp = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &fc }; vkGetPhysicalDeviceProperties2(s_pd, &pp); fcp = fc.shaderSignedZeroInfNanPreserveFloat32; }
+    for (int way = 0; way < 4; way++) {
+        if (way && !fcp) break;
+        size_t words = sizeof spv_shmath / 4, nw; uint32_t *code = malloc(4 * words), *c2; if (!code) return; memcpy(code, spv_shmath, 4 * words);
+        if (way >= 1 && (c2 = spv_float_controls(code, words, &nw))) { free(code); code = c2; words = nw; }
+        if (way >= 2 && (c2 = spv_nan_minmax(code, words, &nw))) { free(code); code = c2; words = nw; }
+        if (way >= 3) { if ((c2 = spv_nan_select(code, words, &nw))) { free(code); code = c2; words = nw; } else { free(code); R(FAIL, N, "spv_nan_select did not patch the test shader (probe bug)"); return; } }
+        uint32_t out[SM_N]; g_step = WAY[way]; rr[way] = run_shmath(code, words, out); g_step = NULL; free(code);
+        if (rr[way]) { O("  %s: the shader did not run (%d)\n", WAY[way], rr[way]); continue; }
+        bad[way] = sm_wrong(out, wrong[way], sizeof wrong[way]);
+        O("  %s: %s\n", WAY[way], bad[way] ? wrong[way] : "all 16 answers as on the Switch's GPU");
+    }
+    int last = fcp ? 3 : 0;
+    if (bad[last] < 0) { R(FAIL, N, "the test shader did not run %s (%d)", WAY[last], rr[last]); return; }
+    if (!fcp) { if (!bad[0]) R(PASS, N, "right as compiled (the driver cannot be asked for float controls)"); else R(WARN, N, "wrong and the driver cannot be asked for float controls: %s", wrong[0]); return; }
+    if (bad[3]) R(FAIL, N, "wrong even with the rule written out: %s: lit scenes can still come out white or black here", wrong[3]);
+    else if (bad[2] > 0) R(PASS, N, "right only with the NaN rule written out; this driver does not honour NMin / NMax / NClamp (%s): the white screen of v0.57-v0.59", wrong[2]);
+    else if (bad[2] == 0 && bad[1] > 0) R(PASS, N, "right with NMin / NMax / NClamp and with the rule written out (plain min / max / clamp: %s)", wrong[1]);
+    else R(PASS, N, "right with float controls alone");
 }
 
 // ---- end-of-submission barrier ----
@@ -666,7 +719,7 @@ void probe_selftests(void) {
     if (st_device()) return;
     O("  GPU %s, Vulkan %u.%u.%u, driver version %#x, vendor %#x device %#x\n", s_props.deviceName, VK_API_VERSION_MAJOR(s_props.apiVersion), VK_API_VERSION_MINOR(s_props.apiVersion),
       VK_API_VERSION_PATCH(s_props.apiVersion), s_props.driverVersion, s_props.vendorID, s_props.deviceID);
-    static const struct { test_fn f; const char *n; } T[] = { { t_requirements, "engine-requirements" }, { t_floatctl, "float-controls" }, { t_barrier, "end-of-submit-barrier" }, { t_reinterp, "reinterpreted-format" },
+    static const struct { test_fn f; const char *n; } T[] = { { t_requirements, "engine-requirements" }, { t_floatctl, "float-controls" }, { t_shmath, "shader-maths" }, { t_barrier, "end-of-submit-barrier" }, { t_reinterp, "reinterpreted-format" },
                                                             { t_fallback, "fallback-draw" }, { t_dmabuf, "dmabuf-heap" }, { t_bc, "bc-textures" },
                                                             { t_3d_slices, "3d-slices" }, { t_3d_layered, "3d-layered" } };   // (3D last: it crashed Xclipse 540's driver)
     size_t nt = sizeof T / sizeof *T, i;
