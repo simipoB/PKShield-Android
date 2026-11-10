@@ -121,7 +121,29 @@ final class GameSettings {
         String[] t = { "low", "mid", "top" };
         String what = String.format(java.util.Locale.ROOT, "%s CPU%s, %s GPU, %s memory (%.0f GB), display up to %.0f Hz", t[cpu], khz > 0 ? String.format(java.util.Locale.ROOT, " %.1f GHz", khz / 1e6) : "",
                                     t[gpu], t[ram], Math.ceil(gb), maxRefresh(c));
-        return new String[] { n, what, gfx, tex, aniso, fps, scaler, shadows };
+        // HD texture packs (the player's own retexture mods, android_main.c texture_pack): on Auto only with top memory (12 GB+) and at least a mid GPU, and not
+        //   for a game that already gets half textures; a weaker phone keeps the game's own textures and its 30 fps
+        String hd = ram == 2 && gpu >= 1 && tex.equals("full") ? "on" : "off";
+        return new String[] { n, what, gfx, tex, aniso, fps, scaler, shadows, hd };
+    }
+    // whether the mods folder holds a switched-on HD texture pack: a mod whose romfs is 100 MB or more with at least 3/4 of its bytes under a path naming
+    //   "texture" (the same test as android_main.c texture_pack); the menu offers the HD textures setting only then
+    static boolean hasTexturePack(Context c) {
+        File[] ms = new File(dir(c), "mods").listFiles(); if (ms == null) return false;
+        for (File m : ms) {
+            String nm = m.getName(); if (nm.startsWith("-") || nm.startsWith(".") || !m.isDirectory()) continue;
+            long[] s = new long[2]; texWalk(new File(m, "romfs"), false, s, 0);
+            if (s[0] >= (100L << 20) && s[1] * 4 >= s[0] * 3) return true;
+        }
+        return false;
+    }
+    private static void texWalk(File d, boolean inTex, long[] s, int depth) {
+        File[] fs = depth > 16 ? null : d.listFiles(); if (fs == null) return;
+        for (File f : fs) {
+            if (f.getName().startsWith(".")) continue;
+            boolean t = inTex || f.getName().toLowerCase(java.util.Locale.ROOT).contains("texture");
+            if (f.isDirectory()) texWalk(f, t, s, depth + 1); else { s[0] += f.length(); if (t) s[1] += f.length(); }
+        }
     }
     // the fastest core's top clock in kHz (cpu*/cpufreq/cpuinfo_max_freq), 0 when unreadable
     static long maxCpuKhz() {

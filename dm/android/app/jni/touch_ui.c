@@ -74,6 +74,9 @@ static void layout_apply(float w, float h) {
     if (!g_lay_loaded) layout_load();
     for (int c = 0; c < NCTL; c++) if (g_ov[c].set && c != C_CAM) { g_c[c].cx = g_ov[c].fx * w; g_c[c].cy = g_ov[c].fy * h; g_c[c].r = g_ov[c].fr * h; g_c[c].shown = g_ov[c].shown; }
 }
+// L3 / R3 on screen: an option (DM_TOUCH_L3R3=on, Controls → Touch controls), off by default: Sword and Shield hardly use them. -1: not read yet
+static int g_l3r3 = -1;
+static int l3r3_on(void) { if (g_l3r3 < 0) { const char *e = getenv("DM_TOUCH_L3R3"); g_l3r3 = e && !strcmp(e, "on"); } return g_l3r3; }
 static void layout(float w, float h) {
     static int init; if (!init++) for (int i = 0; i < 10; i++) g_ptr[i].id = -1;   // no finger down
     if (w == g_w && h == g_h) return;
@@ -115,8 +118,10 @@ static void layout(float w, float h) {
     if (GESTURES_ON) for (int c = C_RSTICK; c < NCTL; c++) if (c != C_PLUS && c != C_MINUS && c != C_MENU) g_c[c].shown = 0;
     if (!g_rstick_on) { g_rknob_x = g_c[C_RSTICK].cx; g_rknob_y = g_c[C_RSTICK].cy; }
     layout_apply(w, h);
+    if (!l3r3_on()) g_c[C_L3].shown = g_c[C_R3].shown = 0;   // (an option, off by default: the layout editor's own choice only counts while it is on)
     if (!g_stick_on) { g_stick_x = g_knob_x = g_c[C_STICK].cx; g_stick_y = g_knob_y = g_c[C_STICK].cy; }
 }
+static int ctl_off(int c) { return (c == C_L3 || c == C_R3) && !l3r3_on(); }   // left out entirely, the layout editor too
 static int hit(int c, float x, float y, float slack) {
     const ctl *k = &g_c[c]; float dx = x - k->cx, dy = y - k->cy, r = k->r * slack;
     return k->shown && dx * dx + dy * dy <= r * r;
@@ -226,7 +231,7 @@ static struct { int c, active; float d0, r0; } g_pinch;
 static int g_last_tap_c = -1; static double g_last_tap_t;
 static int edit_hit(float x, float y) {   // the smallest control (shown or not) under the finger
     int best = -1; float br = 1e9f;
-    for (int c = 0; c < NCTL; c++) { if (c == C_CAM || (!g_c[c].shown && !g_ov[c].set && c != C_STICK)) continue;
+    for (int c = 0; c < NCTL; c++) { if (c == C_CAM || ctl_off(c) || (!g_c[c].shown && !g_ov[c].set && c != C_STICK)) continue;
         if (GESTURES_ON && !g_c[c].shown && !g_ov[c].set && c != C_PLUS && c != C_MINUS && c != C_MENU) continue;
         float dx = x - g_c[c].cx, dy = y - g_c[c].cy, r = g_c[c].r * 1.2f; if (dx * dx + dy * dy <= r * r && g_c[c].r < br) { br = g_c[c].r; best = c; } }
     return best;
@@ -423,6 +428,7 @@ void touch_ui_setting(const char *key, const char *value) {
     pthread_mutex_lock(&g_mu);
     if (!strcmp(key, "DM_TOUCH_OPACITY")) g_opacity = value ? clampf((float)atof(value) / 100.0f, 0.2f, 1.0f) : 1.0f;
     else if (!strcmp(key, "DM_TOUCH_FADE")) g_fade = value ? fmaxf(0.0f, (float)atof(value)) : 3.0f;
+    else if (!strcmp(key, "DM_TOUCH_L3R3")) { g_l3r3 = value && !strcmp(value, "on"); g_w = g_h = 0; }   // (laid out again on the next frame)
 #ifdef __ANDROID__
     else { void touch_ui_haptic_setting(const char *, const char *); touch_ui_haptic_setting(key, value); }   // DM_TOUCH_HAPTIC, DM_RUMBLE
 #endif
@@ -448,7 +454,7 @@ int front_overlay(dm_ovl_item *it, int max, int width, int height) {
     frame_input_locked();
     int n = 0;
     if (g_visible && g_edit) {   // the editor: every control at full strength with a yellow ring, the hidden ones as ghosts
-        for (int c = 0; c < NCTL; c++) { if (c == C_CAM) continue; const ctl *k = &g_c[c];
+        for (int c = 0; c < NCTL; c++) { if (c == C_CAM || ctl_off(c)) continue; const ctl *k = &g_c[c];
             if (GESTURES_ON && !k->shown && !g_ov[c].set && c != C_PLUS && c != C_MINUS && c != C_STICK && c != C_MENU) continue;
             float a = k->shown ? 1.0f : 0.3f;
             if (c == C_STICK || c == C_RSTICK) compass(it, &n, max, a, k->cx, k->cy, k->cx, k->cy, k->r);

@@ -100,6 +100,7 @@ def main():
     ap.add_argument('--debuggable', action='store_true', help='test builds: adb run-as can reach the private storage of the app')
     ap.add_argument('--keep-symbols', action='store_true', help='ship the native libraries unstripped (on by itself with --debuggable)')
     ap.add_argument('--no-obfuscate', action='store_true', help='plain d8 for the Java code, not R8 (on by itself with --debuggable)')
+    ap.add_argument('--profileable', action='store_true', help='test builds: simpleperf over adb can profile the app (<profileable android:shell="true"/>), without making it debuggable')
     a = ap.parse_args()
     g = _game.load(a.game); fam = _game.family(g)   # the games the engine built for g runs (Pokémon Shield: Shield and Sword, one app)
     ic = g.get('app_icon', 'dc2832 182040').split(); icon = [tuple(int(h[i:i + 2], 16) for i in (0, 2, 4)) for h in ic[:2]]   # app_icon: top colour, ground colour (hex)
@@ -142,6 +143,7 @@ def main():
     <uses-feature android:name="android.hardware.gamepad" android:required="false" />
     <application android:label="{xml_escape(a.name)}" android:icon="@mipmap/ic_launcher" android:hasCode="true" android:extractNativeLibs="true"
                  android:allowNativeHeapPointerTagging="false" android:isGame="true" android:appCategory="game" android:largeHeap="true" android:hasFragileUserData="true"{' android:debuggable="true"' if a.debuggable else ''}>
+        {'<profileable android:shell="true" />' if a.profileable else ''}
         <activity android:name="com.nxnative.SetupActivity" android:exported="true" android:theme="@android:style/Theme.DeviceDefault"
                   android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|smallestScreenSize|density">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
