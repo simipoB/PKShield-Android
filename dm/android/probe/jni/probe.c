@@ -19,13 +19,16 @@
 #include <sys/syscall.h>
 #include <sys/system_properties.h>
 #include <sys/utsname.h>
+#include <android/log.h>
 #include <vulkan/vulkan.h>
 
 static char *g_out; static size_t g_len, g_cap;
-// the report's one writer; selftest.c writes through it too
+// the report's one writer; selftest.c writes through it too. Each piece goes to logcat as well (adb logcat -s nxprobe): a probe that dies in a later section, as the
+// register checks do under an emulator's ARM translation, still leaves what it found
 void probe_vout(const char *fmt, va_list ap) {
     char buf[4096]; int n = vsnprintf(buf, sizeof buf, fmt, ap);
     if (n < 0) return; if (n >= (int)sizeof buf) n = sizeof buf - 1;
+    __android_log_write(ANDROID_LOG_INFO, "nxprobe", buf);
     if (g_len + n + 1 > g_cap) { g_cap = (g_len + n + 1) * 2; g_out = realloc(g_out, g_cap); }
     memcpy(g_out + g_len, buf, n); g_len += n; g_out[g_len] = 0;
 }
