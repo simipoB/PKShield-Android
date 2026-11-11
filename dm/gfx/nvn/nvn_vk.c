@@ -486,6 +486,7 @@ void mtl_init(void) {
     // Dual-source blending (the game's blend factors SRC1_*) needs dualSrcBlend; Arm's own driver has none (r44p1), and a pipeline using it there is undefined: those
     //   factors become the first output's (bfac_dev), named once in the log. DM_VK_DUALSRC=keep passes them as they are
     g_dualsrc = f2.features.dualSrcBlend || (getenv("DM_VK_DUALSRC") && !strcmp(getenv("DM_VK_DUALSRC"), "keep"));
+    if (getenv("DM_VK_DUALSRC") && !strcmp(getenv("DM_VK_DUALSRC"), "emulate")) g_dualsrc = 0;   // (a test: the two-step blend of draw on a driver that has dualSrcBlend)
     if (!f2.features.dualSrcBlend) VLOG("blending: the driver has no dual-source blending (dualSrcBlend): the game's SRC1 blend factors %s", g_dualsrc ? "passed as they are (DM_VK_DUALSRC=keep)" : "become the first output's");
     // The BC layer's set-up builds and runs its shaders on this GPU: a start that dies there leaves the marker, and later starts on this driver convert on the CPU
     //   (DM_VK_BC_GPU=1 tries again)
@@ -2185,7 +2186,7 @@ typedef struct vshader {
     uint64_t in_mask, out_mask;                 // user varyings by location (spv_io_masks)
     uint32_t *code; size_t nw;                  // fragment shaders: the (rebound) SPIR-V, for variants
     uint8_t out_cls[8];                         // fragment outputs by location: 0 float, 1 uint, 2 sint, 255 none
-    struct { uint64_t drop; uint32_t um, sm; VkShaderModule mod; } var[8]; int nvar;   // variants: inputs the previous stage never writes (drop), float outputs to integer targets (um / sm)
+    struct { uint64_t drop; uint32_t um, sm; int sw; VkShaderModule mod; } var[8]; int nvar;   // sw: outputs 0 and 1 swapped (g_ds_swap)   // variants: inputs the previous stage never writes (drop), float outputs to integer targets (um / sm)
     int tf[4][2]; uint16_t tf_stride[4]; VkShaderModule tfmod;   // transform feedback: per buffer { output location, components } and stride; the capture variant (tf_draw)
 } vshader;
 static char g_spv_dir[1024];
@@ -2947,7 +2948,7 @@ static void outside_pass(void) { if (P.open) g_brk_other++; g_pass_last_by_rt = 
 typedef struct {
     void *sh[5]; uint32_t cfmt[8], dfmt, sfmt; uint32_t chmask; blend_st blend[8];
     struct { uint32_t fmt, off; uint8_t bind, used, inst, pad; uint32_t div; } attr[32];
-    uint8_t samples, a2c, poly, clamp, topo, logic_en, logic_op, blend_en, depth_zero, discard, pad[6];
+    uint8_t samples, a2c, poly, clamp, topo, logic_en, logic_op, blend_en, depth_zero, discard, ds_swap, pad[5];   // ds_swap: first half of an emulated dual-source blend (draw)
 } pkey;
 static nvn_hmap g_pso = {.klen = sizeof(pkey)}, g_pso_fail = {.klen = sizeof(pkey)};
 // Without extended dynamic state (g_eds 0) the state the draws otherwise set per draw is part of the pipeline: cull mode, front face, exact topology, depth test / write /
@@ -3002,25 +3003,30 @@ static VkFormat vfmt_for(int nvn_fmt, int ct) {
 // so such inputs become private variables holding the hardware's (0, 0, 0, 1) in a variant of the fragment shader (made once per shader and set of missing locations)
 // The fragment module for a pipeline. On the Switch a varying the previous stage never writes reads (0, 0, 0, 1) and a float output to an integer colour target is written
 // as its bits; Vulkan (and Metal under MoltenVK) refuse both, so such a pipeline gets a variant of the fragment shader (made once per shader and combination)
-static VkShaderModule frag_module(vprog *pr, const uint32_t *cfmt) {
+static int g_ds_swap;   // the draw being recorded is the first half of an emulated dual-source blend: its fragment outputs 0 and 1 swapped (draw, pso_get)
+static VkShaderModule frag_module_(vprog *pr, const uint32_t *cfmt, int sw);
+static VkShaderModule frag_module(vprog *pr, const uint32_t *cfmt) { return frag_module_(pr, cfmt, 0); }
+static VkShaderModule frag_module_(vprog *pr, const uint32_t *cfmt, int sw) {
     vshader *fs = pr->sh[1], *pv = pr->sh[2] ? pr->sh[2] : pr->sh[4] ? pr->sh[4] : pr->sh[0];
     uint64_t drop = fs->in_mask & ~(pv ? pv->out_mask : 0); uint32_t um = 0, sm = 0;
     for (int i = 0; i < 8; i++) if (cfmt[i] && fs->out_cls[i] == 0) { int c = fmt_int_class((VkFormat)cfmt[i]); if (c == 1) um |= 1u << i; else if (c == 2) sm |= 1u << i; }
-    if ((!drop && !um && !sm) || !fs->code) return fs->mod;
+    if ((!drop && !um && !sm && !sw) || !fs->code) return fs->mod;
     pthread_mutex_lock(&g_psomu);
-    for (int i = 0; i < fs->nvar; i++) if (fs->var[i].drop == drop && fs->var[i].um == um && fs->var[i].sm == sm) { VkShaderModule m = fs->var[i].mod; pthread_mutex_unlock(&g_psomu); return m; }
+    for (int i = 0; i < fs->nvar; i++) if (fs->var[i].drop == drop && fs->var[i].um == um && fs->var[i].sm == sm && fs->var[i].sw == sw) { VkShaderModule m = fs->var[i].mod; pthread_mutex_unlock(&g_psomu); return m; }
     pthread_mutex_unlock(&g_psomu);
     size_t nw = fs->nw; uint32_t *c = NULL, *c2;
     if (drop && (c2 = spv_drop_inputs(fs->code, fs->nw, drop, &nw))) c = c2;
     if ((um || sm) && (c2 = spv_int_outputs(c ? c : fs->code, c ? nw : fs->nw, um, sm, &nw))) { free(c); c = c2; }
+    if (sw && (c2 = spv_swap_out01(c ? c : fs->code, c ? nw : fs->nw, &nw))) { free(c); c = c2; }
     if (!c) return fs->mod;
     VkShaderModule m = VK_NULL_HANDLE; VkShaderModuleCreateInfo mci = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = nw * 4, .pCode = c };
     VkResult r = vkCreateShaderModule(g_dev, &mci, NULL, &m); free(c);
     if (r) { VLOG("[RED] fragment shader %s: variant failed %d", fs->key, r); return fs->mod; }
     if (drop) VLOG("fragment shader %s reads varyings %#llx that %s never writes: those read (0, 0, 0, 1)", fs->key, (unsigned long long)drop, pv ? pv->key : "-");
     if (um | sm) VLOG("fragment shader %s: float outputs %#x / %#x written as uint / int bits (integer colour targets)", fs->key, um, sm);
+    if (sw) { static int said; if (said++ < 16) VLOG("fragment shader %s: a copy with outputs 0 and 1 swapped, for its dual-source blend in two steps", fs->key); }
     pthread_mutex_lock(&g_psomu);
-    if (fs->nvar < 8) { fs->var[fs->nvar].drop = drop; fs->var[fs->nvar].um = um; fs->var[fs->nvar].sm = sm; fs->var[fs->nvar].mod = m; fs->nvar++; }
+    if (fs->nvar < 8) { fs->var[fs->nvar].drop = drop; fs->var[fs->nvar].um = um; fs->var[fs->nvar].sm = sm; fs->var[fs->nvar].sw = sw; fs->var[fs->nvar].mod = m; fs->nvar++; }
     pthread_mutex_unlock(&g_psomu);
     return m;
 }
@@ -3239,7 +3245,7 @@ static VkPipeline pso_make(vprog *pr, pkey k, const sst *ss) {
     if (!g_eds && !ss) { RED_ONCE(110, "a pipeline without its draw state on a driver without extended dynamic state (vertex %s): not made", vs ? vs->key : "-"); return VK_NULL_HANDLE; }
     VkPipelineShaderStageCreateInfo st[5]; uint32_t nst = 0;
     if (!g_clipctl && !k.depth_zero && vs && !vs->glmod) RED_ONCE(27, "GL depth mode without VK_EXT_depth_clip_control and no translated depth fallback for vertex shader %s", vs->key);
-    for (int i = 0; i < 5; i++) if (pr->sh[i] && !(i == 1 && k.discard)) st[nst++] = (VkPipelineShaderStageCreateInfo){ .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = pr->sh[i]->vkstage, .module = i == 1 ? frag_module(pr, k.cfmt) : i == 0 && k.discard && pr->sh[0]->tfmod ? pr->sh[0]->tfmod : i == 0 && !g_clipctl && !k.depth_zero && pr->sh[0]->glmod ? pr->sh[0]->glmod : pr->sh[i]->mod, .pName = "main" };
+    for (int i = 0; i < 5; i++) if (pr->sh[i] && !(i == 1 && k.discard)) st[nst++] = (VkPipelineShaderStageCreateInfo){ .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = pr->sh[i]->vkstage, .module = i == 1 ? frag_module_(pr, k.cfmt, k.ds_swap) : i == 0 && k.discard && pr->sh[0]->tfmod ? pr->sh[0]->tfmod : i == 0 && !g_clipctl && !k.depth_zero && pr->sh[0]->glmod ? pr->sh[0]->glmod : pr->sh[i]->mod, .pName = "main" };
     VkVertexInputBindingDescription vb[17]; VkVertexInputAttributeDescription va[32]; VkVertexInputBindingDivisorDescriptionEXT vd[16]; uint32_t nvb = 0, nva = 0, nvd = 0; uint32_t have = 0;
     for (uint32_t loc = 0; loc < 32; loc++) {
         if (!k.attr[loc].used) continue;
@@ -3305,6 +3311,7 @@ static VkPipeline pso_get(vprog *pr, VkPrimitiveTopology topo) {
     k.chmask = S.chmask.mask; k.blend_en = (uint8_t)S.color.blend_en; for (int i = 0; i < 8; i++) if (k.cfmt[i]) k.blend[i] = S.blend[i];
     k.a2c = S.ms.a2c; k.poly = S.poly.mode == NVN_POLYGON_MODE_LINE ? 1 : S.poly.mode == NVN_POLYGON_MODE_POINT ? 2 : 0; k.clamp = (uint8_t)!!S.depth_clamp; k.topo = (uint8_t)topo_class(topo);
     k.logic_en = S.color.logic_op != NVN_LOGIC_OP_COPY; k.logic_op = (uint8_t)S.color.logic_op; k.depth_zero = (uint8_t)atomic_load(&g_depth_zero); k.discard = (uint8_t)!!S.rast_discard;
+    k.ds_swap = (uint8_t)g_ds_swap;
     for (int i = 0; i < vs->nin; i++) {
         uint32_t loc = vs->in[i].location; if (loc >= 32) continue;
         k.attr[loc].used = 1;
@@ -3572,7 +3579,29 @@ static void cap_draw_values(void) {
     barrier_all(cb); vkCmdCopyImageToBuffer(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, g_cap_buf, CAPP, pc); barrier_all(cb);
     g_cap_nd++; pass_begin();
 }
+// Dual-source blending without dualSrcBlend (Arm's own Mali driver, r44p1): Legends: Arceus' bloom adds each blurred level as output 0 + target x output 1's alpha.
+//   Such a draw is recorded twice, the same on screen as one: first with outputs 0 and 1 swapped (frag_module_ sw) and blend ZERO, target x <its SRC1 factor as SRC>,
+//   so the target is scaled by output 1; then as it is with blend <its source factor>, ONE, adding output 0. Done when the blend is ADD, the target factors are
+//   SRC1_* / ZERO / ONE and the source factors do not read the target (which the first step changed); otherwise the old fallback (bfac_dev). DM_VK_DUALSRC=off: never
+static int ds_src_ok(int f) { return f == 1 || f == 2 || (f >= 3 && f <= 6) || (f >= 0x61 && f <= 0x64); }   // ZERO, ONE, SRC_*, CONSTANT_*: not the target, not output 1
+static int ds_dst_map(int f) { return f == 1 ? 1 : f == 2 ? 2 : f == 0x10 ? 3 : f == 0x11 ? 4 : f == 0x12 ? 5 : f == 0x13 ? 6 : -1; }   // SRC1_x as SRC_x; ZERO / ONE kept
+static void draw_one(const p_draw *dw, const p_draw_idx *di);
 static void draw(const p_draw *dw, const p_draw_idx *di) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_DUALSRC"); on = !(e && (!strcmp(e, "off") || !strcmp(e, "keep"))); }
+    const blend_st b = S.blend[0];
+    int ds = on && !g_dualsrc && !S.rast_discard && (S.color.blend_en & 1) && (b.dst_rgb >= 0x10 && b.dst_rgb <= 0x13 || b.dst_a >= 0x10 && b.dst_a <= 0x13);
+    if (ds && (b.eq_rgb > 1 || b.eq_a > 1 || !ds_src_ok(b.src_rgb) || !ds_src_ok(b.src_a) || ds_dst_map(b.dst_rgb) < 0 || ds_dst_map(b.dst_a) < 0)) {
+        RED_ONCE(112, "dual-source blend that two steps cannot replace (rgb %u,%u,%u alpha %u,%u,%u): the first output's instead", (unsigned)b.src_rgb, (unsigned)b.dst_rgb, (unsigned)b.eq_rgb, (unsigned)b.src_a, (unsigned)b.dst_a, (unsigned)b.eq_a);
+        ds = 0; }
+    if (!ds) { draw_one(dw, di); return; }
+    { static int said; if (!said++) VLOG("blending: the game's dual-source blends are drawn in two steps (this driver has no dualSrcBlend; DM_VK_DUALSRC=off for the old fallback)"); }
+    blend_st a = b; a.src_rgb = 1; a.dst_rgb = (uint64_t)ds_dst_map(b.dst_rgb); a.src_a = 1; a.dst_a = (uint64_t)ds_dst_map(b.dst_a); a.eq_rgb = 1; a.eq_a = 1;
+    blend_st c = b; c.dst_rgb = 2; c.dst_a = 2; c.eq_rgb = 1; c.eq_a = 1;
+    S.blend[0] = a; g_ds_swap = 1; draw_one(dw, di); g_ds_swap = 0;
+    S.blend[0] = c; draw_one(dw, di);
+    S.blend[0] = b;
+}
+static void draw_one(const p_draw *dw, const p_draw_idx *di) {
     if (atomic_load(&g_cap) == 2) { g_cap_draws++;
         if (g_cap_draws <= 3 && S.prog) { vprog *cp = prog_get(S.prog); if (cp && cp->sh[0]) cap_printf("  draw %d: vertex %s fragment %s\n", g_cap_draws, cp->sh[0]->key, cp->sh[1] ? cp->sh[1]->key : "-"); } }
     if (atomic_load(&g_cap) == 2 && g_cap_dp < 2) { draw_(dw, di, NULL); cap_draw_values(); return; }
