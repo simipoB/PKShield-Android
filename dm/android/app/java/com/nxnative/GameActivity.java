@@ -115,6 +115,15 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         Thread t = new Thread(() -> {
             while (liveOn) {
                 try { Thread.sleep(10000); } catch (InterruptedException e) { return; }
+                // the fast setup's rest (setup_game.py --rest --yield): the shaders the setup left for later, beside the game in the same way; one run at a time (a run
+                //   the setup screen started, at full speed, makes way by itself once it sees game_running; this one then prints BUSY and is tried again later)
+                if (new File(dir, "rest.json").exists() && liveRoom()) {
+                    try {
+                        Process p = SetupActivity.startTool(this, java.util.Arrays.asList("--rest", "--yield"), GameSettings.memoryGb(this) < 7.5 ? 2 : 4);
+                        if (p != null) { try (java.io.InputStream in = p.getInputStream()) { byte[] b = new byte[4096]; while (in.read(b) >= 0) { } } p.waitFor(); }
+                    } catch (Exception e) { }
+                    continue;
+                }
                 java.util.List<String> todo = SetupActivity.pendingCaptures(dir); todo.removeAll(tried); if (todo.isEmpty()) continue;
                 if (!liveRoom()) continue;
                 tried.addAll(todo);   // (once a run: a failure is left to the setup screen's next start)
@@ -127,7 +136,10 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         }, "live shaders");
         t.setPriority(Thread.MIN_PRIORITY); t.setDaemon(true); t.start();
     }
-    @Override protected void onResume() { super.onResume(); check(); }
+    @Override protected void onResume() { super.onResume(); check(); gameRunning(true); }
+    @Override protected void onPause() { gameRunning(false); super.onPause(); }
+    // game_running: the game is on screen, so a fast setup's rest that runs at full speed (started from the setup screen) gets out of its way (setup_game.py rest)
+    private void gameRunning(boolean on) { File f = new File(GameSettings.dir(this), "game_running"); try { if (on) f.createNewFile(); else f.delete(); } catch (java.io.IOException e) { } }
     // am start ... --es menu <page>: the settings panel (testing over adb; 1 = the controller buttons)
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); String m = i.getStringExtra("menu"); if (m != null) GameMenu.show(this, m.equals("1") ? 1 : 0); }
     @Override protected void onActivityResult(int req, int res, Intent data) { if (!GameMenu.onResult(this, req, res, data)) super.onActivityResult(req, res, data); }   // the in-game menu's file pickers
