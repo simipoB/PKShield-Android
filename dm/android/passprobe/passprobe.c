@@ -40,6 +40,7 @@ static ANativeActivity *g_act; static ANativeWindow *g_win; static pthread_mutex
 static int g_variant;   // the test: 0, 1 or 2 (see the top)
 static VkInstance inst; static VkPhysicalDevice pd; static VkDevice dev; static VkQueue q; static uint32_t qf; static VkPhysicalDeviceMemoryProperties mp;
 static VkImage img[256]; static VkFormat imgfmt[256]; static VkImageView view[256];
+static int g_fmtlist;   // view format lists allowed: Vulkan 1.2+, or VK_KHR_image_format_list enabled on 1.1 (as PR #162 makes the engine do)
 static int g_dynren; static PFN_vkCmdBeginRendering p_begin; static PFN_vkCmdEndRendering p_end;
 static VkRenderPass g_rp[512]; static VkFramebuffer g_fb[512]; static int g_nrp;   // this frame's (pass_free after its fence)
 // A pass described as dynamic rendering; without it (Vulkan 1.1) a render pass and framebuffer with the same attachments, layouts and load / store ops
@@ -111,7 +112,7 @@ static int make_image(int i) {
     if (!m->is3d) {   // nvn_vk.c tex_make on Arm's driver
         if (is_depth(f)) ci.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         else if (tw == f) ci.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
-        else ci.pNext = &fli;
+        else if (g_fmtlist) ci.pNext = &fli;   // (without: plainly mutable, valid on every version)
     }
     VkResult r = vkCreateImage(dev, &ci, NULL, &img[i]);
     if (r) { LOG("image %d: vkCreateImage %ux%ux%u format %d levels %u layers %u usage %#x flags %#x failed: %d", i, m->w, m->h, m->d, f, m->levels, m->layers, ci.usage, ci.flags, r); return 0; }
@@ -150,8 +151,12 @@ static void run(ANativeWindow *win) {
     if (VK_API_VERSION_MINOR(pr.apiVersion) >= 3) { VkPhysicalDeviceFeatures2 f2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f13 }; vkGetPhysicalDeviceFeatures2(pd, &f2); }
     g_dynren = f13.dynamicRendering == VK_TRUE;
     f13 = (VkPhysicalDeviceVulkan13Features){ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .dynamicRendering = VK_TRUE };
-    const char *dext[] = { "VK_KHR_swapchain" };
-    VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = g_dynren ? &f13 : NULL, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = 1, .ppEnabledExtensionNames = dext };
+    const char *dext[2] = { "VK_KHR_swapchain" }; uint32_t ndext = 1;
+    g_fmtlist = VK_API_VERSION_MINOR(pr.apiVersion) >= 2;
+    if (!g_fmtlist) { uint32_t ne = 0; vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, NULL); VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep); vkEnumerateDeviceExtensionProperties(pd, NULL, &ne, ep);
+        for (uint32_t i = 0; i < ne; i++) if (!strcmp(ep[i].extensionName, "VK_KHR_image_format_list")) { dext[ndext++] = "VK_KHR_image_format_list"; g_fmtlist = 1; } free(ep); }
+    LOG("view format lists: %s", VK_API_VERSION_MINOR(pr.apiVersion) >= 2 ? "Vulkan 1.2+" : g_fmtlist ? "VK_KHR_image_format_list enabled (Vulkan 1.1)" : "none on this Vulkan 1.1 driver: images plainly mutable");
+    VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = g_dynren ? &f13 : NULL, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = ndext, .ppEnabledExtensionNames = dext };
     CHECK(vkCreateDevice(pd, &dci, NULL, &dev)); vkGetDeviceQueue(dev, qf, 0, &q);
     if (g_dynren) { p_begin = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr(dev, "vkCmdBeginRendering"); p_end = (PFN_vkCmdEndRendering)vkGetDeviceProcAddr(dev, "vkCmdEndRendering"); }
     if (!p_begin || !p_end) g_dynren = 0;
