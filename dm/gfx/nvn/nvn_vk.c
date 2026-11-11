@@ -3752,7 +3752,10 @@ static void shot_ex(vtex *x, const int crop[4], const char *path, uint32_t lv, u
 // A FIFO swapchain the size of the window; each present blits the game's window texture into it, scaled to fit with black bars, flipped in GL (lower-left) mode,
 // through a swapchain format of the same sRGB-ness as the game's texture so its bytes reach the screen unchanged
 void *front_metal_layer(void);
-static struct { void *win; VkSurfaceKHR surf; VkSwapchainKHR sc; VkImage img[8]; VkImageView view[8]; uint32_t n; VkFormat fmt; VkExtent2D ext; int srgb;
+// SC_MAX: room for the swapchain's images. Arm's driver makes more than asked for (a Mali-G57 on r32p1 made 14 for 8): with room for 8 only, an index from
+// vkAcquireNextImageKHR past 8 read W.view[] as an image, and Arm's barrier handling closed the game a few frames in (SIGSEGV at 0x90 in libGLES_mali.so, #158 #163)
+#define SC_MAX 32
+static struct { void *win; VkSurfaceKHR surf; VkSwapchainKHR sc; VkImage img[SC_MAX]; VkImageView view[SC_MAX]; uint32_t n; VkFormat fmt; VkExtent2D ext; int srgb;
                 VkExtent2D lext; int rot;   // lext: the window as the app sees it (landscape); rot: quarter turns the swapchain is pre-rotated by (ext is then the panel's own size)
                 VkSemaphore acq[3], done[3]; VkFence fence[3]; VkCommandPool pool; VkCommandBuffer cb[3]; uint32_t slot; } W;
 // Making and dropping the window surface runs on a thread of its own: present_window runs on a game thread, whose stack is the game's (outside its pthread stack), and
@@ -3829,7 +3832,10 @@ static int swap_ensure_now(void *win, int srgb) {
         .compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR, .presentMode = pm, .clipped = VK_TRUE };
     VkResult r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
     if (r) { RED_ONCE(58, "swapchain creation failed: %d", r); return 0; }
-    W.n = 8; vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
+    { uint32_t made = 0; vkGetSwapchainImagesKHR(g_dev, W.sc, &made, NULL);   // (every image the driver made: it may make more than minImageCount asked for)
+      W.n = made < SC_MAX ? made : SC_MAX; vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
+      if (made > SC_MAX) RED_ONCE(114, "the swapchain has %u images, room for %d: the others are skipped when handed out", made, SC_MAX);
+      if (made != n) VLOG("window: the driver made %u swapchain images for %u asked for", made, n); }
     for (uint32_t i = 0; i < W.n; i++) { VkImageViewCreateInfo vci = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = W.img[i], .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = W.fmt,
                                            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } }; vkCreateImageView(g_dev, &vci, NULL, &W.view[i]); }
     if (!W.pool) {
@@ -4307,6 +4313,7 @@ void nvn_vk_window_term(void) { if (!g_dev) return; pthread_mutex_lock(&g_wmu); 
 // One swapchain image composed in cb: black, the picture scaled into its box (the upscaler, else the plain linear stretch), the touch overlay; left ready to present
 typedef struct { vtex *x; VkImage img; VkImageView view; uint32_t w, h; int32_t cx, cy, cw, ch; } pres_src;   // x: the game's frame; NULL: a picture of ours (img / view / w / h, GENERAL layout)
 static void present_compose(VkCommandBuffer cb, uint32_t ii, const pres_src *s, int flip) {
+    if (ii >= W.n) { RED_ONCE(115, "swapchain image %u handed out, %u known: not drawn", ii, W.n); return; }
     VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = W.img[ii], .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
