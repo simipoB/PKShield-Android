@@ -4279,6 +4279,7 @@ static int swap_ensure_now(void *win, int srgb) {
     // Pre-rotation (DM_VK_PRETRANSFORM=1, opt-in until checked on phones): the panel's own orientation is portrait and the game landscape, so the compositor turns
     // every frame; with the swapchain made in the panel's orientation (preTransform = currentTransform) the upscaler and the overlay draw the picture already turned
     // and the compositor has nothing to do. Only when the upscaler's pipeline exists: the blit cannot turn the picture
+    if (caps.maxImageCount && n > caps.maxImageCount) n = caps.maxImageCount;   // (a driver with a low maximum refused the swapchain outright: every frame failed, a black screen)
     W.rot = 0; W.lext = W.ext; VkSurfaceTransformFlagBitsKHR pre = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
     { const char *e = getenv("DM_VK_PRETRANSFORM"); VkSurfaceTransformFlagBitsKHR t = caps.currentTransform;
       int q = t == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR ? 1 : t == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR ? 2 : t == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR ? 3 : 0;
@@ -4288,6 +4289,11 @@ static int swap_ensure_now(void *win, int srgb) {
         .preTransform = pre,
         .compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR, .presentMode = pm, .clipped = VK_TRUE };
     VkResult r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
+    if (r && (pm != VK_PRESENT_MODE_FIFO_KHR || n != caps.minImageCount || W.rot)) {   // once more with what every driver must take: FIFO, its minimum image count, no turn
+        RED_ONCE(116, "swapchain creation failed (%d) with present mode %d, %u images, turn %d: trying FIFO, %u images, no turn", r, (int)pm, n, W.rot, caps.minImageCount);
+        if (W.rot & 1) W.ext = W.lext; W.rot = 0; pm = VK_PRESENT_MODE_FIFO_KHR; n = caps.minImageCount;
+        ci.presentMode = pm; ci.minImageCount = n; ci.imageExtent = W.ext; ci.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
+        r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc); }
     if (r) { RED_ONCE(58, "swapchain creation failed: %d", r); return 0; }
     { uint32_t made = 0; vkGetSwapchainImagesKHR(g_dev, W.sc, &made, NULL);   // (every image the driver made: it may make more than minImageCount asked for)
       W.n = made < SC_MAX ? made : SC_MAX; vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
