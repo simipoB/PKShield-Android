@@ -2504,7 +2504,43 @@ static void cap_present(uint64_t n) {
     if (st == 2) { atomic_store(&g_cap, 3); return; }
     if (st == 3) { pthread_mutex_lock(&g_qmu); vkDeviceWaitIdle(g_dev); pthread_mutex_unlock(&g_qmu); cap_write(); atomic_store(&g_cap, 0); }
 }
-static void pass_end(void) { if (P.open) { rend_end(CB()); P.open = 0; if (atomic_load(&g_cap) == 2) cap_pass(); } }
+// DM_VK_PROF: the pass census. Which passes a frame is made of, by kind (size, first colour format, depth format, colour targets, layers): how many of each a frame,
+//   the draws in each, how many opened with a clear and how many ended without a draw. On a Galaxy S25+ one Sword scene opened 267 passes a frame (5 draws each) and
+//   the driver's begin was the game thread's largest cost; players' logs show nearly none of them reopening the attachments just left, so which passes they are
+//   decides what can be done about them (clear-only passes folded into the next pass on that target, small passes drawn another way). Nothing is counted without DM_VK_PROF
+static uint64_t g_stat_draws;   // (defined with the replay's statistics below)
+typedef struct { uint32_t w, h, fmt, dfmt; uint8_t ncol, layers, used, pad; uint64_t n, draws, empty, clears; } pcen;
+enum { PCEN = 64 };
+static pcen g_pcen[PCEN]; static int g_pcen_cur = -1; static uint64_t g_pcen_d0, g_pcen_over;   // g_pcen_over: passes of kinds past the table's 64
+static int pcen_on(void) { static int v = -1; if (v < 0) v = getenv("DM_VK_PROF") != NULL; return v; }
+static void pcen_open(int clear) {
+    uint32_t fmt = 0; for (int i = 0; i < 8 && !fmt; i++) fmt = P.cfmt[i];
+    uint32_t dfmt = P.hd ? P.dfmt : P.hs ? P.sfmt : 0; int k;
+    for (k = 0; k < PCEN && g_pcen[k].used; k++)
+        if (g_pcen[k].w == P.tw && g_pcen[k].h == P.th && g_pcen[k].fmt == fmt && g_pcen[k].dfmt == dfmt && g_pcen[k].ncol == (uint8_t)P.ncolor && g_pcen[k].layers == (uint8_t)P.layers) break;
+    if (k == PCEN) { g_pcen_over++; g_pcen_cur = -1; return; }
+    if (!g_pcen[k].used) g_pcen[k] = (pcen){ .w = P.tw, .h = P.th, .fmt = fmt, .dfmt = dfmt, .ncol = (uint8_t)P.ncolor, .layers = (uint8_t)P.layers, .used = 1 };
+    g_pcen[k].n++; g_pcen[k].clears += clear != 0; g_pcen_cur = k; g_pcen_d0 = g_stat_draws;
+}
+static void pcen_close(void) {
+    if (g_pcen_cur < 0) return;
+    uint64_t d = g_stat_draws - g_pcen_d0; g_pcen[g_pcen_cur].draws += d; g_pcen[g_pcen_cur].empty += !d; g_pcen_cur = -1;
+}
+static void pcen_log(double frames) {   // the 12 most common kinds, then the table starts again
+    int kinds = 0; uint64_t all = g_pcen_over, empty = 0; for (int k = 0; k < PCEN && g_pcen[k].used; k++) { kinds++; all += g_pcen[k].n; empty += g_pcen[k].empty; }
+    if (!all) return;
+    VLOG("[prof] passes by kind, per frame: %.1f in all, %d kinds (%.1f of kinds not counted apart), %.1f ended without a draw", all / frames, kinds, g_pcen_over / frames, empty / frames);
+    for (int r = 0; r < 12; r++) {
+        int b = -1; for (int k = 0; k < kinds; k++) if (g_pcen[k].n && (b < 0 || g_pcen[k].n > g_pcen[b].n)) b = k;
+        if (b < 0) break;
+        const pcen *c = &g_pcen[b];
+        VLOG("[prof]   %ux%u, %d colour (vk %u), depth vk %u, %d layer(s): %.1f a frame, %.1f draws each, %.1f opened with a clear, %.1f without a draw", c->w, c->h, c->ncol, c->fmt, c->dfmt, c->layers,
+             c->n / frames, (double)c->draws / (double)c->n, c->clears / frames, c->empty / frames);
+        g_pcen[b].n = 0;
+    }
+    memset(g_pcen, 0, sizeof g_pcen); g_pcen_over = 0; g_pcen_cur = -1;
+}
+static void pass_end(void) { if (P.open) { rend_end(CB()); P.open = 0; pcen_close(); if (atomic_load(&g_cap) == 2) cap_pass(); } }
 static int rt_dup_slot(const p_set_rt *r, int i) {
     if (!r->color[i]) return 0;
     uint8_t lv = r->has_cview[i] && r->cview[i].set_levels ? r->cview[i].base_level : 0; uint16_t ly = r->has_cview[i] && r->cview[i].set_layers ? r->cview[i].min_layer : 0;
@@ -2668,6 +2704,7 @@ static int pass_begin(void) {
         if (g_pass_last_by_rt && !memcmp(v, g_pass_lastv, sizeof v) && tw == g_pass_lastwh[0] && th == g_pass_lastwh[1] && P.layers == g_pass_lastwh[2]) g_pass_samev++;
         memcpy(g_pass_lastv, v, sizeof v); g_pass_lastwh[0] = tw; g_pass_lastwh[1] = th; g_pass_lastwh[2] = P.layers; g_pass_last_by_rt = 0;
     }
+    if (pcen_on()) { int cl = R.clear_d || R.clear_s; for (int i = 0; i < 8; i++) cl |= R.clear_c[i]; pcen_open(cl); }   // (DM_VK_PROF: the pass census)
     memset(R.clear_c, 0, sizeof R.clear_c); R.clear_d = R.clear_s = 0;
     P.open = 1;
     return 1;
@@ -4225,6 +4262,7 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
         VLOG("[prof] opening a pass, per frame: attachment views %.2f ms, barrier %.2f ms, driver begin %.2f ms", g_pb_ns[0] / f, g_pb_ns[1] / f, g_pb_ns[2] / f);
         VLOG("[prof] open passes ended per frame: by a new render target %.1f, a uniform update %.1f, a buffer copy %.1f, a buffer fill %.1f; by any work outside a pass %.1f",
              g_brk[0] / 300.0, g_brk[1] / 300.0, g_brk[2] / 300.0, g_brk[3] / 300.0, g_brk_other / 300.0);
+        pcen_log(300.0);
         g_vp_pass = g_vp_pso = 0; memset(g_pb_ns, 0, sizeof g_pb_ns); memset(g_brk, 0, sizeof g_brk); g_brk_other = 0;
         { extern _Atomic uint64_t g_wait_sync_ns, g_wait_sync_n; uint64_t ws = atomic_exchange(&g_wait_sync_ns, 0), wn = atomic_exchange(&g_wait_sync_n, 0);
           VLOG("[prof] waits per frame: sync waits %.2f ms (%.1f a frame), submission slot %.2f ms", ws / f, wn / 300.0, g_wait_ring_ns / f); g_wait_ring_ns = 0; }
