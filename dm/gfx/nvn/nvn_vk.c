@@ -3877,7 +3877,29 @@ static int swap_ensure_now(void *win, int srgb) {
         .imageExtent = W.ext, .imageArrayLayers = 1, .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = pre,
         .compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR, .presentMode = pm, .clipped = VK_TRUE };
+    // what the surface allows, before asking: no more images than its maximum, a composite alpha mode it lists (one listing neither opaque nor inherit got an invalid one)
+    if (caps.maxImageCount && ci.minImageCount > caps.maxImageCount) ci.minImageCount = caps.maxImageCount;
+    if (!(caps.supportedCompositeAlpha & ci.compositeAlpha))
+        for (uint32_t b = 1; b <= VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR; b <<= 1) if (caps.supportedCompositeAlpha & b) { ci.compositeAlpha = (VkCompositeAlphaFlagBitsKHR)b; break; }
     VkResult r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
+    // A swapchain the driver refuses (older Mali drivers among them) left the game with no picture at all. Again with the plainest one every driver must make: the fewest
+    //   images, FIFO, no pre-rotation; a window another surface still holds, or a lost surface, gets a new surface first. Each step logged
+    if (r == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) {
+#ifdef __ANDROID__
+        VLOG("[RED] window: swapchain creation failed (%d): with a new surface", r);
+        vkDestroySurfaceKHR(g_inst, W.surf, NULL); W.surf = VK_NULL_HANDLE;
+        VkAndroidSurfaceCreateInfoKHR si2 = { .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, .window = (ANativeWindow *)win };
+        if (vkCreateAndroidSurfaceKHR(g_inst, &si2, NULL, &W.surf)) { RED_ONCE(56, "cannot create the window surface"); return 0; }
+        ci.surface = W.surf; r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
+#endif
+    }
+    if (r) {
+        VLOG("[RED] window: swapchain creation failed (%d, %u images, present mode %d): again with %u images, FIFO, no pre-rotation", r, ci.minImageCount, (int)ci.presentMode, caps.minImageCount);
+        ci.minImageCount = caps.minImageCount ? caps.minImageCount : 2; ci.presentMode = pm = VK_PRESENT_MODE_FIFO_KHR;
+        if (ci.preTransform != caps.currentTransform && (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)) ci.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        if (W.rot) { W.rot = 0; W.ext = W.lext; ci.imageExtent = W.ext; }
+        r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
+    }
     if (r) { RED_ONCE(58, "swapchain creation failed: %d", r); return 0; }
     { uint32_t made = 0; vkGetSwapchainImagesKHR(g_dev, W.sc, &made, NULL);   // (every image the driver made: it may make more than minImageCount asked for)
       W.n = made < SC_MAX ? made : SC_MAX; vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
