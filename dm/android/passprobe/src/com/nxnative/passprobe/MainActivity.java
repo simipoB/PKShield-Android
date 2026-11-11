@@ -23,14 +23,14 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends Activity {
-    static final int[] VARIANTS = { 0, 1, 3 };
-    static final String[] NAMES = { "as the game", "no view format lists", "without the screen (swapchain) passes" };
+    static final int[] VARIANTS = { 0, 1, 2 };
+    static final String[] NAMES = { "the game's passes, clears and copies", "+ the present (clear, blit)", "+ the touch overlay" };
     TextView text; Button run, share; Handler h = new Handler(Looper.getMainLooper());
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); int p = (int) (16 * getResources().getDisplayMetrics().density); l.setPadding(p, p, p, p);
-        TextView t = new TextView(this); t.setText("Galar Native: Mali pass test\nNo game files needed. Tap Run test; it takes under a minute and may close by itself once or twice (that is the test). Then tap Share result and post it on GitHub."); t.setTextSize(16);
+        TextView t = new TextView(this); t.setText("Galar Native: Mali test 2\nNo game files needed. Tap Run test; it takes under a minute and may close by itself once or twice (that is the test). Then tap Share result and post it on GitHub."); t.setTextSize(16);
         run = new Button(this); run.setText("Run test"); run.setOnClickListener(v -> { for (int x : VARIANTS) new File(getFilesDir(), "run-" + x + ".txt").delete(); next(); });
         share = new Button(this); share.setText("Share result"); share.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_SEND); i.setType("text/plain"); i.putExtra(Intent.EXTRA_TEXT, report(true)); startActivity(Intent.createChooser(i, "Share the result")); });
@@ -62,18 +62,18 @@ public class MainActivity extends Activity {
     }
     String report(boolean full) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Galar Native Mali pass test 1\nPhone: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append(" (").append(Build.HARDWARE).append("), Android ").append(Build.VERSION.RELEASE).append('\n');
+        sb.append("Galar Native Mali test 2\nPhone: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append(" (").append(Build.HARDWARE).append("), Android ").append(Build.VERSION.RELEASE).append('\n');
         boolean any = false;
         for (int k = 0; k < VARIANTS.length; k++) {
             List<String> L = lines(new File(getFilesDir(), "run-" + VARIANTS[k] + ".txt")); if (L.isEmpty()) continue; any = true;
-            String gpu = "", last = "", done = "", fail = ""; int passes = 0;
-            for (String s : L) { if (s.startsWith("GPU ")) gpu = s; if (s.contains(" pass ") && s.startsWith("round")) { last = s; passes++; } if (s.startsWith("DONE")) done = s; if (s.startsWith("FAIL") || s.contains("failed")) fail = s; }
+            String gpu = "", last = "", done = "", fail = ""; int steps = 0;
+            for (String s : L) { if (s.startsWith("GPU ")) gpu = s; if (s.startsWith("round") && s.contains(" step ")) { last = s; steps++; } if (s.startsWith("DONE")) done = s; if (s.startsWith("FAIL") || s.contains("failed")) fail = s; }
             if (k == 0 || sb.indexOf(gpu) < 0) sb.append(gpu).append('\n');
             sb.append("\nTest ").append(k + 1).append(" (").append(NAMES[k]).append("): ");
-            if (!done.isEmpty()) sb.append("PASSED, ").append(passes).append(" passes\n");
+            if (!done.isEmpty()) sb.append("PASSED, ").append(steps).append(" steps\n");
             else if (!fail.isEmpty()) sb.append("STOPPED: ").append(fail).append('\n');
             else if (L.get(L.size() - 1).equals("END")) sb.append("ended early\n");
-            else sb.append("CRASHED after ").append(passes).append(" passes. Last one:\n  ").append(last).append('\n');
+            else sb.append("CRASHED after ").append(steps).append(" steps. Last one:\n  ").append(last).append('\n');
             if (full && done.isEmpty()) { int from = Math.max(0, L.size() - 6); for (int i = from; i < L.size(); i++) sb.append("  > ").append(L.get(i)).append('\n'); }
         }
         if (!any) sb.append("\nNot run yet.");

@@ -2,8 +2,8 @@
 // gen_passes.py) the way nvn_vk.c makes them on Arm's driver (usage from the format's features, mutable with a view format list, cube compatible like tex_make),
 // and begins / ends the game's passes in the game's order, frame by frame, with the swapchain passes on a real swapchain. Each pass is logged (logcat tag
 // passprobe) before the driver sees it, so a crash inside the driver's pass begin (Arm's r44p1: SIGSEGV at 0x90 in libGLES_mali.so, frame 3) names its pass.
-// Variants (a number in <files>/variant, written by MainActivity; default 0): 0 as the engine (dynamic rendering), 1 no view format lists,
-//   3 swapchain passes left out. Results: <files>/run-<variant>.txt (MainActivity shows and shares them) and logcat tag passprobe.
+// Tests (a number in <files>/variant, written by MainActivity): 0 the game's passes + its per-frame clears and buffer copies, 1 + the engine's
+//   present (clear, blit), 2 + the touch overlay (label atlas upload, a pass on the screen image). Each command is logged before the driver sees it. Results: <files>/run-<variant>.txt (MainActivity shows and shares them) and logcat tag passprobe.
 #include <android/log.h>
 #include <fcntl.h>
 #include <stdarg.h>
@@ -37,7 +37,7 @@ typedef struct { int frame, sc; uint32_t w, h, layers; int ncol; int col[8]; int
 #define NPASS (int)(sizeof PP_PASSES / sizeof PP_PASSES[0])
 
 static ANativeActivity *g_act; static ANativeWindow *g_win; static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER;
-static int g_variant;   // 0 as the engine (dynamic rendering), 1 no view format lists, 3 swapchain passes left out
+static int g_variant;   // the test: 0, 1 or 2 (see the top)
 static VkInstance inst; static VkPhysicalDevice pd; static VkDevice dev; static VkQueue q; static uint32_t qf; static VkPhysicalDeviceMemoryProperties mp;
 static VkImage img[256]; static VkFormat imgfmt[256]; static VkImageView view[256];
 
@@ -78,11 +78,10 @@ static int make_image(int i) {
     VkFormat tw = twin_of(f), fl[2] = { f, tw };
     VkImageFormatListCreateInfo fli = { .sType = VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, .viewFormatCount = tw != f ? 2 : 1, .pViewFormats = fl };
     if (!m->is3d) {   // nvn_vk.c tex_make on Arm's driver
-        if (is_depth(f) || g_variant == 1) ci.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        if (is_depth(f)) ci.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         else if (tw == f) ci.flags &= ~VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
         else ci.pNext = &fli;
     }
-    if (g_variant == 1 && tw != f) ci.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;   // (sRGB / linear views still need mutable; no list)
     VkResult r = vkCreateImage(dev, &ci, NULL, &img[i]);
     if (r) { LOG("image %d: vkCreateImage %ux%ux%u format %d levels %u layers %u usage %#x flags %#x failed: %d", i, m->w, m->h, m->d, f, m->levels, m->layers, ci.usage, ci.flags, r); return 0; }
     VkMemoryRequirements rq; vkGetImageMemoryRequirements(dev, img[i], &rq);
@@ -157,55 +156,125 @@ static void run(ANativeWindow *win) {
     CHECK(vkEndCommandBuffer(cb));
     VkSubmitInfo si0 = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb }; CHECK(vkQueueSubmit(q, 1, &si0, fence));
     vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX); vkResetFences(dev, 1, &fence);
-    LOG("made %d images and %d views; replaying the passes (each logged before the driver sees it)", NIMG, NVIEW);
-    int nframes = PP_PASSES[NPASS - 1].frame + 1, total = 0;
+    LOG("made %d images and %d views", NIMG, NVIEW);
+    // buffers for the per-frame copies (the engine's pool mirror updates, uniform copies) and the overlay's font upload
+    VkBuffer buf[3]; VkDeviceMemory bmem[3];
+    for (int i = 0; i < 3; i++) {
+        VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 1 << 20, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT };
+        CHECK(vkCreateBuffer(dev, &bci, NULL, &buf[i])); VkMemoryRequirements rq; vkGetBufferMemoryRequirements(dev, buf[i], &rq);
+        VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = rq.size, .memoryTypeIndex = memtype(rq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) };
+        CHECK(vkAllocateMemory(dev, &ai, NULL, &bmem[i])); CHECK(vkBindBufferMemory(dev, buf[i], bmem[i], 0));
+    }
+    // the overlay's label atlas, as nvn_vk.c ovl_setup makes it (R8, sampled + transfer destination)
+    VkImageCreateInfo fci2 = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8_UNORM, .extent = { 512, 256, 1 }, .mipLevels = 1, .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT };
+    VkImage font; CHECK(vkCreateImage(dev, &fci2, NULL, &font));
+    { VkMemoryRequirements rq; vkGetImageMemoryRequirements(dev, font, &rq);
+      VkMemoryAllocateInfo ai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = rq.size, .memoryTypeIndex = memtype(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) };
+      VkDeviceMemory fm; CHECK(vkAllocateMemory(dev, &ai, NULL, &fm)); CHECK(vkBindImageMemory(dev, font, fm, 0)); }
+    int font_ready = 0;
+    // the picture the engine presents: the game's largest 8-bit RGBA target (its final 1920x1080 picture), else its largest 2D colour target
+    int scene = -1;
+    for (int pass8 = 1; pass8 >= 0 && scene < 0; pass8--)
+        for (int i = 0; i < NIMG; i++) {
+            VkFormat f = imgfmt[i]; int rgba8 = f == VK_FORMAT_R8G8B8A8_UNORM || f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_UNORM || f == VK_FORMAT_B8G8R8A8_SRGB;
+            if (is_depth(f) || PP_IMGS[i].is3d || (pass8 && !rgba8)) continue;
+            if (scene < 0 || PP_IMGS[i].w * PP_IMGS[i].h > PP_IMGS[scene].w * PP_IMGS[scene].h) scene = i;
+        }
+    VkFormatProperties sfp; vkGetPhysicalDeviceFormatProperties(pd, imgfmt[scene], &sfp);
+    VkFilter filt = sfp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
+    LOG("test %d: %s; the presented picture: img%d %ux%u format %d", g_variant + 1, g_variant == 0 ? "the game's passes, clears and buffer copies" :
+        g_variant == 1 ? "1 + the engine's present (clear to black, blit, present)" : "2 + the touch overlay (label atlas upload, a pass on the screen image)", scene, PP_IMGS[scene].w, PP_IMGS[scene].h, imgfmt[scene]);
+    VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT };
+    int nframes = PP_PASSES[NPASS - 1].frame + 1, total = 0, step = 0;
+#define CMD(what, ...) do { LOG("round %d frame %d step %d: %s", round, fr, step++, what); __VA_ARGS__; } while (0)
+#define FULLBAR() vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL)
     for (int round = 0; round < 3; round++) for (int fr = 0; fr < nframes; fr++) {
         uint32_t ii = 0; VkResult ar = vkAcquireNextImageKHR(dev, sw, UINT64_MAX, acq, VK_NULL_HANDLE, &ii); if (ar && ar != VK_SUBOPTIMAL_KHR) { LOG("FAIL acquire: %d", ar); return; }
         vkResetCommandBuffer(cb, 0); CHECK(vkBeginCommandBuffer(cb, &bi));
-        VkImageMemoryBarrier sb = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = si[ii],
-            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
-        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &sb);
+        // the game's frame: buffer copies (pool mirrors, uniforms), clears of its targets in GENERAL, its passes
+        { VkBufferCopy c = { 0, 0, 132 * 1024 }; CMD("vkCmdCopyBuffer (pool mirror)", vkCmdCopyBuffer(cb, buf[0], buf[1], 1, &c)); }
+        CMD("memory barrier", FULLBAR());
+        { VkBufferCopy c = { 4096, 8192, 4096 }; CMD("vkCmdCopyBuffer (uniforms)", vkCmdCopyBuffer(cb, buf[1], buf[0], 1, &c)); }
+        CMD("vkCmdFillBuffer", vkCmdFillBuffer(cb, buf[1], 0, 65536, 0));
+        { int nc = 0, nd = 0;
+          for (int p = 0; p < NPASS; p++) {
+            const pp_pass *P = &PP_PASSES[p]; if (P->frame != fr || P->sc) continue;
+            for (int c = 0; c < P->ncol && nc < 13; c++) if (P->col[c] >= 0) {
+                const pp_view *v = &PP_VIEWS[P->col[c]]; int im = v->img; char w[112];
+                snprintf(w, sizeof w, "vkCmdClearColorImage img%d %ux%u format %d level %u", im, PP_IMGS[im].w, PP_IMGS[im].h, imgfmt[im], v->base_level);
+                VkImageSubresourceRange r = { VK_IMAGE_ASPECT_COLOR_BIT, v->base_level, 1, v->base_layer, v->layers }; VkClearColorValue cv = {{0}};
+                CMD(w, FULLBAR(); vkCmdClearColorImage(cb, img[im], VK_IMAGE_LAYOUT_GENERAL, &cv, 1, &r)); nc++;
+            }
+            if (P->dview >= 0 && nd < 11) {
+                int im = PP_VIEWS[P->dview].img; char w[112];
+                snprintf(w, sizeof w, "vkCmdClearDepthStencilImage img%d %ux%u format %d", im, PP_IMGS[im].w, PP_IMGS[im].h, imgfmt[im]);
+                VkImageSubresourceRange r = { aspect(imgfmt[im]), 0, 1, 0, 1 }; VkClearDepthStencilValue dv = { 1, 0 };
+                CMD(w, FULLBAR(); vkCmdClearDepthStencilImage(cb, img[im], VK_IMAGE_LAYOUT_GENERAL, &dv, 1, &r)); nd++;
+            } } }
         for (int p = 0; p < NPASS; p++) {
-            const pp_pass *P = &PP_PASSES[p]; if (P->frame != fr) continue;
-            if (P->sc && g_variant == 3) continue;
+            const pp_pass *P = &PP_PASSES[p]; if (P->frame != fr || P->sc) continue;   // (the screen passes: the present below)
             VkRenderingAttachmentInfo ca[8]; VkRenderingAttachmentInfo da = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
-            uint32_t w = P->w, h = P->h;
             for (int c = 0; c < P->ncol && c < 8; c++) {
                 ca[c] = (VkRenderingAttachmentInfo){ .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
-                if (P->col[c] == -2) { ca[c].imageView = sv[ii]; ca[c].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ca[c].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-                    if (w > ext.width) w = ext.width; if (h > ext.height) h = ext.height; }
-                else if (P->col[c] >= 0) { ca[c].imageView = view[P->col[c]]; ca[c].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+                if (P->col[c] >= 0) { ca[c].imageView = view[P->col[c]]; ca[c].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
                     ca[c].loadOp = P->load[c] == 1 ? VK_ATTACHMENT_LOAD_OP_CLEAR : P->load[c] == 2 ? VK_ATTACHMENT_LOAD_OP_DONT_CARE : VK_ATTACHMENT_LOAD_OP_LOAD; }
             }
             if (P->dview >= 0) { da.imageView = view[P->dview]; da.imageLayout = VK_IMAGE_LAYOUT_GENERAL; da.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; da.storeOp = VK_ATTACHMENT_STORE_OP_STORE; }
-            VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, { w, h } }, .layerCount = P->layers ? P->layers : 1,
+            VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, { P->w, P->h } }, .layerCount = P->layers ? P->layers : 1,
                 .colorAttachmentCount = (uint32_t)P->ncol, .pColorAttachments = ca, .pDepthAttachment = P->hasd && P->dview >= 0 ? &da : NULL, .pStencilAttachment = P->hass && P->dview >= 0 ? &da : NULL };
-            VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT };
-            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
-            char cs[160] = ""; size_t k = 0;
-            for (int c = 0; c < P->ncol && c < 8 && k < sizeof cs - 40; c++) {
-                if (P->col[c] >= 0) { const pp_view *v = &PP_VIEWS[P->col[c]]; const pp_img *m = &PP_IMGS[v->img];
-                    k += (size_t)snprintf(cs + k, sizeof cs - k, " c%d=img%d %ux%u f%u v%u l%u", c, v->img, m->w, m->h, m->fmt, v->fmt, v->base_level); }
-                else k += (size_t)snprintf(cs + k, sizeof cs - k, " c%d=%s", c, P->col[c] == -2 ? "swapchain" : "none");
-            }
-            LOG("round %d frame %d pass %d (game pass %d, site %d) %ux%u layers %u colours %d%s depth %s%d", round, fr, total, p, P->site, w, h, P->layers, P->ncol, cs,
-                P->dview >= 0 ? "img" : "-", P->dview >= 0 ? PP_VIEWS[P->dview].img : 0);
-            vkCmdBeginRendering(cb, &ri); vkCmdEndRendering(cb); total++;
+            char w[128]; snprintf(w, sizeof w, "game pass %d %ux%u colours %d depth %s%d", p, P->w, P->h, P->ncol, P->dview >= 0 ? "img" : "-", P->dview >= 0 ? PP_VIEWS[P->dview].img : 0);
+            CMD(w, FULLBAR(); vkCmdBeginRendering(cb, &ri); vkCmdEndRendering(cb)); total++;
         }
-        sb.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; sb.dstAccessMask = 0; sb.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; sb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &sb);
-        CHECK(vkEndCommandBuffer(cb));
-        VkPipelineStageFlags ws = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        // the present (nvn_vk.c mtl_present / scale_draw / ovl_draw)
+        VkImageMemoryBarrier sb = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = si[ii],
+            .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+        CMD("memory barrier before the present", FULLBAR());
+        sb.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; sb.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; sb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        CMD("screen image UNDEFINED -> TRANSFER_DST", vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &sb));
+        if (g_variant >= 1) {
+            VkClearColorValue black = {{0, 0, 0, 1}}; VkImageSubresourceRange rr = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+            CMD("vkCmdClearColorImage on the screen image (TRANSFER_DST)", vkCmdClearColorImage(cb, si[ii], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rr));
+            VkMemoryBarrier tb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };
+            CMD("transfer barrier", vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &tb, 0, NULL, 0, NULL));
+            int32_t sw_ = (int32_t)PP_IMGS[scene].w, sh_ = (int32_t)PP_IMGS[scene].h, dw = (int32_t)ext.width, dh = (int32_t)ext.height;
+            VkImageBlit bl = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{0, sh_, 0}, {sw_, 0, 1}}, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, {{0, 0, 0}, {dw, dh, 1}} };
+            CMD("vkCmdBlitImage game picture (GENERAL) -> screen image (TRANSFER_DST)", vkCmdBlitImage(cb, img[scene], VK_IMAGE_LAYOUT_GENERAL, si[ii], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bl, filt));
+        }
+        if (g_variant >= 2) {   // the touch overlay over it (ovl_draw)
+            if (!font_ready) {
+                VkImageMemoryBarrier fb = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = font, .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+                CMD("label atlas UNDEFINED -> TRANSFER_DST", vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &fb));
+                VkBufferImageCopy bc = { 0, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { 512, 256, 1 } };
+                CMD("vkCmdCopyBufferToImage label atlas", vkCmdCopyBufferToImage(cb, buf[2], font, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &bc));
+                fb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; fb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT; fb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; fb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                CMD("label atlas TRANSFER_DST -> SHADER_READ_ONLY", vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &fb));
+                font_ready = 1;
+            }
+            sb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; sb.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            sb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; sb.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            CMD("screen image TRANSFER_DST -> COLOR_ATTACHMENT", vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &sb));
+            VkRenderingAttachmentInfo ca = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = sv[ii], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+            VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, ext }, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca };
+            CMD("overlay pass on the screen image", vkCmdBeginRendering(cb, &ri); vkCmdEndRendering(cb));
+            sb.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; sb.dstAccessMask = 0; sb.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; sb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            CMD("screen image COLOR_ATTACHMENT -> PRESENT_SRC", vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &sb));
+        } else {
+            sb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT; sb.dstAccessMask = 0; sb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL; sb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            CMD("screen image TRANSFER_DST -> PRESENT_SRC", vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &sb));
+        }
+        CMD("vkEndCommandBuffer", CHECK(vkEndCommandBuffer(cb)));
+        VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo s = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = 1, .pWaitSemaphores = &acq, .pWaitDstStageMask = &ws, .commandBufferCount = 1, .pCommandBuffers = &cb,
             .signalSemaphoreCount = 1, .pSignalSemaphores = &done };
-        CHECK(vkQueueSubmit(q, 1, &s, fence));
+        CMD("vkQueueSubmit", CHECK(vkQueueSubmit(q, 1, &s, fence)));
         VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done, .swapchainCount = 1, .pSwapchains = &sw, .pImageIndices = &ii };
-        vkQueuePresentKHR(q, &pi);
+        CMD("vkQueuePresentKHR", vkQueuePresentKHR(q, &pi));
         vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX); vkResetFences(dev, 1, &fence);
-        LOG("round %d frame %d submitted and presented", round, fr);
     }
-    LOG("DONE: all %d passes of %d frames x 3 rounds began and ended without a crash (variant %d)", total, nframes, g_variant);
+    LOG("DONE: %d frames x 3 rounds, %d game passes, %d steps, no crash (test %d)", nframes, total, step, g_variant + 1);
 }
 
 static void *thread_main(void *a) {
@@ -214,7 +283,7 @@ static void *thread_main(void *a) {
     run(w);
     LOG("END");
     if (g_out >= 0) close(g_out);
-    ANativeActivity_finish(g_act);
+    _exit(0);   // each test in a process of its own (Android keeps a finished activity's process for the next start, where this would not run again)
     return NULL;
 }
 static void on_window(ANativeActivity *a, ANativeWindow *w) { (void)a; pthread_mutex_lock(&g_mu); g_win = w; pthread_cond_signal(&g_cv); pthread_mutex_unlock(&g_mu); }
@@ -222,11 +291,11 @@ static void on_window_gone(ANativeActivity *a, ANativeWindow *w) { (void)a; (voi
 void ANativeActivity_onCreate(ANativeActivity *a, void *saved, size_t n) {
     (void)saved; (void)n;
     g_act = a;
-    char path[512]; snprintf(path, sizeof path, "%s/variant", a->internalDataPath);   // written by the app's screen (MainActivity) before it starts a run
+    a->callbacks->onNativeWindowCreated = on_window; a->callbacks->onNativeWindowDestroyed = on_window_gone;
+    static int started; if (started++) return;   // (one test per process: thread_main ends it)
+    char path[512]; snprintf(path, sizeof path, "%s/variant", a->internalDataPath);   // written by the app's screen (MainActivity) before it starts a test
     FILE *f = fopen(path, "r"); int fv = 0; if (f) { if (fscanf(f, "%d", &fv) != 1) fv = 0; fclose(f); }
     g_variant = fv;
     snprintf(path, sizeof path, "%s/run-%d.txt", a->internalDataPath, g_variant); g_out = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    a->callbacks->onNativeWindowCreated = on_window; a->callbacks->onNativeWindowDestroyed = on_window_gone;
-    static int started; if (started++) return;
     pthread_t t; pthread_create(&t, NULL, thread_main, NULL); pthread_detach(t);
 }
