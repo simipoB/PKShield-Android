@@ -167,6 +167,7 @@ static int g_fctl;    // every shader asks for SignedZeroInfNanPreserve (spv_flo
 static int g_arm_rel, g_arm_p;   // Arm's own Mali driver: its release, r<rel>p<p> (driverVersion is VK_MAKE_VERSION(rel, p, 0): 0xb001000 = r44p1); 0 for any other driver
 static int g_arm_beta;           // ... a beta build of it (driverInfo "v1.r49p1-03bet0": the G925's)
 static int g_clampzero; static _Atomic int g_clampzero_n;   // shaders get spv_clamp_zero (Arm erratum 3779215: mtl_init decides); how many it changed
+static int g_fmz; static _Atomic int g_fmz_n;   // shaders get spv_fmz (every multiply by 0 gives 0, as Maxwell's FMZ: DM_VK_FMZ=1, a test); how many it changed
 static int g_nanmm; static _Atomic int g_nanmm_n;           // shaders get spv_nan_minmax (min / max / saturate drop NaN as on Maxwell: mtl_init decides; 2: spv_nan_select too); how many it changed
 static int g_dualsrc = 1;        // the device blends with a second shader output (dualSrcBlend): Arm's own Mali driver has none (r44p1)
 static int g_tlsem = 1;          // the device has timeline semaphores; 0: each submission signals a fence of its own instead (older Adreno stock drivers, Vulkan 1.1, #99)
@@ -480,6 +481,11 @@ void mtl_init(void) {
     //   definition); DM_VK_NAN_MINMAX=0 / 1 decides on any driver
     //   v0.59 with this on was still white on Arm's r49p1 (#111 G925, #128 G720): nothing shows that Arm's compiler gives the N forms their NaN rule, so its driver gets
     //   the rule written out as well (spv_nan_select: OpIsNan + OpSelect after each op, 2); DM_VK_NAN_MINMAX=1 is the N forms alone
+    // FMZ (spv_fmz): Maxwell's multiplies give 0 when an operand is 0, infinity and NaN included, and SPIR-V's give NaN, which a white or glowing surface can come from
+    //   (a light at the eye's position: 0 x inf). Every multiply gets the rule written out: a test of the theory on the white screen of Arm's own driver (#156), off
+    //   unless DM_VK_FMZ=1 (the in-game menu's Mali tests); the translator would then get it per instruction (a new shader chain)
+    { const char *e = getenv("DM_VK_FMZ"); g_fmz = e && atoi(e) > 0;
+      if (g_fmz) VLOG("shaders: a multiply by 0 gives 0 even for infinity and NaN, as on the Switch's GPU (FMZ, every multiply: DM_VK_FMZ)"); }
     { const char *e = getenv("DM_VK_NAN_MINMAX"); g_nanmm = e ? atoi(e) : g_arm_rel ? 2 : 0; if (g_nanmm < 0 || g_nanmm > 2) g_nanmm = 1;
       if (g_nanmm) VLOG("shaders: min / max / saturate give the operand that is not NaN, as on the Switch's GPU (NMin / NMax / NClamp%s%s)", g_nanmm == 2 ? " and the rule written out with isnan" : "",
                         e ? ", DM_VK_NAN_MINMAX" : ", Arm's own driver"); }
@@ -1484,7 +1490,9 @@ typedef struct vtex {
     struct vtex *alt; int alt_fmt;         // BC decoded / transcoded on this GPU, viewed as another BC kind (tex_view_for): the same blocks converted for that kind
     _Atomic int pre;                       // uploaded ahead (mtl_tex_preupload) and not drawn yet: counted in g_pre_unused
     struct { uint64_t key, frame; uint16_t lv, ly; uint8_t asp, dc; } sk[8]; int nsk; int presented;   // stores of its attachments not yet read or overwritten (sk_*); shown in the window
+    uint8_t dkeep; uint64_t dfirst;        // DM_VK_DEPTH_DISCARD: something read this depth image (keep storing it); the frame it was first a pass's depth (depth_store)
 } vtex;
+static void depth_read(vtex *x);   // (DM_VK_DEPTH_DISCARD: something reads this image, pass_begin)
 // ================= Stores no one reads (tilers: Adreno, Mali; from the Arceus engine) =================
 // On a tiler every render pass ends by writing its attachments from tile memory to the image, and a pass whose next user clears the image first or never looks at it again wrote
 // for nothing (depth buffers above all). Vulkan needs the store decision when the pass begins, before its commands are known, so it is learnt: each attachment of a pass is keyed
@@ -2121,6 +2129,7 @@ static VkImageView tex_view_for(int tid, const spv_res *r, int storage) {
     treg_t rg; if (!treg_get(tid, &rg)) { if (tid > 0) RED_ONCE(11, "texture ID %d not registered", tid); return VK_NULL_HANDLE; }
     vtex *x = tex_res(&rg.t); if (!x || !x->img) return VK_NULL_HANDLE;
     sk_read(x);   // sampled or bound as an image: its pending stores were needed
+    depth_read(x);   // (a shader reads it: DM_VK_DEPTH_DISCARD keeps storing it)
     // A view in another BC kind than its texture (BC5 unsigned read as signed, BC4 likewise, BC6H unsigned as signed): on the Switch (and on a GPU with BC) the same
     //   blocks are read the other way. Where BC is decoded / transcoded on upload the image holds values converted for the texture's own kind, which the other
     //   kind's view would read as garbage (lighting from such normal maps white and black on Mali, #47 / #53 / #56; BC6H's two kinds are not even compatible
@@ -2409,6 +2418,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
     if (g_nanmm) { size_t nw; uint32_t *c2 = spv_nan_minmax(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; atomic_fetch_add(&g_nanmm_n, 1); } }   // (before spv_clamp_zero, which knows both)
     if (g_clampzero) { size_t nw; uint32_t *c2 = spv_clamp_zero(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; atomic_fetch_add(&g_clampzero_n, 1); } }   // (Arm erratum 3779215)
     if (g_nanmm == 2) { size_t nw; uint32_t *c2 = spv_nan_select(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // (after spv_clamp_zero: its zero is the operand selected)
+    if (g_fmz) { size_t nw; uint32_t *c2 = spv_fmz(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; atomic_fetch_add(&g_fmz_n, 1); } }
     if (spst == 0 || spst == 2) { size_t nw; uint32_t *c2 = spv_init_outputs(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // outputs start at (0, 0, 0, 1) as on the hardware
     if (st == 0 && glcode) {
         size_t nw;
@@ -2420,6 +2430,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
         if (g_nanmm && (c2 = spv_nan_minmax(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
         if (g_clampzero && (c2 = spv_clamp_zero(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
         if (g_nanmm == 2 && (c2 = spv_nan_select(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
+        if (g_fmz && (c2 = spv_fmz(glcode, ngl / 4, &nw))) { free(glcode); glcode = c2; ngl = nw * 4; }
         c2 = spv_init_outputs(glcode, ngl / 4, &nw); if (c2) { free(glcode); glcode = c2; ngl = nw * 4; }
         VkShaderModuleCreateInfo gci = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = ngl, .pCode = glcode };
         VkResult gr = vkCreateShaderModule(g_dev, &gci, NULL, &s->glmod);
@@ -2864,6 +2875,24 @@ static void rt_resolve(void) {   // a deferred target change: the open pass goes
     if (rt_same(&g_pass_rt, &R.rt)) { g_pass_resumed++; return; }
     g_brk[0]++; g_pass_last_by_rt = 1; sub_split_at_target(); pass_end();
 }
+// DM_VK_DEPTH_DISCARD=1 (a test; Galaxy-Android stores off-screen depth with DONT_CARE so a tiled GPU, Mali above all, never writes it back from tile memory): a depth /
+// stencil image that nothing reads after its passes is not stored. Read means a later pass loading it, a shader sampling it, or the game copying it; until the image
+// has been a pass's depth for 120 frames with no such read it is stored as before, and once anything reads it it is stored for good. A read that first comes later
+// than that sees one frame of undefined depth (then the image is stored again): a test, off by default
+static int depth_discard_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_VK_DEPTH_DISCARD"); v = e && atoi(e) > 0; if (v) VLOG("passes: depth that nothing reads afterwards is left in tile memory (DM_VK_DEPTH_DISCARD, a test)"); }
+    return v;
+}
+static void depth_read(vtex *x) { if (x && (x->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT))) x->dkeep = 1; }
+static VkAttachmentStoreOp depth_store(vtex *x, int loads) {
+    if (!depth_discard_on()) return VK_ATTACHMENT_STORE_OP_STORE;
+    if (loads) x->dkeep = 1;   // (this pass reads what the last one stored)
+    if (!x->dfirst) x->dfirst = g_frame_no + 1;
+    if (x->dkeep || g_frame_no + 1 - x->dfirst < 120) return VK_ATTACHMENT_STORE_OP_STORE;
+    static int said; if (!said++) VLOG("passes: a %ux%u depth image (format %d) is no longer stored: nothing read it for 120 frames", x->w, x->h, (int)x->fmt);
+    return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+}
 static int pass_begin(void) {
     if (P.open && g_rt_stale) rt_resolve();
     if (P.open) return 1;
@@ -2905,13 +2934,14 @@ static int pass_begin(void) {
         vtex *x; uint32_t w, h; VkImageView v = att_view(R.rt.depth, &R.rt.dview, R.rt.has_dview, &x, &w, &h);
         if (v && (x->usage & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) {
             if (!nlay || g_att_layers < nlay) nlay = g_att_layers;
+            VkAttachmentStoreOp dso = depth_store(x, ((x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && !R.clear_d) || ((x->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) && !R.clear_s));
             uint32_t dl = R.rt.has_dview && R.rt.dview.set_levels ? R.rt.dview.base_level : 0, dy = R.rt.has_dview && R.rt.dview.set_layers ? R.rt.dview.min_layer : 0;
             if (x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) { da.imageView = v; da.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                da.storeOp = sk_on() && sk_attach(x, dl, dy, 2, 8, R.clear_d) ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE; dkey = g_sk_last;
+                da.storeOp = sk_on() && sk_attach(x, dl, dy, 2, 8, R.clear_d) ? VK_ATTACHMENT_STORE_OP_DONT_CARE : dso; dkey = g_sk_last;
                 if (da.storeOp == VK_ATTACHMENT_STORE_OP_STORE && g_store_none && sk_ro(dkey, R.clear_d)) { da.storeOp = VK_ATTACHMENT_STORE_OP_NONE; dnone = 1; }
                 da.loadOp = R.clear_d ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; da.clearValue.depthStencil.depth = R.cd; P.hd = 1; P.dfmt = (uint32_t)x->fmt; }
             if (x->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) { sa.imageView = v; sa.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-                sa.storeOp = sk_on() && sk_attach(x, dl, dy, 3, 9, R.clear_s) ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE; skey = g_sk_last;
+                sa.storeOp = sk_on() && sk_attach(x, dl, dy, 3, 9, R.clear_s) ? VK_ATTACHMENT_STORE_OP_DONT_CARE : dso; skey = g_sk_last;
                 if (sa.storeOp == VK_ATTACHMENT_STORE_OP_STORE && g_store_none && sk_ro(skey, R.clear_s)) { sa.storeOp = VK_ATTACHMENT_STORE_OP_NONE; snone = 1; }
                 sa.loadOp = R.clear_s ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; sa.clearValue.depthStencil.stencil = R.cs; P.hs = 1; P.sfmt = (uint32_t)x->fmt; }
             P.samples = x->samples; if (w < tw) tw = w; if (h < th) th = h; any = 1;
@@ -3932,6 +3962,7 @@ static void copy_b2t(const p_copy_b2t *c, int to_buffer) {
     VkBufferImageCopy r = { .bufferOffset = o, .bufferRowLength = (uint32_t)(row / bpb * bw), .bufferImageHeight = (uint32_t)(img / row * bh),
         .imageSubresource = { x->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : x->aspect, level, x->is3d ? 0 : layer0 + (uint32_t)c->r.zoffset, x->is3d ? 1 : (uint32_t)nz },
         .imageOffset = { c->r.xoffset, c->r.yoffset, x->is3d ? c->r.zoffset : 0 }, .imageExtent = { (uint32_t)c->r.width, (uint32_t)c->r.height, x->is3d ? (uint32_t)nz : 1 } };
+    if (to_buffer) depth_read(x);   // (DM_VK_DEPTH_DISCARD)
     if (to_buffer) vkCmdCopyImageToBuffer(CB(), x->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r); else vkCmdCopyBufferToImage(CB(), b, x->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
     barrier_all(CB()); if (to_buffer) wb_note(c->src, img * nz);
 }
@@ -3943,6 +3974,7 @@ static void copy_t2t(const p_copy_t2t *c) {
                          c->src->d.width, c->src->d.height, c->src->d.format, c->src->d.flags, c->sr.xoffset, c->sr.yoffset, c->sr.width, c->sr.height, (unsigned long long)c->dst->serial,
                          c->dst->d.width, c->dst->d.height, c->dst->d.format, c->dst->d.flags, c->dr.xoffset, c->dr.yoffset, c->dr.width, c->dr.height, s && d && s->img && d->img ? "" : " (an image missing)");
     if (!s || !d || !s->img || !d->img) return;
+    depth_read(s);   // (copied from: DM_VK_DEPTH_DISCARD keeps storing it)
     if (s->drop || d->drop) { RED_ONCE(105, "a texture kept at half quality in a texture copy: left out (DM_VK_TEX_QUALITY=full to compare)"); return; }
     unsigned sl = c->has_sv && c->sv.set_levels ? c->sv.base_level : 0, dl = c->has_dv && c->dv.set_levels ? c->dv.base_level : 0;
     unsigned sz0 = c->has_sv && c->sv.set_layers ? c->sv.min_layer : 0, dz0 = c->has_dv && c->dv.set_layers ? c->dv.min_layer : 0;
@@ -4341,12 +4373,29 @@ static int swap_ensure_now(void *win, int srgb) {
         .imageExtent = W.ext, .imageArrayLayers = 1, .imageUsage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = pre,
         .compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR, .presentMode = pm, .clipped = VK_TRUE };
+    // what the surface allows, before asking: no more images than its maximum, a composite alpha mode it lists (one listing neither opaque nor inherit got an invalid one)
+    if (caps.maxImageCount && ci.minImageCount > caps.maxImageCount) ci.minImageCount = caps.maxImageCount;
+    if (!(caps.supportedCompositeAlpha & ci.compositeAlpha))
+        for (uint32_t b = 1; b <= VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR; b <<= 1) if (caps.supportedCompositeAlpha & b) { ci.compositeAlpha = (VkCompositeAlphaFlagBitsKHR)b; break; }
     VkResult r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
-    if (r && (pm != VK_PRESENT_MODE_FIFO_KHR || n != caps.minImageCount || W.rot)) {   // once more with what every driver must take: FIFO, its minimum image count, no turn
-        RED_ONCE(116, "swapchain creation failed (%d) with present mode %d, %u images, turn %d: trying FIFO, %u images, no turn", r, (int)pm, n, W.rot, caps.minImageCount);
-        if (W.rot & 1) W.ext = W.lext; W.rot = 0; pm = VK_PRESENT_MODE_FIFO_KHR; n = caps.minImageCount;
-        ci.presentMode = pm; ci.minImageCount = n; ci.imageExtent = W.ext; ci.preTransform = (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : caps.currentTransform;
-        r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc); }
+    // A swapchain the driver refuses (older Mali drivers among them) left the game with no picture at all. Again with the plainest one every driver must make: the fewest
+    //   images, FIFO, no pre-rotation; a window another surface still holds, or a lost surface, gets a new surface first. Each step logged
+    if (r == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) {
+#ifdef __ANDROID__
+        VLOG("[RED] window: swapchain creation failed (%d): with a new surface", r);
+        vkDestroySurfaceKHR(g_inst, W.surf, NULL); W.surf = VK_NULL_HANDLE;
+        VkAndroidSurfaceCreateInfoKHR si2 = { .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, .window = (ANativeWindow *)win };
+        if (vkCreateAndroidSurfaceKHR(g_inst, &si2, NULL, &W.surf)) { RED_ONCE(56, "cannot create the window surface"); return 0; }
+        ci.surface = W.surf; r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
+#endif
+    }
+    if (r) {
+        VLOG("[RED] window: swapchain creation failed (%d, %u images, present mode %d): again with %u images, FIFO, no pre-rotation", r, ci.minImageCount, (int)ci.presentMode, caps.minImageCount);
+        ci.minImageCount = caps.minImageCount ? caps.minImageCount : 2; ci.presentMode = pm = VK_PRESENT_MODE_FIFO_KHR;
+        if (ci.preTransform != caps.currentTransform && (caps.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR)) ci.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        if (W.rot) { W.rot = 0; W.ext = W.lext; ci.imageExtent = W.ext; }
+        r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
+    }
     if (r) { RED_ONCE(58, "swapchain creation failed: %d", r); return 0; }
     { uint32_t made = 0; vkGetSwapchainImagesKHR(g_dev, W.sc, &made, NULL);   // (every image the driver made: it may make more than minImageCount asked for)
       W.n = made < SC_MAX ? made : SC_MAX; vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
@@ -5006,7 +5055,7 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
     if (n % 900 == 0 && atomic_load(&g_pso_new) >= 10) { static atomic_int busy; if (!atomic_exchange(&busy, 1)) {   // new pipelines: the cache file is rewritten in the background
         pthread_t t; void *saver(void *a); if (pthread_create(&t, NULL, saver, &busy)) atomic_store(&busy, 0); else pthread_detach(t); } }
     if (n % 1800 == 0) { VLOG("pipelines built during play so far: %d", atomic_load(&g_pso_ingame)); mem_report(); }
-    if (n % 1800 == 0 && (g_nanmm || g_clampzero)) VLOG("shaders changed so far: %d for NaN in min / max / saturate, %d for Arm erratum 3779215", atomic_load(&g_nanmm_n), atomic_load(&g_clampzero_n));
+    if (n % 1800 == 0 && (g_nanmm || g_clampzero || g_fmz)) VLOG("shaders changed so far: %d for NaN in min / max / saturate, %d for Arm erratum 3779215, %d for FMZ", atomic_load(&g_nanmm_n), atomic_load(&g_clampzero_n), atomic_load(&g_fmz_n));
     if ((n == 1 || n % 300 == 0) && atomic_load(&g_pre_done) + atomic_load(&g_pre_late) + atomic_load(&g_pre_full))
         VLOG("textures uploaded ahead %llu (%ld MB of them not drawn yet), used before the worker got to them %llu, left to their first use (budget or queue full) %llu", (unsigned long long)atomic_load(&g_pre_done), atomic_load(&g_pre_unused) >> 20, (unsigned long long)atomic_load(&g_pre_late), (unsigned long long)atomic_load(&g_pre_full));
     if (n % 300 == 0 && (sk_on() || ubd_on() || barrier_relaxed()))

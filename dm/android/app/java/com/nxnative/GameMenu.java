@@ -531,6 +531,10 @@ public final class GameMenu {
                 { "0", t(a, "Off"), t(a, "Off: the shaders as before v0.52") } });
             choice(a, "DM_VK_NAN_MINMAX", t(a, "Min / max as on the Switch"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: on with ARM's driver (v0.57)") },
                 { "0", t(a, "Off"), t(a, "Off: the shaders as before v0.57") } });
+            choice(a, "DM_VK_FMZ", t(a, "Multiply by zero as on the Switch"), new String[][] { { "", t(a, "Off"), "" },
+                { "1", t(a, "On"), t(a, "On: a multiply with a zero gives zero even when the other value is infinite, as the Switch's GPU does (a test for white or glowing surfaces; a little slower)") } });
+            choice(a, "DM_VK_DEPTH_DISCARD", t(a, "Keep unused depth in tile memory"), new String[][] { { "", t(a, "Off"), "" },
+                { "1", t(a, "On"), t(a, "On: depth that nothing reads afterwards is not written back to memory (faster on Mali; a test: tell us if anything flickers)") } });
             choice(a, "DM_VK_NO_PASS_MERGE", t(a, "Merge render passes"), new String[][] { { "", t(a, "On"), "" },
                 { "1", t(a, "Off"), t(a, "Off: every render target change starts a new pass") } });
         }

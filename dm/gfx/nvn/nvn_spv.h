@@ -48,6 +48,8 @@ uint32_t *spv_float_controls(const uint32_t *code, size_t words, size_t *out_wor
 uint32_t *spv_nan_minmax(const uint32_t *code, size_t words, size_t *out_words);
 // The same rule written as OpIsNan + OpSelect after each float min / max / clamp, for a driver that does not honour the N forms (Arm's own). NULL when the module has none
 uint32_t *spv_nan_select(const uint32_t *code, size_t words, size_t *out_words);
+// A copy in which every 32-bit float multiply (OpFMul, GLSL.std.450 Fma) gives 0 when an operand is 0, as Maxwell's FMZ does (0 x inf / NaN = 0); NULL when it has none
+uint32_t *spv_fmz(const uint32_t *code, size_t words, size_t *out_words);
 // A copy in which a constant-zero limit of a min / max / clamp of a value selected between constants is a zero the compiler cannot fold (Arm erratum 3779215, see nvn_spv.c).
 // NULL if there is none
 uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words);
