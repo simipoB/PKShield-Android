@@ -663,6 +663,37 @@ uint32_t *spv_exact_math(const uint32_t *code, size_t words, size_t *out_words, 
     free(isf); o[3] = next; *out_words = w; return o;
 }
 
+// The translator declares every Maxwell register as a Function variable with no initializer; where a path reads a register it has not written, SPIR-V leaves the value
+// undefined. Mesa's compilers turn such values into zero (Panfrost lowers undefs to 0: PanVK drew the lit scene right on a Mali-G615), while a driver may keep whatever the
+// register held; the lit pass came out at the format's maximum on Arm's own Mali driver with every special-function edge case written out (#47, mali-white-test1).
+// A copy in which every Function variable without an initializer starts at zero (OpConstantNull of its type, declared before the first function). NULL when there is none
+uint32_t *spv_init_locals(const uint32_t *code, size_t words, size_t *out_words) {
+    enum { OpTypePointer = 32, OpConstantNull = 46, OpFunction = 54, OpVariable = 59, Function = 7 };
+    if (words < 5 || code[0] != 0x07230203u) return NULL;
+    uint32_t bound = code[3]; if (!bound || bound > (1u << 22)) return NULL;
+    uint32_t *pointee = calloc(bound, 4), *nul = calloc(bound, 4); if (!pointee || !nul) { free(pointee); free(nul); return NULL; }
+    size_t hits = 0, first_fn = 0, ntypes = 0;
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) goto none; const uint32_t *x = code + i;
+        if (op == OpTypePointer && n == 4 && x[1] < bound && x[2] == Function) pointee[x[1]] = x[3];
+        else if (op == OpFunction && !first_fn) first_fn = i;
+        else if (op == OpVariable && n == 4 && x[3] == Function && x[1] < bound && pointee[x[1]] && pointee[x[1]] < bound) {
+            hits++; if (!nul[pointee[x[1]]]) { nul[pointee[x[1]]] = 1; ntypes++; } }
+        i += n; }
+    if (!hits || !first_fn) goto none;
+    uint32_t *o = malloc(4 * (words + hits + 3 * ntypes)); if (!o) goto none;
+    uint32_t next = bound; size_t w = 0;
+    for (size_t i = 0; i < words;) {
+        size_t n = i < 5 ? 5 : code[i] >> 16; const uint32_t *x = code + i;
+        if (i == first_fn) for (uint32_t t = 0; t < bound; t++) if (nul[t] == 1) { nul[t] = next++; o[w++] = 3u << 16 | OpConstantNull; o[w++] = t; o[w++] = nul[t]; }
+        if (i >= 5 && (x[0] & 0xffff) == OpVariable && n == 4 && x[3] == Function && x[1] < bound && pointee[x[1]] && pointee[x[1]] < bound && nul[pointee[x[1]]] > 1) {
+            o[w++] = 5u << 16 | OpVariable; o[w++] = x[1]; o[w++] = x[2]; o[w++] = Function; o[w++] = nul[pointee[x[1]]];
+        } else { memcpy(o + w, x, 4 * n); w += n; }
+        i += n; }
+    free(pointee); free(nul); o[3] = next; *out_words = w; return o;
+none:
+    free(pointee); free(nul); return NULL;
+}
+
 // Arm erratum 3779215 (Mali, Arm's own driver r38p1 to r49p0 and r50p0 to r51p0; fixed in r49p1 and r52p0): a min / max / clamp whose limit is a constant zero, of a value
 // selected at run time between compile-time constants, is compiled as a plain min or max: the value is no longer clamped. A copy in which that zero is one the compiler cannot
 // see as a constant: a Private variable per type, stored with the zero at the top of every entry point and loaded at the top of each function that uses it. Written from the

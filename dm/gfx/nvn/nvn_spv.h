@@ -51,6 +51,8 @@ uint32_t *spv_nan_select(const uint32_t *code, size_t words, size_t *out_words);
 // exp2 below 2^-126 = 0, inversesqrt (0) = +inf, a negative root NaN, F2I clamped with NaN 0), the classes chosen by mask. NULL if there is none
 enum { EXACT_LOG2 = 1, EXACT_EXP2 = 2, EXACT_RSQ = 4, EXACT_SQRT = 8, EXACT_FTOI = 16, EXACT_ALL = 31 };
 uint32_t *spv_exact_math(const uint32_t *code, size_t words, size_t *out_words, unsigned mask);
+// A copy in which every Function variable without an initializer starts at zero (the translator's registers; Mesa turns undefined values into 0). NULL if there is none
+uint32_t *spv_init_locals(const uint32_t *code, size_t words, size_t *out_words);
 // A copy in which a constant-zero limit of a min / max / clamp of a value selected between constants is a zero the compiler cannot fold (Arm erratum 3779215, see nvn_spv.c).
 // NULL if there is none
 uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words);
