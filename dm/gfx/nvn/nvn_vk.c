@@ -3579,22 +3579,25 @@ static void cap_draw_values(void) {
     barrier_all(cb); vkCmdCopyImageToBuffer(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, g_cap_buf, CAPP, pc); barrier_all(cb);
     g_cap_nd++; pass_begin();
 }
-// Dual-source blending without dualSrcBlend (Arm's own Mali driver, r44p1): Legends: Arceus' bloom adds each blurred level as output 0 + target x output 1's alpha.
+// Dual-source blending, on every driver: Legends: Arceus' bloom adds each blurred level as output 0 + target x output 1's alpha. Arm's own Mali driver (r44p1) has
+//   no dualSrcBlend at all, and where a driver has it the translated shaders still put output 1 at Location 1, not at Location 0 Index 1 where Vulkan's SRC1
+//   factors read it: undefined, and the glow went missing on an Adreno 830 too.
 //   Such a draw is recorded twice, the same on screen as one: first with outputs 0 and 1 swapped (frag_module_ sw) and blend ZERO, target x <its SRC1 factor as SRC>,
 //   so the target is scaled by output 1; then as it is with blend <its source factor>, ONE, adding output 0. Done when the blend is ADD, the target factors are
 //   SRC1_* / ZERO / ONE and the source factors do not read the target (which the first step changed); otherwise the old fallback (bfac_dev). DM_VK_DUALSRC=off: never
+//   (the first output's factors where the driver has no dualSrcBlend); DM_VK_DUALSRC=keep: the game's factors passed to the driver as they are
 static int ds_src_ok(int f) { return f == 1 || f == 2 || (f >= 3 && f <= 6) || (f >= 0x61 && f <= 0x64); }   // ZERO, ONE, SRC_*, CONSTANT_*: not the target, not output 1
 static int ds_dst_map(int f) { return f == 1 ? 1 : f == 2 ? 2 : f == 0x10 ? 3 : f == 0x11 ? 4 : f == 0x12 ? 5 : f == 0x13 ? 6 : -1; }   // SRC1_x as SRC_x; ZERO / ONE kept
 static void draw_one(const p_draw *dw, const p_draw_idx *di);
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_DUALSRC"); on = !(e && (!strcmp(e, "off") || !strcmp(e, "keep"))); }
     const blend_st b = S.blend[0];
-    int ds = on && !g_dualsrc && !S.rast_discard && (S.color.blend_en & 1) && (b.dst_rgb >= 0x10 && b.dst_rgb <= 0x13 || b.dst_a >= 0x10 && b.dst_a <= 0x13);
+    int ds = on && !S.rast_discard && (S.color.blend_en & 1) && (b.dst_rgb >= 0x10 && b.dst_rgb <= 0x13 || b.dst_a >= 0x10 && b.dst_a <= 0x13);
     if (ds && (b.eq_rgb > 1 || b.eq_a > 1 || !ds_src_ok(b.src_rgb) || !ds_src_ok(b.src_a) || ds_dst_map(b.dst_rgb) < 0 || ds_dst_map(b.dst_a) < 0)) {
         RED_ONCE(112, "dual-source blend that two steps cannot replace (rgb %u,%u,%u alpha %u,%u,%u): the first output's instead", (unsigned)b.src_rgb, (unsigned)b.dst_rgb, (unsigned)b.eq_rgb, (unsigned)b.src_a, (unsigned)b.dst_a, (unsigned)b.eq_a);
         ds = 0; }
     if (!ds) { draw_one(dw, di); return; }
-    { static int said; if (!said++) VLOG("blending: the game's dual-source blends are drawn in two steps (this driver has no dualSrcBlend; DM_VK_DUALSRC=off for the old fallback)"); }
+    { static int said; if (!said++) VLOG("blending: the game's dual-source blends are drawn in two steps (DM_VK_DUALSRC=keep: as one, by the driver)"); }
     blend_st a = b; a.src_rgb = 1; a.dst_rgb = (uint64_t)ds_dst_map(b.dst_rgb); a.src_a = 1; a.dst_a = (uint64_t)ds_dst_map(b.dst_a); a.eq_rgb = 1; a.eq_a = 1;
     blend_st c = b; c.dst_rgb = 2; c.dst_a = 2; c.eq_rgb = 1; c.eq_a = 1;
     S.blend[0] = a; g_ds_swap = 1; draw_one(dw, di); g_ds_swap = 0;
