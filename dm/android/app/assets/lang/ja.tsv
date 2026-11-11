@@ -312,3 +312,7 @@ Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)	自動：120 Hzの
 Sustained performance	持続パフォーマンス
 Off: the phone's full speed, which drops when it gets hot	オフ：端末の最大速度（熱くなると下がります）
 On: a speed the phone can hold for hours, fewer slowdowns when hot	オン：何時間も保てる速度。熱くなっても遅くなりにくくなります
+Camera sensitivity	カメラ感度
+Slower camera: the right stick and the touch camera turn less	カメラが遅くなります：右スティックとタッチ操作の回転が小さくなります
+As on the Switch	Switchと同じ
+Faster camera: full speed with less of the stick	カメラが速くなります：少ない入力で最高速度に達します
