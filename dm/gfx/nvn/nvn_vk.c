@@ -1223,6 +1223,23 @@ static VkFramebuffer fbc_create(VkRenderPass rp, const VkImageView *views, uint3
 static int fbc_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_FB_CACHE"); on = !e || atoi(e) != 0; } return on; }
 // Begins a pass described as dynamic rendering. cf: each colour slot's format (a slot with no view: ignored), dsfmt: the depth / stencil attachment's format,
 //   samples: the attachments' sample count; swapchain: the one colour attachment is a swapchain image (framebuffer kept, see g_scfb)
+// DM_VK_LOG_PASSES=<n> (test build default 3000, 0 off): each of the first n pass begins logged before the driver sees it, with every attachment (a crash inside the
+//   driver's pass begin, Arm's r44p1 at frame 3: the last line names the pass it died on). pass_begin adds a [pass-att] line per attachment with its image
+static int g_logpass_left = -1;
+static int logpass_on(void) { if (g_logpass_left < 0) { const char *e = getenv("DM_VK_LOG_PASSES"); g_logpass_left = e ? atoi(e) : 3000; } return g_logpass_left > 0; }
+static void rend_begin_log(int site, VkCommandBuffer cb, const VkRenderingInfo *ri, const uint32_t *cf, uint32_t dsfmt, uint32_t samples, int swapchain) {
+    static unsigned long n;
+    if (!logpass_on()) return;
+    g_logpass_left--;
+    VLOG("[pass] #%lu site %d frame %lu cb %p area %d,%d %ux%u layers %u colours %u depth %p stencil %p dsfmt %u samples %u swapchain %d", n++, site, (unsigned long)g_frame_no,
+         (void *)cb, ri->renderArea.offset.x, ri->renderArea.offset.y, ri->renderArea.extent.width, ri->renderArea.extent.height, ri->layerCount, ri->colorAttachmentCount,
+         ri->pDepthAttachment ? (void *)ri->pDepthAttachment->imageView : NULL, ri->pStencilAttachment ? (void *)ri->pStencilAttachment->imageView : NULL, dsfmt, samples, swapchain);
+    for (uint32_t i = 0; i < ri->colorAttachmentCount && i < 8; i++) {
+        const VkRenderingAttachmentInfo *c = &ri->pColorAttachments[i];
+        VLOG("[pass]   colour %u view %p fmt %u layout %d load %d store %d resolve %p", i, (void *)c->imageView, cf ? cf[i] : 0, (int)c->imageLayout, (int)c->loadOp, (int)c->storeOp,
+             (void *)c->resolveImageView);
+    }
+}
 static void rend_begin(VkCommandBuffer cb, const VkRenderingInfo *ri, const uint32_t *cf, uint32_t dsfmt, uint32_t samples, int swapchain) {
     if (g_dynren) { vkCmdBeginRendering(cb, ri); return; }
     rpkey k; memset(&k, 0, sizeof k); k.n = (uint8_t)ri->colorAttachmentCount; k.samples = (uint8_t)(samples ? samples : 1);
@@ -1261,6 +1278,10 @@ static void rend_begin(VkCommandBuffer cb, const VkRenderingInfo *ri, const uint
     VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb, .renderArea = ri->renderArea, .clearValueCount = nv, .pClearValues = cv };
     vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
 }
+static void rend_begin_at(int site, VkCommandBuffer cb, const VkRenderingInfo *ri, const uint32_t *cf, uint32_t dsfmt, uint32_t samples, int swapchain) {
+    rend_begin_log(site, cb, ri, cf, dsfmt, samples, swapchain); rend_begin(cb, ri, cf, dsfmt, samples, swapchain);
+}
+#define REND_BEGIN(...) rend_begin_at(__LINE__, __VA_ARGS__)
 static void rend_end(VkCommandBuffer cb) { if (g_dynren) vkCmdEndRendering(cb); else vkCmdEndRenderPass(cb); }
 
 // The marker of a submission that failed with imported pools (see mtl_init): set = 1 writes it, 0 tells whether it is there
@@ -2608,9 +2629,39 @@ static void td_note(vtex *x, uint64_t ser, uint32_t lv, uint32_t sl) {
 static void tf_pass_begin(void) {
     pass_end(); memset(&P, 0, sizeof P);
     VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {1, 1}}, .layerCount = 1 };
-    rend_begin(CB(), &ri, NULL, 0, 1, 0); P.open = 1; P.tw = P.th = 1; P.samples = 1;
+    REND_BEGIN(CB(), &ri, NULL, 0, 1, 0); P.open = 1; P.tw = P.th = 1; P.samples = 1;
 }
 static uint64_t g_stat_begins;   // vkCmdBeginRendering calls (the present line's statistics)
+// Arm's driver (r44p1: Mali-G720 MC12 on a Galaxy Tab S10+, and the G615 MC2's "three frames in" crash) closes the game at the first pass with no attachments at all:
+//   vkCmdBeginRendering (vkCmdBeginRenderPass too) walks an attachment list that is NULL there (SIGSEGV at 0x90 in libGLES_mali.so, frame 3). Sword / Shield make such
+//   passes (a target with no format, a 1x1 viewport). There the pass gets a colour attachment nothing reads: one scratch R8G8B8A8 image at least the pass's size (grown
+//   when a larger pass comes; the old one stays alive for the command buffers that may still use it). On for Arm's driver; DM_VK_BARE_ATT=1 / 0 forces it on / off
+static int bare_att_on(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("DM_VK_BARE_ATT"); v = e ? atoi(e) != 0 : g_props.vendorID == 0x13B5;
+        if (v) VLOG("passes with no attachments get a scratch colour attachment (Arm's driver walks a NULL attachment list there; DM_VK_BARE_ATT)"); }
+    return v;
+}
+static VkImageView bare_att_view(uint32_t w, uint32_t h, VkCommandBuffer cb) {   // cb: outside a pass (the layout change is recorded there)
+    static VkImageView view; static uint32_t bw, bh;
+    if (view && w <= bw && h <= bh) return view;
+    uint32_t nw = w > bw ? w : bw, nh = h > bh ? h : bh; if (nw < 16) nw = 16; if (nh < 16) nh = 16;
+    VkImageCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = {nw, nh, 1}, .mipLevels = 1,
+        .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT };
+    VkImage img; if (vkCreateImage(g_dev, &ci, NULL, &img) != VK_SUCCESS) { RED_ONCE(113, "scratch colour attachment: vkCreateImage failed"); return view; }
+    VkMemoryRequirements rq; vkGetImageMemoryRequirements(g_dev, img, &rq); vmalloc_t a = vk_alloc(rq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+    VKCHECK(vkBindImageMemory(g_dev, img, a.b->mem, a.off));
+    VkImageViewCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R8G8B8A8_UNORM,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    VkImageView nv; VKCHECK(vkCreateImageView(g_dev, &vi, NULL, &nv));
+    VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = img,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+    view = nv; bw = nw; bh = nh;
+    VLOG("pass with no attachments: scratch colour attachment %ux%u", nw, nh);
+    return view;
+}
 static int pass_begin(void) {
     if (P.open) return 1;
     if (!R.has_rt) { RED_ONCE(21, "draw with no render target set"); return 0; }
@@ -2630,6 +2681,10 @@ static int pass_begin(void) {
         ca[i].loadOp = R.clear_c[i] ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; ca[i].clearValue.color = R.cc[i];
         VkFormat f = x->fmt; if (R.rt.has_cview[i] && R.rt.cview[i].set_format) { uint32_t vf = 0; uint8_t s[4]; if (nvn_fmt_to_vk(R.rt.cview[i].format, &vf, s) && vf) f = (VkFormat)vf; }
         P.cfmt[i] = (uint32_t)f; P.samples = x->samples; if (w < tw) tw = w; if (h < th) th = h; any = 1; ncol = i + 1;
+        if (logpass_on()) VLOG("[pass-att] colour %d ser=%llu img %p view %p image %ux%ux%u fmt %d nvn %d view fmt %d levels %u layers %u samples %u usage %#x aspect %#x 3d %d cube %d att %ux%u att layers %u view base level %d layer %d drop %d alt %p",
+            i, (unsigned long long)R.rt.color[i]->serial, (void *)x->img, (void *)v, x->w, x->h, x->d, (int)x->fmt, x->nvn_fmt, (int)f, x->levels, x->layers, x->samples, (unsigned)x->usage,
+            (unsigned)x->aspect, x->is3d, x->cube_ok, w, h, g_att_layers, R.rt.has_cview[i] && R.rt.cview[i].set_levels ? (int)R.rt.cview[i].base_level : -1,
+            R.rt.has_cview[i] && R.rt.cview[i].set_layers ? (int)R.rt.cview[i].min_layer : -1, x->drop, (void *)x->alt);
         if (TD_TRACE) VLOG("[trace] pass colour %d ser=%llu %ux%u fmt %d %s", i, (unsigned long long)R.rt.color[i]->serial, w, h, (int)x->fmt, R.clear_c[i] ? "clear" : "load");
         td_note(x, R.rt.color[i]->serial, R.rt.has_cview[i] && R.rt.cview[i].set_levels ? R.rt.cview[i].base_level : 0, R.rt.has_cview[i] && R.rt.cview[i].set_layers ? R.rt.cview[i].min_layer : 0);
     }
@@ -2642,6 +2697,9 @@ static int pass_begin(void) {
             if (x->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) { sa.imageView = v; sa.imageLayout = VK_IMAGE_LAYOUT_GENERAL; sa.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
                 sa.loadOp = R.clear_s ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD; sa.clearValue.depthStencil.stencil = R.cs; P.hs = 1; P.sfmt = (uint32_t)x->fmt; }
             P.samples = x->samples; if (w < tw) tw = w; if (h < th) th = h; any = 1;
+            if (logpass_on()) VLOG("[pass-att] depth img %p view %p image %ux%ux%u fmt %d nvn %d levels %u layers %u samples %u usage %#x aspect %#x att %ux%u att layers %u view base level %d layer %d",
+                (void *)x->img, (void *)v, x->w, x->h, x->d, (int)x->fmt, x->nvn_fmt, x->levels, x->layers, x->samples, (unsigned)x->usage, (unsigned)x->aspect, w, h, g_att_layers,
+                R.rt.has_dview && R.rt.dview.set_levels ? (int)R.rt.dview.base_level : -1, R.rt.has_dview && R.rt.dview.set_layers ? (int)R.rt.dview.min_layer : -1);
         }
     }
     if (!any) {   // no target attached: an attachment-less pass at the viewport's size (nvn_mtl.m bare_dims), or nothing when targets were set but none could be attached
@@ -2658,6 +2716,9 @@ static int pass_begin(void) {
         }
         double x1 = S.has_vp ? fmax(S.vp[0][0], S.vp[0][0] + S.vp[0][2]) : R.has_sc ? (double)R.sc.x + R.sc.w : 1, y1 = S.has_vp ? fmax(S.vp[0][1], S.vp[0][1] + S.vp[0][3]) : R.has_sc ? (double)R.sc.y + R.sc.h : 1;
         tw = (uint32_t)fmin(fmax(ceil(x1), 1), 16384); th = (uint32_t)fmin(fmax(ceil(y1), 1), 16384); P.samples = 1;
+        if (bare_att_on()) { VkImageView bv = bare_att_view(tw, th, CB());   // (Arm's driver: a colour attachment nothing reads, see bare_att_view)
+            if (bv) { ca[0].imageView = bv; ca[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL; ca[0].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; ca[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                P.cfmt[0] = (uint32_t)VK_FORMAT_R8G8B8A8_UNORM; ncol = 1; } }
     }
     if (!P.samples) P.samples = 1;
     P.tw = tw; P.th = th; P.ncolor = ncol; P.layers = nlay ? nlay : 1;
@@ -2666,7 +2727,7 @@ static int pass_begin(void) {
     uint64_t pt2 = prof ? mono_ns() : 0;
     VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, {tw, th}}, .layerCount = nlay ? nlay : 1, .colorAttachmentCount = (uint32_t)ncol, .pColorAttachments = ca,
                            .pDepthAttachment = P.hd ? &da : NULL, .pStencilAttachment = P.hs ? &sa : NULL };
-    rend_begin(CB(), &ri, P.cfmt, P.hd ? P.dfmt : P.hs ? P.sfmt : 0, P.samples, 0); g_stat_begins++;
+    REND_BEGIN(CB(), &ri, P.cfmt, P.hd ? P.dfmt : P.hs ? P.sfmt : 0, P.samples, 0); g_stat_begins++;
     if (prof) { uint64_t pt3 = mono_ns(); g_pb_ns[0] += pt1 - pt0; g_pb_ns[1] += pt2 - pt1; g_pb_ns[2] += pt3 - pt2; }
     {   // a pass onto exactly the attachments of the one a target change just ended (the same views, size and layers): one that could have gone on (g_pass_samev)
         VkImageView v[9] = { 0 }; for (int i = 0; i < ncol; i++) v[i] = ca[i].imageView; v[8] = P.hd ? da.imageView : P.hs ? sa.imageView : VK_NULL_HANDLE;
@@ -3543,7 +3604,7 @@ static int clear_slice_by_pass(int ci, const VkClearValue *v, VkRect2D rc) {
     VkRenderingAttachmentInfo ca = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = sv, .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
                                      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE, .clearValue = *v };
     VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = rc, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca };
-    rend_begin(CB(), &ri, &cf, 0, samples, 0); rend_end(CB()); barrier_all(CB());
+    REND_BEGIN(CB(), &ri, &cf, 0, samples, 0); rend_end(CB()); barrier_all(CB());
     static int n; if (++n <= 4) VLOG("clear in a layered pass (3D target, slice %u, %ux%u): a pass of its own", ly, rc.extent.width, rc.extent.height);
     return 1;
 }
@@ -3976,7 +4037,7 @@ static int ovl_draw_turned(VkCommandBuffer cb, VkImage img, VkImageView view, Vk
         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
     VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, ext }, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca };
     { uint32_t cf = (uint32_t)fmt; int sc = 0; for (uint32_t i = 0; i < W.n; i++) if (W.view[i] == view) sc = 1;   // (a screenshot's own image: a framebuffer per pass)
-      rend_begin(cb, &ri, &cf, 0, 1, sc); }
+      REND_BEGIN(cb, &ri, &cf, 0, 1, sc); }
     VkViewport v = { 0, 0, (float)ext.width, (float)ext.height, 0, 1 }; VkRect2D sc = { {0, 0}, ext };
     vkCmdSetViewport(cb, 0, 1, &v); vkCmdSetScissor(cb, 0, 1, &sc);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, O.pipe);
@@ -4111,7 +4172,7 @@ static int scale_draw(VkCommandBuffer cb, vtex *x, int32_t cx, int32_t cy, int32
     VkRenderingAttachmentInfo ca = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = W.view[ii], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };   // (LOAD: the black the caller cleared stays around the box)
     VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, W.ext }, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca };
-    { uint32_t cf = (uint32_t)W.fmt; rend_begin(cb, &ri, &cf, 0, 1, 1); }
+    { uint32_t cf = (uint32_t)W.fmt; REND_BEGIN(cb, &ri, &cf, 0, 1, 1); }
     // the whole image: the box is in the vertices. The vertices are one triangle twice the box's size (scale.vert / sgsr.vert), so the scissor must be the box: with the whole image
     //   the picture spilled past the box's right edge and the triangle's long edge cut the corner below it diagonally (a 2560x1440 picture on a 3120x1440 Galaxy S25+)
     VkViewport v = { 0, 0, (float)W.ext.width, (float)W.ext.height, 0, 1 };
