@@ -2357,7 +2357,8 @@ static int g_cap_wait, g_cap_n, g_cap_layout, g_cap_draws, g_cap_ntex; static in
 // Draw by draw (values.txt): in the frame's first full-screen B10G11R11 pass (the lit scene), colour 0's 12 points after each of its first CAPD draws, and each draw's
 //   fragment shader: on a GPU whose scene comes out white (Mali, #47 / #53 / #64 / #68 / #69) the first draw that leaves them at the format's maximum names the shader
 enum { CAPD = 128 };
-static int g_cap_dp, g_cap_nd; static char g_cap_dkey[CAPD][17];   // g_cap_dp: 0 not chosen yet, 1 in that pass, 2 done
+static int g_cap_dp, g_cap_nd; static char g_cap_dkey[CAPD][17];
+static char *g_cap_din[CAPD];   // draws.txt: each recorded draw's inputs as the CPU sees them when it is recorded (cap_draw_inputs)   // g_cap_dp: 0 not chosen yet, 1 in that pass, 2 done
 static VkImage g_cap_img; static vmalloc_t g_cap_ia; static VkBuffer g_cap_buf; static vmalloc_t g_cap_ba;
 static char *g_cap_meta; static size_t g_cap_len, g_cap_size; static uint64_t g_cap_frame;
 static void cap_printf(const char *f, ...) {
@@ -2373,7 +2374,7 @@ static int cap_start(void) {
     VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)CAPN * CAPW * CAPH * 4 + (VkDeviceSize)CAPS * CAPP * 16 + (VkDeviceSize)CAPD * CAPP * 16, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
     if (vkCreateBuffer(g_dev, &bi, NULL, &g_cap_buf)) { vkDestroyImage(g_dev, g_cap_img, NULL); vk_free(g_cap_ia); return 0; }
     vkGetBufferMemoryRequirements(g_dev, g_cap_buf, &rq); g_cap_ba = vk_alloc(rq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1); vkBindBufferMemory(g_dev, g_cap_buf, g_cap_ba.b->mem, g_cap_ba.off);
-    g_cap_n = 0; g_cap_layout = 0; g_cap_draws = 0; g_cap_ntex = 0; g_cap_len = 0; g_cap_ns = 0; g_cap_dp = 0; g_cap_nd = 0;
+    g_cap_n = 0; g_cap_layout = 0; g_cap_draws = 0; g_cap_ntex = 0; g_cap_len = 0; g_cap_ns = 0; g_cap_dp = 0; g_cap_nd = 0; for (int i_ = 0; i_ < CAPD; i_++) { free(g_cap_din[i_]); g_cap_din[i_] = NULL; }
     cap_printf("Frame capture, present %llu. GPU %s (vendor %#x, driver %#x, Vulkan %u.%u). BC textures %s; BC layer %s; float controls %s.\n", (unsigned long long)g_cap_frame, g_props.deviceName, g_props.vendorID,
                g_props.driverVersion, VK_API_VERSION_MAJOR(g_props.apiVersion), VK_API_VERSION_MINOR(g_props.apiVersion),
                nvn_fmt_vk_transcode(0x46) ? "transcoded on upload" : nvn_fmt_vk_decode(0x46) ? "decoded on upload" : "sampled by the GPU", g_bcgpu ? "on" : "off", g_fctl ? "on" : "off");
@@ -2476,6 +2477,13 @@ static void cap_write(void) {
                     }
                 }
                 ok &= fczip_add(z, "values.txt", t, len); free(t);
+            }
+            if (g_cap_nd) {   // draws.txt (cap_draw_inputs): compare the first draw that reaches 'max' in values.txt with earlier draws of the same fragment shader
+                size_t cap = 256, len = 0; for (int d = 0; d < g_cap_nd; d++) cap += g_cap_din[d] ? strlen(g_cap_din[d]) + 1 : 0;
+                char *t = malloc(cap);
+                if (t) { len = (size_t)snprintf(t, cap, "The inputs of the lit pass's first %d draws (numbered as in values.txt), read by the CPU when each draw was recorded.\n\n", g_cap_nd);
+                    for (int d = 0; d < g_cap_nd; d++) if (g_cap_din[d] && len < cap) len += (size_t)snprintf(t + len, cap - len, "%s\n", g_cap_din[d]);
+                    ok &= fczip_add(z, "draws.txt", t, len < cap ? len : cap - 1); free(t); }
             }
         }
         ok &= fczip_close(z);
@@ -3181,6 +3189,76 @@ static int g_vprof = -1; static uint64_t g_vp_t[4], g_vp_n, g_vp_o[5], g_vp_pass
 static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark);
 // the frame capture's draw by draw values (g_cap_dp): after a draw of the chosen pass, the pass is ended (without logging it), colour 0's 12 points copied, and the pass
 //   opened again (loading: its clears were taken when it first began). Only in the one captured frame
+// draws.txt (the Mali white screen, #47 #110 #111: in the lit pass one draw pushes a pixel to the format's maximum while earlier draws with the same fragment shader are
+//   fine, so its own inputs differ): for each draw cap_draw_values records, its vertex attributes (format, stream, stride, divisor, whether the driver lists the format for
+//   vertex buffers, reads past the stream's bound size, and over the draw's vertices the largest magnitude and NaN / infinity counts of float formats) and its vertex and
+//   fragment uniform buffers (size, the same statistics over what the shader may read, the first 16 values)
+static void cap_stats(const uint8_t *p, size_t n, int half, double *mx, unsigned *nan_, unsigned *inf_, unsigned *big) {
+    for (size_t i = 0; i + (half ? 2 : 4) <= n; i += half ? 2 : 4) {
+        float f; if (half) { uint16_t h; memcpy(&h, p + i, 2); uint32_t e = h >> 10 & 31, m = h & 1023; f = e == 31 ? (m ? NAN : INFINITY) : e ? ldexpf(1.0f + m / 1024.0f, (int)e - 15) : ldexpf(m / 1024.0f, -14); if (h & 0x8000) f = -f; }
+        else memcpy(&f, p + i, 4);
+        if (isnan(f)) (*nan_)++; else if (isinf(f)) (*inf_)++; else { double a = fabs((double)f); if (a > *mx) *mx = a; if (a >= 1e4) (*big)++; }
+    }
+}
+static void cap_draw_inputs(int d, const p_draw *dw, const p_draw_idx *di) {
+    if (d < 0 || d >= CAPD || g_cap_din[d]) return;
+    size_t cap = 16384, len = 0; char *t = malloc(cap); if (!t) return; t[0] = 0;
+    #define DP(...) do { if (len < cap) len += (size_t)snprintf(t + len, cap - len, __VA_ARGS__); } while (0)
+    vprog *pr = S.prog ? prog_get(S.prog) : NULL; vshader *vs = pr ? pr->sh[0] : NULL;
+    DP("draw %d: vertex %s fragment %s; ", d + 1, vs ? vs->key : "-", pr && pr->sh[1] ? pr->sh[1]->key : "-");
+    // the vertices it reads: an indexed draw's index range (read from guest memory, at most 1M indices), else first .. first + count
+    int64_t vmin = 0, vmax = -1; uint32_t inst0 = 0, ninst = 1;
+    if (di) {
+        inst0 = (uint32_t)di->base_instance; ninst = di->instances > 0 ? (uint32_t)di->instances : 1;
+        DP("indexed (%d-byte), %d indices, base vertex %d, %u instances from %u\n", di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4, di->count, di->base_vertex, ninst, inst0);
+        if (di->ind) DP("  (indirect: the arguments are on the GPU)\n");
+        else if (di->ibuf && di->count > 0) { int isz = di->itype == 0 ? 1 : di->itype == 1 ? 2 : 4; const uint8_t *ip = (const uint8_t *)(uintptr_t)di->ibuf; uint32_t lo = UINT32_MAX, hi = 0;
+            for (int i = 0; i < di->count && i < (1 << 20); i++) { uint32_t v = isz == 1 ? ip[i] : isz == 2 ? ((const uint16_t *)ip)[i] : ((const uint32_t *)ip)[i];
+                if ((isz == 2 && v == 0xffff) || (isz == 4 && v == 0xffffffffu)) continue;   // (primitive restart)
+                if (v < lo) lo = v; if (v > hi) hi = v; }
+            if (lo <= hi) { vmin = (int64_t)lo + di->base_vertex; vmax = (int64_t)hi + di->base_vertex; } }
+    } else if (dw) {
+        inst0 = (uint32_t)dw->base_instance; ninst = dw->instances > 0 ? (uint32_t)dw->instances : 1;
+        DP("%d vertices from %d, %u instances from %u\n", dw->count, dw->first, ninst, inst0);
+        if (dw->ind) DP("  (indirect: the arguments are on the GPU)\n"); else { vmin = dw->first; vmax = (int64_t)dw->first + dw->count - 1; }
+    }
+    if (vmax >= vmin) DP("  vertices %lld .. %lld\n", (long long)vmin, (long long)vmax);
+    for (int i = 0; vs && i < vs->nin; i++) {
+        uint32_t loc = vs->in[i].location;
+        if ((int)loc >= S.nattr || !S.attr[loc].fmt) { DP("  attribute %u: unbound (reads 0)\n", loc); continue; }
+        int st = S.attr[loc].stream; VkFormat f = vfmt_for(S.attr[loc].fmt, vs->in[i].sclass);
+        VkFormatProperties fp = { 0 }; if (f) vkGetPhysicalDeviceFormatProperties(g_pd, f, &fp);
+        uint32_t stride = st < 16 ? S.stream[st].stride : 0, div = st < 16 ? S.stream[st].divisor : 0, off = S.attr[loc].offset;
+        uint64_t addr = st < 16 ? S.vbuf[st].address : 0, bsz = st < 16 ? S.vbuf[st].size : 0;
+        DP("  attribute %u: nvn %#x vk %d (shader reads %d x %s), stream %d, offset %u, stride %u, divisor %u, vertex format %s, stream %#llx size %llu\n",
+           loc, (unsigned)S.attr[loc].fmt, (int)f, vs->in[i].ncomp, vs->in[i].sclass == 1 ? "uint" : vs->in[i].sclass == 2 ? "sint" : "float", st, off, stride, div,
+           !f ? "NOT MAPPED" : fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT ? "listed" : "NOT LISTED by the driver", (unsigned long long)addr, (unsigned long long)bsz);
+        int fsz = 0, half = 0;   // float formats whose values are scanned: 16-bit and 32-bit
+        if (f == VK_FORMAT_R16_SFLOAT || f == VK_FORMAT_R16G16_SFLOAT || f == VK_FORMAT_R16G16B16_SFLOAT || f == VK_FORMAT_R16G16B16A16_SFLOAT) { half = 1; fsz = f == VK_FORMAT_R16_SFLOAT ? 2 : f == VK_FORMAT_R16G16_SFLOAT ? 4 : f == VK_FORMAT_R16G16B16_SFLOAT ? 6 : 8; }
+        if (f == VK_FORMAT_R32_SFLOAT || f == VK_FORMAT_R32G32_SFLOAT || f == VK_FORMAT_R32G32B32_SFLOAT || f == VK_FORMAT_R32G32B32A32_SFLOAT) fsz = f == VK_FORMAT_R32_SFLOAT ? 4 : f == VK_FORMAT_R32G32_SFLOAT ? 8 : f == VK_FORMAT_R32G32B32_SFLOAT ? 12 : 16;
+        int64_t a0 = div ? (int64_t)inst0 / div : vmin, a1 = div ? (int64_t)(inst0 + ninst - 1) / div : vmax;
+        if (!addr || a1 < a0) continue;
+        uint64_t need = (uint64_t)a1 * stride + off + (fsz ? (uint64_t)fsz : 4);
+        if (bsz && need > bsz) DP("    READS PAST THE STREAM: element %lld needs %llu bytes of %llu\n", (long long)a1, (unsigned long long)need, (unsigned long long)bsz);
+        const uint8_t *b = (const uint8_t *)(uintptr_t)addr; int64_t lim = bsz && stride ? ((int64_t)bsz - (int64_t)off - (fsz ? fsz : 4)) / (int64_t)stride : a1; if (a1 > lim) a1 = lim;
+        if (a1 - a0 > 200000) a1 = a0 + 200000;
+        if (fsz) { double mx = 0; unsigned nn = 0, ni = 0, nb = 0;
+            for (int64_t v = a0; v <= a1; v++) cap_stats(b + (size_t)v * stride + off, (size_t)fsz, half, &mx, &nn, &ni, &nb);
+            DP("    elements %lld .. %lld: largest %.4g, NaN %u, infinite %u, 1e4 or more %u\n", (long long)a0, (long long)a1, mx, nn, ni, nb); }
+        if (a1 >= a0) { DP("    element %lld bytes:", (long long)a0); for (int k = 0; k < 16; k++) DP(" %02x", b[(size_t)a0 * stride + off + (size_t)k]); DP("\n"); }
+    }
+    for (int st = 0; st < 2; st++) for (int r = 0; r < 16; r++) {   // stage 0 vertex, 1 fragment
+        const p_bind_buf *u = &S.ubo[st][r]; if (!u->addr) continue;
+        size_t n = u->size ? (size_t)u->size + 4096 : 65536; if (n > 65536) n = 65536;   // what the shader may read: the bound size and the lighting's reads past it, at most a 64 KB block
+        { VkBuffer pb; VkDeviceSize po, left; if (pool_buf(u->addr, 1, &pb, &po, &left) && left < n) n = (size_t)left; }
+        double mx = 0; unsigned nn = 0, ni = 0, nb = 0; cap_stats((const uint8_t *)(uintptr_t)u->addr, n, 0, &mx, &nn, &ni, &nb);
+        DP("  %s uniform buffer %d: %#llx, bound %llu bytes, scanned %zu: largest %.4g, NaN %u, infinite %u, 1e4 or more %u\n    first values:", st ? "fragment" : "vertex", r,
+           (unsigned long long)u->addr, (unsigned long long)u->size, n, mx, nn, ni, nb);
+        const float *fv = (const float *)(uintptr_t)u->addr; for (int k = 0; k < 16 && (size_t)k * 4 < n; k++) DP(" %.4g", fv[k]); DP("\n");
+    }
+    #undef DP
+    g_cap_din[d] = t;
+}
 static void cap_draw_values(void) {
     if (!P.open || g_cap_nd >= CAPD) return;
     const tex_t *ct = R.rt.color[0]; vtex *x = ct ? tex_res(ct) : NULL; if (!x || !x->img || x->samples > 1) return;
@@ -3198,7 +3276,7 @@ static void cap_draw_values(void) {
 static void draw(const p_draw *dw, const p_draw_idx *di) {
     if (atomic_load(&g_cap) == 2) { g_cap_draws++;
         if (g_cap_draws <= 3 && S.prog) { vprog *cp = prog_get(S.prog); if (cp && cp->sh[0]) cap_printf("  draw %d: vertex %s fragment %s\n", g_cap_draws, cp->sh[0]->key, cp->sh[1] ? cp->sh[1]->key : "-"); } }
-    if (atomic_load(&g_cap) == 2 && g_cap_dp < 2) { draw_(dw, di, NULL); cap_draw_values(); return; }
+    if (atomic_load(&g_cap) == 2 && g_cap_dp < 2) { int nd0 = g_cap_nd; draw_(dw, di, NULL); cap_draw_values(); if (g_cap_nd > nd0) cap_draw_inputs(nd0, dw, di); return; }
     if (!VPROF_ON) { draw_(dw, di, NULL); return; }
     uint64_t m[5] = { mono_ns(), 0, 0, 0, 0 }; draw_(dw, di, m); uint64_t e = mono_ns();
     for (int i = 0; i < 4; i++) { uint64_t a = m[i], b = m[i + 1] ? m[i + 1] : e; if (b > a) g_vp_t[i] += b - a; if (!m[i + 1]) break; }
