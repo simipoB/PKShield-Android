@@ -600,6 +600,69 @@ uint32_t *spv_nan_select(const uint32_t *code, size_t words, size_t *out_words) 
     free(nc); o[3] = next; *out_words = w; return o;
 }
 
+// Maxwell's special functions have exact answers where SPIR-V's are undefined: MUFU.LG2 gives -inf for 0 and NaN for a negative number, MUFU.EX2 0 below 2^-126 (it flushes
+// the denormal) and +inf above 2^128, MUFU.RSQ +inf for 0 and NaN for a negative number, and F2I clamps to the integer's range with NaN giving 0. GLSL.std.450 Log2 / Exp2 /
+// InverseSqrt / Sqrt and OpConvertFToU / FToS leave those cases to the driver, and a driver with fast approximations may answer anything there. The translated lighting
+// takes pow (x, y) as exp2 (log2 (x) * y) of max (0, x): x is 0 on every surface facing away from a light, which Maxwell turns into exp2 (-inf) = 0; on Arm's own Mali driver
+// the lit pass came out at the format's maximum on every Mali-G615 / G720 / G925 while PanVK drew the same shaders on the same phones (#47, v0.67 captures).
+// A copy in which each scalar 32-bit float op of the classes in mask (EXACT_*) has Maxwell's answer written out with OpSelect; vectors are left as they are (the translator
+// writes scalars). NULL when the module has none
+uint32_t *spv_exact_math(const uint32_t *code, size_t words, size_t *out_words, unsigned mask) {
+    enum { OpExtInstImport = 11, OpExtInst = 12, OpTypeBool = 20, OpTypeFloat = 22, OpConstant = 43, OpFunction = 54, OpConvertFToU = 109, OpConvertFToS = 110,
+           OpIsNan = 156, OpSelect = 169, OpFOrdEqual = 180, OpFOrdLessThan = 184, OpFOrdGreaterThan = 186,
+           Exp2 = 29, Log2 = 30, Sqrt = 31, InverseSqrt = 32, FClamp = 43 };
+    enum { C_ZERO, C_NINF, C_PINF, C_NAN, C_M126, C_P128, C_U_HI, C_S_LO, C_S_HI, NC };
+    static const uint32_t cval[NC] = { 0x00000000u, 0xff800000u, 0x7f800000u, 0x7fc00000u, 0xc2fc0000u, 0x43000000u, 0x4f7fffffu, 0xcf000000u, 0x4effffffu };
+    if (words < 5 || code[0] != 0x07230203u || !mask) return NULL;
+    uint32_t bound = code[3], glsl = 0, tbool = 0, tf32 = 0; size_t hits = 0, extra = 0, first_fn = 0;
+    if (!bound || bound > (1u << 22)) return NULL;
+    #define KIND(x, n) ((x)[0] & 0xffff) == OpExtInst && (n) == 6 && glsl && (x)[3] == glsl && tf32 && (x)[1] == tf32 ? \
+        ((x)[4] == Log2 && (mask & EXACT_LOG2) ? 1 : (x)[4] == Exp2 && (mask & EXACT_EXP2) ? 2 : (x)[4] == InverseSqrt && (mask & EXACT_RSQ) ? 3 : (x)[4] == Sqrt && (mask & EXACT_SQRT) ? 4 : 0) : \
+        (((x)[0] & 0xffff) == OpConvertFToU || ((x)[0] & 0xffff) == OpConvertFToS) && (n) == 4 && (mask & EXACT_FTOI) && glsl && tf32 ? 5 : 0
+    uint8_t *isf = calloc(bound, 1); if (!isf) return NULL;   // ids whose type is the 32-bit float (operands of the conversions)
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) { free(isf); return NULL; } const uint32_t *x = code + i;
+        if (op == OpExtInstImport && n >= 3 && !strncmp((const char *)(x + 2), "GLSL.std.450", 4 * (n - 2))) glsl = x[1];
+        else if (op == OpTypeBool && n == 2) tbool = x[1];
+        else if (op == OpTypeFloat && n >= 3 && x[2] == 32 && !tf32) tf32 = x[1];
+        else if (op == OpFunction && !first_fn) first_fn = i;
+        if (n >= 3 && op != OpFunction && x[1] == tf32 && tf32 && x[2] < bound && (op == OpConstant || op >= 61)) isf[x[2]] = 1;   // (results of type float; 61 = OpLoad onwards)
+        int k = KIND(x, n);
+        if (k == 5 && !(x[3] < bound && isf[x[3]])) k = 0;
+        if (k) { hits++; extra += k <= 3 ? 22 : k == 4 ? 11 : 18; }   // (the words each rewrite adds)
+        i += n; }
+    if (!hits || !first_fn) { free(isf); return NULL; }
+    uint32_t *o = malloc(4 * (words + extra + 2 + 4 * NC)); if (!o) { free(isf); return NULL; }
+    uint32_t next = bound, c[NC]; size_t w = 0;
+    for (size_t i = 0; i < words;) {
+        size_t n = i < 5 ? 5 : code[i] >> 16; const uint32_t *x = code + i;
+        if (i == first_fn) {   // bool where the module has none, and the constants
+            if (!tbool) { tbool = next++; o[w++] = 2u << 16 | OpTypeBool; o[w++] = tbool; }
+            for (int j = 0; j < NC; j++) { c[j] = next++; o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = c[j]; o[w++] = cval[j]; }
+        }
+        int k = i >= 5 ? KIND(x, n) : 0;
+        if (k == 5 && !(x[3] < bound && isf[x[3]])) k = 0;
+        #define CMP(op, id, a, b) (o[w++] = 5u << 16 | (op), o[w++] = tbool, o[w++] = (id), o[w++] = (a), o[w++] = (b))
+        #define SEL(id, cnd, a, b) (o[w++] = 6u << 16 | OpSelect, o[w++] = tf32, o[w++] = (id), o[w++] = (cnd), o[w++] = (a), o[w++] = (b))
+        if (k >= 1 && k <= 4) {   // the op under a new id m, then Maxwell's answer for the edge cases under the op's own id
+            uint32_t res = x[2], a = x[5], m = next++; memcpy(o + w, x, 4 * n); o[w + 2] = m; w += n;
+            if (k == 1) { uint32_t z = next++, ng = next++, t = next++; CMP(OpFOrdEqual, z, a, c[C_ZERO]); CMP(OpFOrdLessThan, ng, a, c[C_ZERO]); SEL(t, ng, c[C_NAN], m); SEL(res, z, c[C_NINF], t); }
+            else if (k == 2) { uint32_t lo = next++, hi = next++, t = next++; CMP(OpFOrdLessThan, lo, a, c[C_M126]); CMP(OpFOrdGreaterThan, hi, a, c[C_P128]); SEL(t, hi, c[C_PINF], m); SEL(res, lo, c[C_ZERO], t); }
+            else if (k == 3) { uint32_t z = next++, ng = next++, t = next++; CMP(OpFOrdEqual, z, a, c[C_ZERO]); CMP(OpFOrdLessThan, ng, a, c[C_ZERO]); SEL(t, ng, c[C_NAN], m); SEL(res, z, c[C_PINF], t); }
+            else { uint32_t ng = next++; CMP(OpFOrdLessThan, ng, a, c[C_ZERO]); SEL(res, ng, c[C_NAN], m); }
+        } else if (k == 5) {   // the operand: NaN -> 0, then clamped to the integer's range, before the conversion
+            uint32_t a = x[3], nn = next++, s = next++, cl = next++; int u = (x[0] & 0xffff) == OpConvertFToU;
+            o[w++] = 4u << 16 | OpIsNan; o[w++] = tbool; o[w++] = nn; o[w++] = a;
+            SEL(s, nn, c[C_ZERO], a);
+            o[w++] = 8u << 16 | OpExtInst; o[w++] = tf32; o[w++] = cl; o[w++] = glsl; o[w++] = FClamp; o[w++] = s; o[w++] = u ? c[C_ZERO] : c[C_S_LO]; o[w++] = u ? c[C_U_HI] : c[C_S_HI];
+            memcpy(o + w, x, 4 * n); o[w + 3] = cl; w += n;
+        } else { memcpy(o + w, x, 4 * n); w += n; }
+        #undef CMP
+        #undef SEL
+        i += n; }
+    #undef KIND
+    free(isf); o[3] = next; *out_words = w; return o;
+}
+
 // Arm erratum 3779215 (Mali, Arm's own driver r38p1 to r49p0 and r50p0 to r51p0; fixed in r49p1 and r52p0): a min / max / clamp whose limit is a constant zero, of a value
 // selected at run time between compile-time constants, is compiled as a plain min or max: the value is no longer clamped. A copy in which that zero is one the compiler cannot
 // see as a constant: a Private variable per type, stored with the zero at the top of every entry point and loaded at the top of each function that uses it. Written from the
