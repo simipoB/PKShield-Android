@@ -283,7 +283,7 @@ Signed with the %s release key.	Firmada con la clave de publicación de %s.
 This copy was not signed by the %s project (signer %s). It may have been changed.	Esta copia no fue firmada por el proyecto %s (firmante %s). Puede haber sido modificada.
 Official downloads: %s	Descargas oficiales: %s
 Credits	Créditos
-Free software under the MIT License. This notice must stay with every copy.	Software libre con la licencia MIT. Este aviso debe acompañar a cada copia.
+Free software under the GNU GPL, version 3 or later (older parts also MIT). This notice must stay with every copy, and the source of every release is public.	Software libre con la licencia GNU GPL, versión 3 o posterior (las partes más antiguas también MIT). Este aviso debe acompañar a cada copia, y el código fuente de cada versión es público.
 Show the license	Ver la licencia
 Third-party code	Código de terceros
 Vibrate on press	Vibrar al pulsar

@@ -158,10 +158,12 @@ def main():
         z.writestr('assets/games', ''.join(f'{f.id}\t{f.get("name")}\t{_game.file_stem(f)}\t{list(f.builds().values())[-1]["display"]}\t{"heavy" if f.get("android_heavy", "off") == "on" else ""}\n' for f in fam))   # the games this app runs, its own first, with the version they need (GameSettings.games)
         z.writestr('assets/app', f'{a.name}\t{g.get("app_repo", "github.com/simipoB/Galar-Native-Android")}\n')   # the app's name and where its official releases are (SetupActivity)
         for t in sorted(glob.glob(os.path.join(ANDROID, 'app/assets/lang/*.tsv'))): z.write(t, 'assets/lang/' + os.path.basename(t))   # the app's text in other languages (T.java)
-        # the licences (GameMenu's About page): the app's own, MIT, whose notice must stay with every copy, then the third-party code and fonts the APK carries.
+        # the licences (GameMenu's About page): the app's own (NOTICE, then the GPL-3.0 text and the MIT notice its older code keeps), whose notice must stay with every
+        #   copy, then the third-party code and fonts the APK carries.
         #   licenses/index.tsv: file, name, what it is; the app's own first. A build without the app's LICENSE fails: an APK must not go out without its notice
         T3 = DM + '/third_party/'
-        lic = [('LICENSE.txt', [os.path.join(os.path.dirname(DM), 'LICENSE')], a.name, 'this app'),
+        ROOT = os.path.dirname(DM)
+        lic = [('LICENSE.txt', [os.path.join(ROOT, 'NOTICE'), os.path.join(ROOT, 'LICENSE'), os.path.join(ROOT, 'LICENSE-MIT')], a.name, 'this app'),
                ('libvpx.txt', [T3 + 'libvpx/LICENSE', T3 + 'libvpx/PATENTS'], 'libvpx', "VP9 video decoder (the games' movies)"),
                ('stb_vorbis.txt', [T3 + 'stb_vorbis/LICENSE'], 'stb_vorbis', "Ogg Vorbis audio decoder (the movies' sound)"),
                ('sgsr.txt', [T3 + 'sgsr/LICENSE'], 'Snapdragon Game Super Resolution', 'the sharp upscaler'),
@@ -170,7 +172,8 @@ def main():
                ('nvn-header.txt', [DM + '/gfx/nvn/include/nvn.h'], 'NVN header (h1k421)', "the Switch graphics interface's definitions"),
                ('cjk_fallback.txt', [ANDROID + '/app/assets/cjk_fallback.LICENSE.txt'], 'CJK fallback font', 'the Chinese and Korean text'),
                ('nintendo_ext.txt', [ANDROID + '/app/assets/nintendo_ext.LICENSE.txt'], 'Button icon font', 'the controller-button icons')]
-        if not os.path.isfile(lic[0][1][0]): sys.exit("build_apk: the app's LICENSE is missing (" + lic[0][1][0] + ")")
+        for p_ in lic[0][1]:
+            if not os.path.isfile(p_): sys.exit("build_apk: the app's license file is missing (" + p_ + ")")
         idx = []
         for f, srcs, name, what in lic:
             texts = []

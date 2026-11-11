@@ -74,6 +74,10 @@ Import a mod `.zip` (`romfs/` file replacements, `exefs/*.pchtxt` code patches f
 - Nintendo's online services (Surprise Trade, online battles and raids).
 - Wild Area water renders darker than on the Switch.
 
+## License
+
+Galar Native is free software under the **GNU General Public License, version 3 or later** ([LICENSE](LICENSE), [NOTICE](NOTICE)): you may use, share and change it, and anything you distribute that is based on it must be under the same license with its source available. The code that came from d2r-mobile / nxnative, and Galar Native's code from before the switch, also stay under their original [MIT notice](LICENSE-MIT). Lossless Scaling is not included: its frame generation uses the `Lossless.dll` from your own copy.
+
 ## Credits
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** and **nxnative** (MIT): the engine this is built on.

@@ -283,7 +283,7 @@ Signed with the %s release key.	Signée avec la clé de publication de %s.
 This copy was not signed by the %s project (signer %s). It may have been changed.	Cette copie n'a pas été signée par le projet %s (signataire %s). Elle a peut-être été modifiée.
 Official downloads: %s	Téléchargements officiels : %s
 Credits	Crédits
-Free software under the MIT License. This notice must stay with every copy.	Logiciel libre sous licence MIT. Cet avis doit accompagner chaque copie.
+Free software under the GNU GPL, version 3 or later (older parts also MIT). This notice must stay with every copy, and the source of every release is public.	Logiciel libre sous licence GNU GPL, version 3 ou ultérieure (les parties plus anciennes aussi sous MIT). Cet avis doit accompagner chaque copie, et le code source de chaque version est public.
 Show the license	Voir la licence
 Third-party code	Code tiers
 Vibrate on press	Vibrer à l'appui

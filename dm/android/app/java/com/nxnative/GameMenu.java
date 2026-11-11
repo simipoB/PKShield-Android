@@ -440,7 +440,7 @@ public final class GameMenu {
         if (!room.isEmpty()) button(a, r, t(a, "Leave room"), false, () -> { GameSettings.set(a, "DM_RELAY_ROOM", ""); RESTART.add("DM_RELAY_ROOM"); go("online"); });
     }
     // About: whether this copy is an official build (BuildSigner: signed with the release key), the credits, and the licences the APK carries (assets/licenses,
-    //   build_apk.py). The app is MIT: its copyright and licence notice must stay with every copy, so a repack that strips this page breaks the licence
+    //   build_apk.py). The app is GPL-3.0-or-later (its older code also MIT): its copyright and licence notice must stay with every copy, so a repack that strips this page breaks the licence
     private static String asset(Activity a, String name) {
         try (java.io.InputStream in = a.getAssets().open(name)) {
             java.io.ByteArrayOutputStream o = new java.io.ByteArrayOutputStream(); byte[] b = new byte[8192]; for (int n; (n = in.read(b)) > 0; ) o.write(b, 0, n); return o.toString("UTF-8");
@@ -466,11 +466,12 @@ public final class GameMenu {
         c.addView(link);
         // the credits: the copyright lines of the app's licence, then the licence itself
         String own = asset(a, "licenses/LICENSE.txt"); StringBuilder who = new StringBuilder();
-        for (String l : own.split("\n")) if (l.trim().startsWith("Copyright")) who.append(l.trim()).append('\n');
+        for (String l : own.split("\n")) { String s_ = l.trim();   // (not the GPL text's own copyright line, and each holder once: NOTICE and LICENSE-MIT both name them)
+            if (s_.startsWith("Copyright") && !s_.contains("Free Software Foundation") && who.indexOf(s_) < 0) who.append(s_).append('\n'); }
         if (who.length() == 0) who.append("Copyright (c) 2026 jhaizhou (d2r-mobile, nxnative)\nCopyright (c) 2026 the Galar Native (formerly PKShield Android) contributors\n");
         heading(a, t(a, "Credits"));
         LinearLayout cc = card(a); cc.addView(text(a, who.toString().trim(), 14, TEXT, false));
-        TextView mit = text(a, t(a, "Free software under the MIT License. This notice must stay with every copy."), 13, SUB, false); mit.setPadding(0, dp(a, 6), 0, 0); cc.addView(mit);
+        TextView mit = text(a, t(a, "Free software under the GNU GPL, version 3 or later (older parts also MIT). This notice must stay with every copy, and the source of every release is public."), 13, SUB, false); mit.setPadding(0, dp(a, 6), 0, 0); cc.addView(mit);
         if (!own.isEmpty()) reveal(a, cc, t(a, "Show the license"), own);
         // the third-party code and fonts (licenses/index.tsv: file, name, what it is)
         heading(a, t(a, "Third-party code"));
