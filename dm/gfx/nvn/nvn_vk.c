@@ -521,7 +521,7 @@ void mtl_init(void) {
 // ================= Device memory (images, internal buffers) =================
 // A first-fit allocator over 64 MB blocks per memory type (larger requests get a block of their own): drivers cap the number of allocations (4096 is common), and a game holds
 // thousands of textures
-typedef struct { VkDeviceMemory mem; VkDeviceSize size; uint32_t type; void *map; int nfree, cfree; struct { VkDeviceSize off, size; } *fr; int used; } vblock;
+typedef struct { VkDeviceMemory mem; VkDeviceSize size; uint32_t type; void *map; int nfree, cfree; struct { VkDeviceSize off, size; } *fr; int used; uint64_t idle_since; } vblock;   // idle_since: when used fell to 0 (vk_trim)
 typedef struct { vblock *b; VkDeviceSize off, size; } vmalloc_t;
 static vblock **g_blocks; static int g_nblocks; static pthread_mutex_t g_amu = PTHREAD_MUTEX_INITIALIZER;
 static int mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid) {
@@ -571,7 +571,27 @@ static vmalloc_t vk_alloc(VkMemoryRequirements rq, VkMemoryPropertyFlags want, i
 }
 static void vk_free(vmalloc_t a) {
     if (!a.b) return;
-    pthread_mutex_lock(&g_amu); fr_add(a.b, a.off, a.size); a.b->used--; pthread_mutex_unlock(&g_amu);
+    pthread_mutex_lock(&g_amu); fr_add(a.b, a.off, a.size); if (--a.b->used == 0) a.b->idle_since = mono_ns(); pthread_mutex_unlock(&g_amu);
+}
+// Blocks given back after a burst: a load fills blocks with upload buffers, copies and new textures, and an allocator that only ever takes blocks keeps that
+//   peak for the rest of the session (after loads on a Mali, memory grew in 256 MB steps until Android closed the game in another port of a Switch game).
+//   A block with nothing left in it for 10 s goes back to the driver; the first empty block of each memory type stays, so play does not free and take
+//   blocks again all the time. Nothing in an empty block is in use: everything the GPU may still read is freed only once it is done (defer_add, arena_reset).
+//   Every 300 presents; DM_VK_MEM_TRIM=0 keeps every block as before
+static uint64_t g_trim_bytes; static int g_trim_n;
+static void vk_trim(void) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_MEM_TRIM"); on = !(e && !strcmp(e, "0")); } if (!on) return;
+    uint64_t now = mono_ns(); uint32_t kept = 0; VkDeviceSize freed = 0; int nf = 0;   // kept: memory types that still have one empty block
+    pthread_mutex_lock(&g_amu);
+    for (int k = 0; k < g_nblocks;) {
+        vblock *b = g_blocks[k];
+        if (b->used || now - b->idle_since < 10000000000ull) { k++; continue; }
+        if (b->type < 32 && !(kept >> b->type & 1)) { kept |= 1u << b->type; k++; continue; }
+        vkFreeMemory(g_dev, b->mem, NULL);   // (a mapped block is unmapped by its freeing) freed += b->size; nf++;
+        free(b->fr); free(b); g_blocks[k] = g_blocks[--g_nblocks];
+    }
+    pthread_mutex_unlock(&g_amu);
+    if (nf) { g_trim_bytes += freed; g_trim_n += nf; static int said; if (said++ < 30) VLOG("device memory: %d empty block%s given back (%.0f MB; %.0f MB in all so far)", nf, nf == 1 ? "" : "s", freed / 1048576.0, g_trim_bytes / 1048576.0); }
 }
 
 // ================= Deferred destruction: objects the GPU may still use go when the submissions recorded so far are done =================
@@ -4901,7 +4921,7 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
              "stores skipped %llu (read after all %llu), depth / stencil begun store-none %llu (written after all %llu)", (unsigned long long)n,
              (unsigned long long)g_bar_full, (unsigned long long)g_bar_narrow, (unsigned long long)g_bar_none, (unsigned long long)g_ubd_deferred, (unsigned long long)g_ubd_conflicts,
              (unsigned long long)g_sk_skipped, (unsigned long long)g_sk_wrong, (unsigned long long)g_ro_passes, (unsigned long long)g_ro_wrong);
-    if (n % 300 == 0) pso_evict();   // (pipelines kept: Arm's driver, phones under 7.5 GB)
+    if (n % 300 == 0) { pso_evict(); vk_trim(); }   // (pipelines kept: Arm's driver, phones under 7.5 GB; empty device blocks given back)
     if (n % 300 == 0 && g_dsc_hits + g_dsc_new) VLOG("present %llu: descriptor sets written %llu, reused %llu (%.0f %%)", (unsigned long long)n, (unsigned long long)g_dsc_new, (unsigned long long)g_dsc_hits, 100.0 * (double)g_dsc_hits / (double)(g_dsc_hits + g_dsc_new));
     if (n == 1 || n % 300 == 0) VLOG("present %llu: %llu render target sets (%llu kept the open pass, %llu passes begun), %llu draws so far; textures uploaded %llu (re-uploaded %llu, %.1f MB)%s", (unsigned long long)n, (unsigned long long)g_stat_passes, (unsigned long long)g_stat_rt_same, (unsigned long long)g_stat_begins,
                                      (unsigned long long)g_stat_draws, (unsigned long long)g_pkg_uploads, (unsigned long long)g_pkg_reuploads, g_up_bytes / 1048576.0,
