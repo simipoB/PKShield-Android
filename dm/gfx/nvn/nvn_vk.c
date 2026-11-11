@@ -3878,7 +3878,9 @@ static int pace_time(VkPresentTimeGOOGLE *pt) {
     if (g_fg_pace) fps *= g_fg_mult;   // (g_fg_period, when known, replaces it below)
     uint64_t frame = 1000000000ull / (uint64_t)fps; if (g_fg_pace && g_fg_period) frame = g_fg_period / (uint64_t)g_fg_mult;
     uint64_t k = (frame + r / 2) / r; if (!k) k = 1;
-    uint64_t iv = k * r; int pace = !pace_off() && k >= 2;
+    // (frame generation asks times even one refresh apart: handed over unasked, two pictures that reach the compositor within one refresh show as one, the older
+    //   dropped; on the S25+ at 4x 908 of the 1200 pictures in 10 s were seen)
+    uint64_t iv = k * r; int pace = !pace_off() && (k >= 2 || g_fg_pace);
     if (p_past) {
         uint32_t n = 0;
         if (!p_past(g_dev, W.sc, &n, NULL) && n) {
@@ -4228,6 +4230,7 @@ static void *fg_thread(void *a) {
 // divides evenly (the game at 30 fps on 120 Hz: 4x; at 90 Hz: 3x; measured, fg_period), else 2x (3x at 120 Hz would show the pictures 1 and 2 refreshes apart in turn). Never above mult_cap, which a
 // GPU too slow for it lowers
 __attribute__((weak)) volatile int dm_lsfg_mult = -1;   // 0 auto, 2..4; -1 not read yet; the in-game menu sets it
+// (Auto, n refreshes a game frame: 4 or 8: 4x; 3 or 6: 3x; 2: 2x; 5, 7: 4x, the steps one refresh uneven)
 // The game's frame time for frame generation: what it measures (a running mean of the frame intervals, pauses left out), never below the target's, in whole
 // refreshes when the display's are known. A game meant for 60 that runs at 30 is treated as 30: pictures go between its frames as they come, 4x at 120 Hz
 static uint64_t fg_period(uint64_t t_arr) {
@@ -4242,7 +4245,8 @@ static int lsfg_mult(void) {
     if (m < 0) { const char *e = getenv("DM_LSFG_MULT"); m = e ? atoi(e) : 0; if (m < 2 || m > 4) m = 0; dm_lsfg_mult = m; }
     if (!m) {   // auto: the most of 4, 3, 2 that divides the game's frame time in refreshes (4 refreshes: 4x, each picture one refresh; 3: 3x; 6: 3x, two each)
         uint64_t p = g_fg_period ? g_fg_period : game_period_ns(), r = g_refresh_ns ? g_refresh_ns : 16666667ull, n = (p + r / 2) / r; m = 2;
-        for (int k = 4; k >= 3; k--) if (n >= (uint64_t)k && n % (uint64_t)k == 0) { m = k; break; } }
+        for (int k = 4; k >= 3; k--) if (n >= (uint64_t)k && n % (uint64_t)k == 0) { m = k; break; }
+        if (m == 2 && n % 2) m = n >= 4 ? 4 : n == 3 ? 3 : 2; }   // (5 refreshes, a game at 24 fps on 120 Hz: 4x, pictures 1, 1, 1, 2 refreshes apart beat 2x's 2, 3)
     if (m > FGE.mult_cap) m = FGE.mult_cap;
     return m < 2 ? 2 : m;
 }
@@ -4403,7 +4407,10 @@ static void present_window_locked(vtex *x, const int crop[4]) {
         FGE.pending = npic; FGE.phead = 0; FGE.pmult = npic + 1; FGE.arrived = t_arr; FGE.seq++;
         for (int k = 1; k <= npic; k++) {
             FGE.pii[k - 1] = imgs[k]; FGE.pdone[k - 1] = FGE.donex[sl][k - 1];
-            FGE.pdue[k - 1] = k == 1 ? fg_real_due(now, want, sp, rf, g_fg_early) : !want || !rf || sp < 2 * rf ? now + (uint64_t)k * sp : FGE.pdue[0] + (uint64_t)(k - 1) * sp; }
+            // with a display time asked: each handed over early hundredths of a refresh before the time of the picture ahead of it (it asks its own an interval / n later);
+            // without: at its own time
+            uint64_t at = want + (uint64_t)(k - 1) * sp, ea = rf * (uint64_t)g_fg_early / 100;
+            FGE.pdue[k - 1] = want && rf ? (at > now + ea ? at - ea : now) : now + (uint64_t)k * sp; }
         FGE.n_gen += (uint64_t)npic; sem_post(&FGE.wake); }
     else if (fg) FGE.n_plain++;
     if (fgm && t_arr - FGE.last_log >= 10000000000ull) {
