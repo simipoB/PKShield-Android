@@ -47,6 +47,12 @@ uint32_t *spv_float_controls(const uint32_t *code, size_t words, size_t *out_wor
 uint32_t *spv_nan_minmax(const uint32_t *code, size_t words, size_t *out_words);
 // The same rule written as OpIsNan + OpSelect after each float min / max / clamp, for a driver that does not honour the N forms (Arm's own). NULL when the module has none
 uint32_t *spv_nan_select(const uint32_t *code, size_t words, size_t *out_words);
+// A copy in which scalar 32-bit Log2 / Exp2 / InverseSqrt / Sqrt and float-to-integer conversions give Maxwell's answers where SPIR-V's are undefined (log2 (0) = -inf,
+// exp2 below 2^-126 = 0, inversesqrt (0) = +inf, a negative root NaN, F2I clamped with NaN 0), the classes chosen by mask. NULL if there is none
+enum { EXACT_LOG2 = 1, EXACT_EXP2 = 2, EXACT_RSQ = 4, EXACT_SQRT = 8, EXACT_FTOI = 16, EXACT_ALL = 31 };
+uint32_t *spv_exact_math(const uint32_t *code, size_t words, size_t *out_words, unsigned mask);
+// A copy in which every Function variable without an initializer starts at zero (the translator's registers; Mesa turns undefined values into 0). NULL if there is none
+uint32_t *spv_init_locals(const uint32_t *code, size_t words, size_t *out_words);
 // A copy in which a constant-zero limit of a min / max / clamp of a value selected between constants is a zero the compiler cannot fold (Arm erratum 3779215, see nvn_spv.c).
 // NULL if there is none
 uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words);
