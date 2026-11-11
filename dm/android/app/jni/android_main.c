@@ -743,7 +743,8 @@ static void host_start(void) {
     #define SETG(k, sub) do { snprintf(p, sizeof p, "%s/%s", g_game, sub); setenv(k, p, 0); } while (0)
     #define SETP(k, sub) do { snprintf(p, sizeof p, "%s/%s", g_files, sub); setenv(k, p, 0); } while (0)
     SETP("DM_TEX_CACHE", "texcache");
-    SETP("DM_LSFG_DIR", "lsfg");   // the player's Lossless Scaling shaders, converted from their Lossless.dll by the app's import (DM_FRAMEGEN=lsfg, nvn_lsfg.h)
+    { const char *r = g_app->activity->externalDataPath; snprintf(p, sizeof p, "%s/lsfg", r ? r : g_files); setenv("DM_LSFG_DIR", p, 0); }
+    // (the player's Lossless Scaling shaders, converted from their Lossless.dll by the app's import, one folder for every game: DM_FRAMEGEN=lsfg, nvn_lsfg.h)
     // shaders translated while the game last ran (nvn_vk.c live_check): the pack has them now (setup_game.py merged them first), so the folder starts empty
     SETP("DM_LIVE_SPV", "live");
     { DIR *ld = opendir(getenv("DM_LIVE_SPV")); struct dirent *e; char f[1200];

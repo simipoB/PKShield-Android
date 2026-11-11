@@ -129,7 +129,7 @@ final class GameSettings {
     //   "texture" (the same test as android_main.c texture_pack); the menu offers the HD textures setting only then
     // The player's Lossless Scaling shaders are in place (files/lsfg: the 25 the chain uses, converted from their Lossless.dll; android_main.c DM_LSFG_DIR)
     static boolean hasLsfg(Context c) {
-        java.io.File d = new java.io.File(c.getFilesDir(), "lsfg");
+        java.io.File d = new java.io.File(root(c), "lsfg");
         for (int id : new int[] { 255, 256, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299, 300, 301, 302 })
             if (!new java.io.File(d, id + ".spv").isFile()) return false;
         return true;

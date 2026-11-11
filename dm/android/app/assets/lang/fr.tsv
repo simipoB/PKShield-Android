@@ -300,3 +300,7 @@ On: L3 and R3 above the sticks (move them with Move the touch controls)	Activé 
 Frame generation (experimental)	Génération d'images (expérimental)
 On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later	Activée : une image est créée entre deux images du jeu, donc 30 ips bougent comme 60. Nécessite un GPU rapide ; vos commandes s'affichent environ 17 ms plus tard
 Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)	Lossless Scaling : l'image intermédiaire est créée par votre propre copie de la génération d'images de Lossless Scaling (mouvement plus net, nécessite un GPU plus rapide)
+Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here.	Vous avez Lossless Scaling ? Importez son Lossless.dll (dans le dossier du programme) pour utiliser ici sa génération d'images.
+Import Lossless.dll	Importer Lossless.dll
+Lossless Scaling imported. Choose it under Frame generation.	Lossless Scaling importé. Choisissez-le dans Génération d'images.
+Could not import Lossless Scaling: %s	Impossible d'importer Lossless Scaling : %s

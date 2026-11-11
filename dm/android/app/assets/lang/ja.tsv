@@ -300,3 +300,7 @@ On: L3 and R3 above the sticks (move them with Move the touch controls)	オン�
 Frame generation (experimental)	フレーム生成（試験的）
 On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later	オン：ゲームの2つのフレームの間に画像を1枚作り、30 fpsを60のように動かします。高速なGPUが必要です。操作の反映が約17ミリ秒遅れます
 Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)	Lossless Scaling：中間の画像を、お持ちのLossless Scalingのフレーム生成で作ります（動きがより鮮明、より高速なGPUが必要）
+Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here.	Lossless Scalingをお持ちですか？そのLossless.dll（プログラムのフォルダー内）を取り込むと、ここでそのフレーム生成を使えます。
+Import Lossless.dll	Lossless.dllを取り込む
+Lossless Scaling imported. Choose it under Frame generation.	Lossless Scalingを取り込みました。フレーム生成で選んでください。
+Could not import Lossless Scaling: %s	Lossless Scalingを取り込めませんでした：%s

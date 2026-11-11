@@ -169,6 +169,7 @@ def main():
                ('sgsr.txt', [T3 + 'sgsr/LICENSE'], 'Snapdragon Game Super Resolution', 'the sharp upscaler'),
                ('ryujinx.txt', [T3 + 'ryujinx/LICENSE.txt'], 'Ryujinx shader translator', 'turns the Switch shaders into Vulkan ones'),
                ('vulkan-headers.txt', [T3 + 'vulkan-headers/LICENSE.md'], 'Vulkan headers', 'the Vulkan interface'),
+               ('dxbc-spirv.txt', [T3 + 'dxbc-spirv/LICENSE', T3 + 'dxbc-spirv/submodules/spirv_headers/LICENSE'], 'dxbc-spirv', "converts your Lossless Scaling's shaders for Vulkan"),
                ('nvn-header.txt', [DM + '/gfx/nvn/include/nvn.h'], 'NVN header (h1k421)', "the Switch graphics interface's definitions"),
                ('cjk_fallback.txt', [ANDROID + '/app/assets/cjk_fallback.LICENSE.txt'], 'CJK fallback font', 'the Chinese and Korean text'),
                ('nintendo_ext.txt', [ANDROID + '/app/assets/nintendo_ext.LICENSE.txt'], 'Button icon font', 'the controller-button icons')]
