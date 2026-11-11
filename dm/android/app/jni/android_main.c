@@ -556,7 +556,9 @@ void dm_set_opmode(int m);   // host/hle_oe.c: tells the game the console mode c
 //   checked 10 s later, as a lower scale does not always help: on a strong GPU its governor lowers the clock with the load and frames can get longer (Galaxy S25+: 43
 //   against 36 ms walking at 60 %, hle_resscale.c). A step for a short frame rate that gained under 1 fps (the slowdown is not the GPU's: the CPU, a clock cap while
 //   charging or warm, the replay's own work), or a step for heat that cost over 1 fps, is taken back, and that reason steps nothing for 5 minutes
-int dm_res_scale_ready(void); void dm_res_factor_set(float f);   // host/hle_resscale.c
+// A scene that keeps the game's full size (the menus showing Pokémon models: the game's own mode, hle_resscale.c) is drawn at full size whatever the step: no step is
+//   taken or judged there. A step on trial when one opens is kept without a verdict, and the short-frame count starts again
+int dm_res_scale_ready(void), dm_res_scale_applies(void); void dm_res_factor_set(float f);   // host/hle_resscale.c
 static const float k_res_steps[] = { 1.0f, 0.85f, 0.7f, 0.6f };
 #define NRES ((int)(sizeof k_res_steps / sizeof k_res_steps[0]))
 static int g_fps_guard;   // set at start (fps_guard_init): the target, 0 off
@@ -589,6 +591,7 @@ static void graphics_auto(void) {
         since++;
         if (nogain > 0) nogain--;
         if (noheat > 0) noheat--;
+        if (!dm_res_scale_applies()) { probe = 0; slow = 0; return; }   // (a scene at the game's full size: see above)
         // a step is tried for 15 s, then kept only if the average gained clearly (1.5 fps, or 6 %): a lower resolution only helps a GPU that is behind, not a CPU
         double gain_need = fps_was * 0.06 > 1.5 ? fps_was * 0.06 : 1.5;
         if (probe && !--probe && fps_avg > 1 && fps_was > 1 && lv > 0 && (probe_hot ? fps_avg < fps_was - 1.0 : fps_avg < fps_was + gain_need)) {   // the step did not help
