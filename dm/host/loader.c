@@ -537,26 +537,48 @@ static const struct { const char *build; uint64_t itv, dt; const char *game; } F
 //   dm_fps_live (30 or 60), which the in-game menu changes while playing (android_main.c nativeSetting): at 30 every frame is held 2 slots and the game told
 //   interval 2, as the game itself does at 30 (hle_nvn.c vstep_tick, reported_hold); at 60 the hold is 1, 2 when frames run late. 90 / 120 (env.txt) stay fixed
 int dm_fps_live;   // 0: not live (the game's own 30, or a fixed 90 / 120)
-// The stadium crowd at 30 (DM_CROWD_30, on unless "0"): the crowd's flipbook (models ob0041..ob0044 stadiumcrowda..d, in the new-game intro in Rose's stadium after the
-//   name entry) flickers at 60, and no fix in the frame step has cured it yet. When the game opens one of those models the live rate drops to 30; when it next loads a
-//   zone's scripts (bin/script/amx/z_*.amx: play has moved to a field area) the rate it had comes back, unless the menu changed it meanwhile. hle_fs.c h_fs_OpenFile
-static pthread_mutex_t g_crowd_mu = PTHREAD_MUTEX_INITIALIZER; static int g_crowd_saved;   // the live rate before the hold, 0: no hold
-void dm_fps_scene_file(const char *path) {
-    if (!path || !__atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED)) return;
+// The game's own 30 where the patch makes the stadium crowd flicker (DM_NATIVE_START, on unless "0"). With the live frame rate the patch is not written at load:
+//   the title screen and the opening run exactly as at 30 on the Switch (the game's own present interval 2 and its own step). The crowd's flipbook (the title
+//   screen's stadium, and models ob0041..ob0044 stadiumcrowda..d in the opening after the name entry) flickered under the patch even at 30, each frame held 2 slots
+//   of 60 Hz by the host with the step fed by it, and not at the game's own 30 (v0.59, which left the patch out at 30). The patch goes in when play reaches a field
+//   area (a zone's scripts load, bin/script/amx/z_*.amx) or the menu asks for 60, comes out again while a stadium crowd is loaded (DM_CROWD_30, on unless "0"), and
+//   goes back in at the next field area. dm_fps_tick writes the two words on the present thread: the code word through a moment of read + write + execute on its
+//   one page (the code area is sealed), the step word in data; while the patch is out the host feeds the step no more (dm_step_word NULL: hle_nvn.c vstep_on)
+static struct { uint8_t *itv, *dt; uint32_t wi, wd, owi, owd; int fps, want, on, patched, broken; } g_fp;   // on: the patch is handled here; want: the live rate to go back to
+static int g_fp_native = 1;   // the game's own 30 is asked for: from the start until a field area, and while a stadium crowd is loaded
+void dm_fps_scene_file(const char *path) {   // hle_fs.c h_fs_OpenFile
+    if (!path || !g_fp.on) return;
     int crowd = strstr(path, "_stadiumcrowd") != NULL, zone = !crowd && strstr(path, "/script/amx/z_") != NULL;
     if (!crowd && !zone) return;
-    static int on = -1; if (on < 0) { const char *e = getenv("DM_CROWD_30"); on = !(e && !strcmp(e, "0")); }
-    if (!on) return;
-    pthread_mutex_lock(&g_crowd_mu);
-    int cur = __atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED);
-    if (crowd && !g_crowd_saved && cur != 30) {
-        g_crowd_saved = cur; __atomic_store_n(&dm_fps_live, 30, __ATOMIC_RELAXED);
-        LOG("frame rate: the stadium crowd is loading (%s): 30 fps until play moves to a field area (its flipbook flickers at %d)", path, cur); }
-    else if (zone && g_crowd_saved) {
-        if (cur == 30) { __atomic_store_n(&dm_fps_live, g_crowd_saved, __ATOMIC_RELAXED); LOG("frame rate: a field area loads (%s): %d fps again", path, g_crowd_saved); }
-        else LOG("frame rate: a field area loads (%s): the menu set %d meanwhile, kept", path, cur);
-        g_crowd_saved = 0; }
-    pthread_mutex_unlock(&g_crowd_mu);
+    static int c30 = -1; if (c30 < 0) { const char *e = getenv("DM_CROWD_30"); c30 = !(e && !strcmp(e, "0")); }
+    if (crowd && c30 && !__atomic_exchange_n(&g_fp_native, 1, __ATOMIC_RELAXED)) LOG("frame rate: the stadium crowd is loading (%s): the game's own 30 until a field area", path);
+    if (zone && __atomic_exchange_n(&g_fp_native, 0, __ATOMIC_RELAXED)) LOG("frame rate: a field area loads (%s)", path);
+}
+static int fp_write(int patched) {
+    long pg = sysconf(_SC_PAGESIZE); if (pg <= 0) pg = 4096;
+    uint8_t *page = (uint8_t *)((uintptr_t)g_fp.itv & ~(uintptr_t)(pg - 1));
+    if (mprotect(page, (size_t)pg, PROT_READ | PROT_WRITE | PROT_EXEC)) {   // (executable throughout: another thread may be running code on this page)
+        g_fp.broken = 1; LOG("[RED] frame rate: the 60 fps patch cannot be %s (mprotect: %s): it stays as it is for this run", patched ? "written" : "taken out", strerror(errno)); return 0; }
+    __atomic_store_n((uint32_t *)g_fp.itv, patched ? g_fp.wi : g_fp.owi, __ATOMIC_RELEASE);
+    mprotect(page, (size_t)pg, PROT_READ | PROT_EXEC);
+    __builtin___clear_cache((char *)g_fp.itv, (char *)g_fp.itv + 4);
+    if (!patched) dm_step_word = NULL;   // (the host stops feeding the step before the game's own value goes back)
+    dm_guest_write_prepare(g_fp.dt, 4); __atomic_store_n((uint32_t *)g_fp.dt, patched ? g_fp.wd : g_fp.owd, __ATOMIC_RELAXED);
+    if (patched) { dm_step_hz = g_fp.fps; dm_step_word = g_fp.dt; }
+    g_fp.patched = patched; return 1;
+}
+// Each present (hle_nvn.c, the present thread, before the step is decided): the patch in or out as asked
+void dm_fps_tick(void) {
+    if (!g_fp.on || g_fp.broken) return;
+    int live = __atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED), nat = __atomic_load_n(&g_fp_native, __ATOMIC_RELAXED);
+    if (!g_fp.patched) {
+        if (live == 60) { nat = 0; __atomic_store_n(&g_fp_native, 0, __ATOMIC_RELAXED); g_fp.want = 60; }   // (the menu asked for 60 meanwhile: its choice)
+        if (!nat && fp_write(1)) { __atomic_store_n(&dm_fps_live, g_fp.want, __ATOMIC_RELAXED);
+            LOG("frame rate: the 60 fps patch is in, live frame rate %d (the menu switches 30 / 60 at once)", g_fp.want); }
+    } else if (nat) {
+        g_fp.want = live == 60 ? 60 : 30;
+        if (fp_write(0)) { __atomic_store_n(&dm_fps_live, 30, __ATOMIC_RELAXED); LOG("frame rate: the 60 fps patch is out: the game's own 30 (then %d again)", g_fp.want); }
+    }
 }
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     const char *e = getenv("DM_FPS_TARGET"), *lv = getenv("DM_FPS_LIVE"); int live = !(lv && !strcmp(lv, "0"));
@@ -573,6 +595,14 @@ static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     uint32_t wi, wd; memcpy(&wi, m->base + itv, 4); memcpy(&wd, m->base + dt, 4);
     if ((wi != 0x2a1503e1u && wi != 0x52800041u) || wd != 33333334u) { LOG("[RED] %s: %d fps patch not applied (unexpected words %08x %u)", m->name, fps, wi, wd); return 0; }
     wi = 0x52800021u; wd = (uint32_t)((1000000000ull + (uint64_t)fps - 1) / (uint64_t)fps);
+    { const char *ns = getenv("DM_NATIVE_START");
+      if (fps == 60 && live && !(ns && !strcmp(ns, "0"))) {   // the game's own 30 until a field area or 60 from the menu (dm_fps_tick)
+        g_fp.itv = m->base + itv; g_fp.dt = m->base + dt; g_fp.wi = wi; g_fp.wd = wd; g_fp.fps = fps; g_fp.want = want == 60 ? 60 : 30; g_fp.on = 1;
+        memcpy(&g_fp.owi, m->base + itv, 4); g_fp.owd = 33333334u;   // (the game's own words: the patch can come out again)
+        __atomic_store_n(&dm_fps_live, 30, __ATOMIC_RELAXED);
+        LOG("%s: 60 fps patch for %s ready, not written yet: the game's own 30 until play reaches a field area or the menu asks for 60, then %d (live frame rate)",
+            m->name, FPS_SITES[si].game, g_fp.want);
+        return 2; } }
     memcpy(m->base + itv, &wi, 4); memcpy(m->base + dt, &wd, 4);
     dm_step_hz = fps; dm_step_word = m->base + dt;
     if (fps == 60 && live) __atomic_store_n(&dm_fps_live, want == 60 ? 60 : 30, __ATOMIC_RELAXED);
