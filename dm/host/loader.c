@@ -537,6 +537,27 @@ static const struct { const char *build; uint64_t itv, dt; const char *game; } F
 //   dm_fps_live (30 or 60), which the in-game menu changes while playing (android_main.c nativeSetting): at 30 every frame is held 2 slots and the game told
 //   interval 2, as the game itself does at 30 (hle_nvn.c vstep_tick, reported_hold); at 60 the hold is 1, 2 when frames run late. 90 / 120 (env.txt) stay fixed
 int dm_fps_live;   // 0: not live (the game's own 30, or a fixed 90 / 120)
+// The stadium crowd at 30 (DM_CROWD_30, on unless "0"): the crowd's flipbook (models ob0041..ob0044 stadiumcrowda..d, in the new-game intro in Rose's stadium after the
+//   name entry) flickers at 60, and no fix in the frame step has cured it yet. When the game opens one of those models the live rate drops to 30; when it next loads a
+//   zone's scripts (bin/script/amx/z_*.amx: play has moved to a field area) the rate it had comes back, unless the menu changed it meanwhile. hle_fs.c h_fs_OpenFile
+static pthread_mutex_t g_crowd_mu = PTHREAD_MUTEX_INITIALIZER; static int g_crowd_saved;   // the live rate before the hold, 0: no hold
+void dm_fps_scene_file(const char *path) {
+    if (!path || !__atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED)) return;
+    int crowd = strstr(path, "_stadiumcrowd") != NULL, zone = !crowd && strstr(path, "/script/amx/z_") != NULL;
+    if (!crowd && !zone) return;
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_CROWD_30"); on = !(e && !strcmp(e, "0")); }
+    if (!on) return;
+    pthread_mutex_lock(&g_crowd_mu);
+    int cur = __atomic_load_n(&dm_fps_live, __ATOMIC_RELAXED);
+    if (crowd && !g_crowd_saved && cur != 30) {
+        g_crowd_saved = cur; __atomic_store_n(&dm_fps_live, 30, __ATOMIC_RELAXED);
+        LOG("frame rate: the stadium crowd is loading (%s): 30 fps until play moves to a field area (its flipbook flickers at %d)", path, cur); }
+    else if (zone && g_crowd_saved) {
+        if (cur == 30) { __atomic_store_n(&dm_fps_live, g_crowd_saved, __ATOMIC_RELAXED); LOG("frame rate: a field area loads (%s): %d fps again", path, g_crowd_saved); }
+        else LOG("frame rate: a field area loads (%s): the menu set %d meanwhile, kept", path, cur);
+        g_crowd_saved = 0; }
+    pthread_mutex_unlock(&g_crowd_mu);
+}
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     const char *e = getenv("DM_FPS_TARGET"), *lv = getenv("DM_FPS_LIVE"); int live = !(lv && !strcmp(lv, "0"));
     int want = e && *e ? atoi(e) : 0;
