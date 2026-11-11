@@ -13,6 +13,7 @@
 #include "overlay/fgen_spv.h"
 #define FG_LEVELS 4
 #ifndef FG_MEM   // the caller's allocator (nvn_vk.c: vk_alloc) or, here, one allocation per image
+#define FG_MEM
 typedef struct { VkDeviceMemory mem; } fg_mem;
 static int fg_mem_get(VkDevice dev, VkPhysicalDevice pd, VkImage im, fg_mem *m) {
     VkMemoryRequirements rq; vkGetImageMemoryRequirements(dev, im, &rq); VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(pd, &mp);

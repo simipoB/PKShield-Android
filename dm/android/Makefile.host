@@ -60,7 +60,19 @@ $(OUT)/objl/touch_menu.o: app/jni/touch_menu.c $(GAME_H)
 	@mkdir -p $(dir $@); $(CC) $(CFLAGS) -c $< -o $@
 $(OUT)/objl/glue.o: $(GLUE)/android_native_app_glue.c
 	@mkdir -p $(dir $@); $(CC) -O2 -fPIC -I$(GLUE) -c $< -o $@
-$(OUT)/lib/libnxnative.so: $(LIBOBJ) $(OUT)/libvpx.a
-	@mkdir -p $(dir $@); $(CC) -shared -o $@ $(LIBOBJ) $(OUT)/libvpx.a -lm -ldl -llog -lz -laaudio -lmediandk -lvulkan -landroid -Wl,-Bsymbolic -Wl,--no-undefined -Wl,-z,max-page-size=16384 -u ANativeActivity_onCreate
+# The Lossless.dll import (app/jni/lsfg_import.cpp) and the converter it uses, dxbc-spirv (C++17, no exceptions; its C++ library linked in statically)
+CXX = $(NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/bin/clang++ --target=aarch64-linux-android$(API)
+DXS = ../third_party/dxbc-spirv
+CXXFLAGS = -std=c++17 -O2 -fPIC -fno-exceptions -fvisibility=hidden -DDXBC_SPV_ENABLE_SM5 -DDXBC_SPV_ENABLE_SPIRV -I$(DXS)
+DXS_OBJ = $(patsubst $(DXS)/%.cpp,$(OUT)/dxs/%.o,$(sort $(wildcard $(DXS)/dxbc/*.cpp $(DXS)/ir/*.cpp $(DXS)/ir/passes/*.cpp $(DXS)/spirv/*.cpp $(DXS)/util/*.cpp)))
+$(OUT)/dxs/%.o: $(DXS)/%.cpp
+	@mkdir -p $(dir $@); $(CXX) $(CXXFLAGS) -c $< -o $@
+$(OUT)/libdxbcspv.a: $(DXS_OBJ)
+	rm -f $@; $(NDK)/toolchains/llvm/prebuilt/$(NDK_HOST)/bin/llvm-ar rcs $@ $^
+$(OUT)/objl/lsfg_import.o: app/jni/lsfg_import.cpp
+	@mkdir -p $(dir $@); $(CXX) $(CXXFLAGS) -c $< -o $@
+LIBOBJ += $(OUT)/objl/lsfg_import.o
+$(OUT)/lib/libnxnative.so: $(LIBOBJ) $(OUT)/libvpx.a $(OUT)/libdxbcspv.a
+	@mkdir -p $(dir $@); $(CXX) -shared -static-libstdc++ -o $@ $(LIBOBJ) $(OUT)/libvpx.a $(OUT)/libdxbcspv.a -lm -ldl -llog -lz -laaudio -lmediandk -lvulkan -landroid -Wl,-Bsymbolic -Wl,--no-undefined -Wl,-z,max-page-size=16384 -u ANativeActivity_onCreate
 .PHONY: lib
 lib: $(OUT)/lib/libnxnative.so

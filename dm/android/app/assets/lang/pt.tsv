@@ -283,7 +283,7 @@ Signed with the %s release key.	Assinada com a chave de lançamento do %s.
 This copy was not signed by the %s project (signer %s). It may have been changed.	Esta cópia não foi assinada pelo projeto %s (assinante %s). Ela pode ter sido modificada.
 Official downloads: %s	Downloads oficiais: %s
 Credits	Créditos
-Free software under the MIT License. This notice must stay with every copy.	Software livre sob a licença MIT. Este aviso deve acompanhar cada cópia.
+Free software under the GNU GPL, version 3 or later (older parts also MIT). This notice must stay with every copy, and the source of every release is public.	Software livre sob a licença GNU GPL, versão 3 ou posterior (as partes mais antigas também MIT). Este aviso deve acompanhar cada cópia, e o código-fonte de cada versão é público.
 Show the license	Ver a licença
 Third-party code	Código de terceiros
 Vibrate on press	Vibrar ao tocar
@@ -299,3 +299,13 @@ Off: no L3 / R3 on screen (a controller's stick buttons still work)	Desligado: s
 On: L3 and R3 above the sticks (move them with Move the touch controls)	Ligado: L3 e R3 acima dos analógicos (mova-os com Mover os controles de toque)
 Frame generation (experimental)	Geração de quadros (experimental)
 On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later	Ativada: uma imagem é criada entre cada dois quadros do jogo, então 30 fps se movem como 60. Precisa de uma GPU rápida; seus comandos aparecem cerca de 17 ms depois
+Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)	Lossless Scaling: a imagem intermediária é criada pela sua própria cópia da geração de quadros do Lossless Scaling (movimento mais nítido, precisa de uma GPU mais rápida)
+Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here.	Tem o Lossless Scaling? Importe o Lossless.dll dele (na pasta do programa) para usar a geração de quadros dele aqui.
+Import Lossless.dll	Importar Lossless.dll
+Lossless Scaling imported. Choose it under Frame generation.	Lossless Scaling importado. Escolha-o em Geração de quadros.
+Could not import Lossless Scaling: %s	Não foi possível importar o Lossless Scaling: %s
+Lossless Scaling pictures	Imagens do Lossless Scaling
+Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)	Auto: 4x numa tela de 120 Hz, 3x em 90 Hz, senão 2x (a 30 fps)
+2x: one picture between each two of the game's frames (30 fps moves like 60)	2x: uma imagem entre cada dois quadros do jogo (30 fps se movem como 60)
+3x: two pictures between each two frames (like 90 fps; even on a 90 Hz screen only)	3x: duas imagens entre cada dois quadros (como 90 fps; uniforme só numa tela de 90 Hz)
+4x: three pictures between each two frames (like 120 fps; needs a 120 Hz screen and a fast GPU)	4x: três imagens entre cada dois quadros (como 120 fps; precisa de uma tela de 120 Hz e uma GPU rápida)

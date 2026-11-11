@@ -1,0 +1,17 @@
+Galar Native (formerly PKShield Android)
+Copyright (c) 2026 jhaizhou (d2r-mobile, nxnative)
+Copyright (c) 2026 the Galar Native (formerly PKShield Android) contributors
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as
+published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details. Its full text is in
+LICENSE; the source code of every release is at https://github.com/simipoB/Galar-Native-Android.
+
+The app as a whole is licensed under GPL-3.0-or-later since it carries GPL-3.0 code (Lossless Scaling frame generation, after
+Eden's implementation). The code that came from d2r-mobile / nxnative, and Galar Native's code from before that change, were
+released under the MIT License; that notice (LICENSE-MIT) stays with them and still applies to those parts on their own.
+Third-party code under dm/third_party keeps its own license.
+
+Lossless Scaling is not included: frame generation uses the Lossless.dll the player supplies from their own copy.
