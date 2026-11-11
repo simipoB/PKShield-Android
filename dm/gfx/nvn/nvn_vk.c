@@ -3052,8 +3052,8 @@ static void pso_record_s(const vprog *pr, const pkey *k, const sst *s) {   // ca
 }
 static VkPipeline pso_make(vprog *pr, pkey k, const sst *ss);
 // ---- Pipelines kept (Arm's driver, phones under 7.5 GB): at most pso_cap(), the ones unused longest destroyed. Arm's driver keeps ~0.4 MB of the process's memory
-//   and a GPU mapping for each pipeline: 5500 of them were 2.3 GB of malloc and 61k mappings when a Mali-G720 closed after ~30 minutes in BOTWRecompAndroid (#310
-//   there, MIT); here the Mali players' apps held 1.7-2.6 GB against 1 GB on an Adreno (Shield builds ~1500 at start). Every 300 presents (pso_evict), over the
+//   and a GPU mapping for each pipeline: 5500 of them were 2.3 GB of malloc and 61k mappings when a Mali-G720 closed after ~30 minutes in another Android port of a Switch game;
+//   here the Mali players' apps held 1.7-2.6 GB against 1 GB on an Adreno (Shield builds ~1500 at start). Every 300 presents (pso_evict), over the
 //   cap, the pipelines unused for 900 presents go, oldest first, after the GPU is done with them (defer_add); one needed again is built again from the pipeline
 //   cache. The record lists get each pipeline once (g_pso_rec*), not again when it comes back. DM_VK_PIPE_KEEP=<n> (0: never)
 static nvn_hmap g_pso_used = {.klen = sizeof(VkPipeline)}, g_pso_rec = {.klen = sizeof(pkey)}, g_pso_rec_s = {.klen = sizeof(pkey_s)};
@@ -3406,7 +3406,7 @@ static VkDescriptorSet desc_set_alloc(VkDescriptorSetLayout dsl) {
 }
 // Descriptor sets reused within a submission (drivers without push descriptors: Mali, Xclipse, the emulator; programs over maxPushDescriptors). A set whose writes are
 //   the same as one already written in this submission (layout, bindings, buffers, offsets, ranges, views, samplers) is bound again instead of allocated and written
-//   anew: vkAllocateDescriptorSets and vkUpdateDescriptorSets were ~18 % of the render thread on Qualcomm's own driver in BOTWRecompAndroid (MIT), and consecutive
+//   anew: vkAllocateDescriptorSets and vkUpdateDescriptorSets were ~18 % of the render thread on Qualcomm's own driver in another Android port of a Switch game, and consecutive
 //   draws of one material often bind exactly the same. Keyed by two 64-bit hashes of every write; the sets stay valid until the submission's pools reset (g_dsc_gen).
 //   DM_VK_DESC_REUSE=0: a new set for every draw as before
 enum { DSC_N = 4096 };

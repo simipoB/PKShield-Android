@@ -840,7 +840,7 @@ static void pin_update(void) {
 static void *g_hint; static int g_hint_failed; static int64_t g_hint_target;
 // A/B in one run (DM_AB=<frames>:<key>): the switch named <key> alternates every <frames> presented frames, on (1) in the odd stretches, so both sides run in the
 //   same heat: a phone that warms up throttles its cores (a Galaxy S25+ from 4.47 to 1.4 GHz in a long session, 2026-11-09), and two runs one after the other
-//   differed by more than most changes (BOTWRecompAndroid's LARECOMP_AB, MIT). Returns -1 when <key> is not under test, else 0 or 1. The present line (nvn_vk.c)
+//   differed by more than most changes (the A/B idea from another Android port of a Switch game). Returns -1 when <key> is not under test, else 0 or 1. The present line (nvn_vk.c)
 //   names the side each window was on
 int dm_ab(const char *key) {
     static int init; static long every; static char k[32];
@@ -858,7 +858,7 @@ int dm_ab_side(void) {   // the side of the frame just presented (-1: no DM_AB);
 }
 // The target the hint session is given: three quarters of the frame, not all of it (DM_HINT_TARGET=<percent>, 100: the whole frame as before). With the whole frame
 //   the governor lowers the clocks until the work just fits it, and frames that weigh near 33 ms then go over every few frames, each a refresh late: 17-20 fps at
-//   settings that held 30 on a Mali-G925 in BOTWRecompAndroid (#89 there, MIT), which moved to 25 ms of 33 for its 30 fps. DM_AB=<n>:hint compares the two
+//   settings that held 30 on a Mali-G925 in another Android port of a Switch game, which moved to 25 ms of 33 for its 30 fps. DM_AB=<n>:hint compares the two
 static int64_t hint_target(uint64_t period_ns) {
     static int pct = -1; if (pct < 0) { const char *e = getenv("DM_HINT_TARGET"); pct = e ? atoi(e) : 75; if (pct < 30 || pct > 100) pct = 75; }
     int ab = dm_ab("hint"); int p = ab < 0 ? pct : ab ? 75 : 100;
