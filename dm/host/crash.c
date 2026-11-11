@@ -196,6 +196,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         }
         fputc('\n', stderr); }
     if (g_dump_hook) g_dump_hook();
+    { extern void nvn_vk_crash_ring(void) __attribute__((weak)); if (nvn_vk_crash_ring) nvn_vk_crash_ring(); }   // (nvn_vk.c: the last image events, the Mali crash test build)
     fflush(stderr); if (dm_crash_log_copy) dm_crash_log_copy();   // (the crash record into the copy a player finds: android_main.c)
     _exit(128 + sig);
 }

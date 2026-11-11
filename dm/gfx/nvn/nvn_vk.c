@@ -551,14 +551,35 @@ static void vk_free(vmalloc_t a) {
     pthread_mutex_lock(&g_amu); fr_add(a.b, a.off, a.size); a.b->used--; pthread_mutex_unlock(&g_amu);
 }
 
+// ================= Image history for crash records (Mali crash test build) =================
+// Arm's r44 driver closes the game a few frames in inside its image barrier handling, on an image whose driver state is gone (x23 / x24 in the crash record hold
+// its VkImage). The last image events are kept here and printed at the end of a crash record (crash.c nvn_vk_crash_ring), so the record shows that image's history
+enum { RING = 384 };
+static struct { char s[120]; } g_ring[RING]; static _Atomic uint32_t g_ring_n;
+static uint64_t g_fence;                  // last fence value handed to a submission (submit thread)
+static void ring(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void ring(const char *fmt, ...) {
+    uint32_t i = atomic_fetch_add(&g_ring_n, 1) % RING; va_list ap; va_start(ap, fmt);
+    int n = snprintf(g_ring[i].s, sizeof g_ring[i].s, "%.3f f%llu ", mono_ns() / 1e9, (unsigned long long)g_fence);
+    if (n > 0 && n < (int)sizeof g_ring[i].s) vsnprintf(g_ring[i].s + n, sizeof g_ring[i].s - (size_t)n, fmt, ap);
+    va_end(ap);
+}
+void nvn_vk_crash_ring(void) {
+    uint32_t n = atomic_load(&g_ring_n), from = n > RING ? n - RING : 0;
+    fprintf(stderr, "[dm] [mali-test] the last %u image events, oldest first (seconds, fence handed out, event); the driver's crash names its image in x23 / x24:\n", n - from);
+    for (uint32_t k = from; k < n; k++) fprintf(stderr, "[dm] [mali-test] %s\n", g_ring[k % RING].s);
+}
+
 // ================= Deferred destruction: objects the GPU may still use go when the submissions recorded so far are done =================
 enum { DF_IMAGE, DF_VIEW, DF_BUFFER, DF_BUFVIEW, DF_ALLOC, DF_PIPELINE, DF_FRAMEBUFFER };
 typedef struct { int kind; uint64_t fence; union { VkImage img; VkImageView view; VkBuffer buf; VkBufferView bview; VkPipeline pipe; VkFramebuffer fb; } h; vmalloc_t a; } dfr;
 static dfr *g_dfr; static int g_ndfr, g_cdfr; static pthread_mutex_t g_dfmu = PTHREAD_MUTEX_INITIALIZER;
-static uint64_t g_fence;                  // last fence value handed to a submission (submit thread)
 static _Atomic uint64_t g_done;           // last fence value the GPU completed (completion thread)
+static int exact_ranges(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_EXACT_RANGES"); v = e && atoi(e); if (v) VLOG("[mali-test] first-use and upload barriers name their levels and layers (DM_VK_EXACT_RANGES)"); } return v; }
+static int defer_hold(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_DEFER_HOLD"); v = e ? atoi(e) : 0; if (v) VLOG("[mali-test] objects destroyed %d submission(s) later than needed (DM_VK_DEFER_HOLD)", v); } return v; }
 static void defer_add(dfr d) {
-    d.fence = g_fence + 1;
+    d.fence = g_fence + 1 + (uint64_t)defer_hold();   // (DM_VK_DEFER_HOLD: the Mali crash test's step 2)
+    if (d.kind == DF_IMAGE) ring("destroy queued img %p until fence %llu (done %llu)", (void *)d.h.img, (unsigned long long)d.fence, (unsigned long long)atomic_load(&g_done));
     pthread_mutex_lock(&g_dfmu);
     if (g_ndfr == g_cdfr) { g_cdfr = g_cdfr ? g_cdfr * 2 : 256; g_dfr = realloc(g_dfr, g_cdfr * sizeof *g_dfr); }
     g_dfr[g_ndfr++] = d; pthread_mutex_unlock(&g_dfmu);
@@ -578,7 +599,7 @@ static int quarantine_on(void) {
 }
 static void q_put(int img, uint64_t h) {   // caller holds g_dfmu
     if (g_vqcount == (size_t)g_vqcap) { qent e = g_vq[g_vqhead]; g_vqhead = (g_vqhead + 1) % (size_t)g_vqcap; g_vqcount--;
-        if (e.img) vkDestroyImage(g_dev, (VkImage)(uintptr_t)e.h, NULL); else { fbc_forget((VkImageView)(uintptr_t)e.h); vkDestroyImageView(g_dev, (VkImageView)(uintptr_t)e.h, NULL); } }
+        if (e.img) { ring("destroyed img %p (quarantine)", (void *)(uintptr_t)e.h); vkDestroyImage(g_dev, (VkImage)(uintptr_t)e.h, NULL); } else { fbc_forget((VkImageView)(uintptr_t)e.h); vkDestroyImageView(g_dev, (VkImageView)(uintptr_t)e.h, NULL); } }
     g_vq[(g_vqhead + g_vqcount) % (size_t)g_vqcap] = (qent){ h, (uint8_t)img }; g_vqcount++;
 }
 static void defer_drain(void) {
@@ -590,9 +611,9 @@ static void defer_drain(void) {
         if (qon && d.kind == DF_IMAGE && nimg == 64) { i++; continue; }   // (the next drain takes it: its views go into the FIFO ahead of it)
         g_dfr[i] = g_dfr[--g_ndfr];
         if (qon && d.kind == DF_VIEW) { q_put(0, (uint64_t)(uintptr_t)d.h.view); vk_free(d.a); continue; }
-        if (qon && d.kind == DF_IMAGE) { imgs[nimg++] = d.h.img; vk_free(d.a); continue; }
+        if (qon && d.kind == DF_IMAGE) { ring("img %p: memory freed, handle quarantined", (void *)d.h.img); imgs[nimg++] = d.h.img; vk_free(d.a); continue; }
         switch (d.kind) {
-            case DF_IMAGE: vkDestroyImage(g_dev, d.h.img, NULL); break; case DF_VIEW: fbc_forget(d.h.view); vkDestroyImageView(g_dev, d.h.view, NULL); break;
+            case DF_IMAGE: ring("destroyed img %p", (void *)d.h.img); vkDestroyImage(g_dev, d.h.img, NULL); break; case DF_VIEW: fbc_forget(d.h.view); vkDestroyImageView(g_dev, d.h.view, NULL); break;
             case DF_BUFFER: vkDestroyBuffer(g_dev, d.h.buf, NULL); break; case DF_BUFVIEW: vkDestroyBufferView(g_dev, d.h.bview, NULL); break;
             case DF_PIPELINE: vkDestroyPipeline(g_dev, d.h.pipe, NULL); break; case DF_ALLOC: break;
             case DF_FRAMEBUFFER: vkDestroyFramebuffer(g_dev, d.h.fb, NULL); break;
@@ -1362,6 +1383,7 @@ uint64_t mtl_sub_commit(void) {
     barrier_host(s->cb);
     VKCHECK(vkEndCommandBuffer(s->cb));
     VkCommandBuffer cbs[2]; uint32_t n = 0;
+    ring("submit: upload cb %p%s, frame cb %p", (void *)s->ucb, s->ucb_open ? "" : " (empty)", (void *)s->cb);
     if (s->ucb_open) { barrier_all(s->ucb); VKCHECK(vkEndCommandBuffer(s->ucb)); cbs[n++] = s->ucb; s->ucb_open = 0; }
     cbs[n++] = s->cb;
     g_sub = NULL;
@@ -1465,9 +1487,11 @@ static void img_init(vtex *t, int zero) {
     VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = 0, .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .image = t->img, .subresourceRange = { t->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS } };
+    if (exact_ranges()) { ib.subresourceRange.levelCount = t->levels ? t->levels : 1; ib.subresourceRange.layerCount = t->is3d ? 1 : t->layers ? t->layers : 1; }   // (DM_VK_EXACT_RANGES)
+    ring("first use img %p: UNDEFINED -> GENERAL in %s cb %p%s", (void *)t->img, once ? "a one-off" : "the upload", (void *)cb, zero && t->samples <= 1 ? ", cleared" : "");
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
     if (zero && t->samples <= 1) {
-        VkImageSubresourceRange r = { t->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS };
+        VkImageSubresourceRange r = ib.subresourceRange;
         if (t->aspect & VK_IMAGE_ASPECT_COLOR_BIT) { VkClearColorValue c = {{0}}; vkCmdClearColorImage(cb, t->img, VK_IMAGE_LAYOUT_GENERAL, &c, 1, &r); }
         else { VkClearDepthStencilValue c = {0, 0}; vkCmdClearDepthStencilImage(cb, t->img, VK_IMAGE_LAYOUT_GENERAL, &c, 1, &r); }
     }
@@ -1556,6 +1580,8 @@ static vtex *tex_new(const tex_t *t, int pkg) {
     VkMemoryRequirements rq; vkGetImageMemoryRequirements(g_dev, x->img, &rq);
     x->a = vk_alloc(rq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0); atomic_fetch_add(&g_live_tex_bytes, (long)x->a.size);
     VKCHECK(vkBindImageMemory(g_dev, x->img, x->a.b->mem, x->a.off));
+    ring("made img %p %ux%ux%u fmt %d levels %u layers %u samples %u usage %#x flags %#x%s", (void *)x->img, x->w, x->h, x->d, (int)x->fmt, x->levels, x->layers, x->samples,
+         (unsigned)ci.usage, (unsigned)ci.flags, ci.pNext ? " +list" : "");
     static int logged;
     if (p_layout2 && (ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && logged < 8) {   // the first render targets: is their framebuffer compression on?
         VkImageCompressionPropertiesEXT cp = { .sType = VK_STRUCTURE_TYPE_IMAGE_COMPRESSION_PROPERTIES_EXT };
@@ -1643,6 +1669,7 @@ static int tex_upload_(vtex *x, const tex_t *t, uint64_t *copy_ns) {
            VKCHECK(vkBindBufferMemory(g_dev, sb, tmp.b->mem, tmp.off)); sp = (uint8_t *)tmp.b->map + tmp.off; }
     VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .image = x->img, .subresourceRange = { x->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS } };
+    if (exact_ranges()) { ib.subresourceRange.levelCount = x->levels ? x->levels : 1; ib.subresourceRange.layerCount = x->is3d ? 1 : x->layers ? x->layers : 1; }   // (DM_VK_EXACT_RANGES)
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
     VkBufferImageCopy *rg = calloc(x->levels * layers, sizeof *rg); uint32_t nrg = 0; VkDeviceSize off = 0; int linear = !!(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET));
     for (unsigned l = 0; l < x->levels; l++) {
@@ -1672,6 +1699,7 @@ static int tex_upload_(vtex *x, const tex_t *t, uint64_t *copy_ns) {
         }
     }
     free(scratch);
+    ring("upload img %p: UNDEFINED -> GENERAL + %u copies in %s cb %p", (void *)x->img, nrg, once ? "a one-off" : "the upload", (void *)cb);
     if (nrg) vkCmdCopyBufferToImage(cb, sb, x->img, VK_IMAGE_LAYOUT_GENERAL, nrg, rg);
     free(rg); g_up_bytes += total;
     if (once) { once_end(cb); vkDestroyBuffer(g_dev, sb, NULL); vk_free(tmp); }
@@ -4307,6 +4335,7 @@ void nvn_vk_window_term(void) { if (!g_dev) return; pthread_mutex_lock(&g_wmu); 
 // One swapchain image composed in cb: black, the picture scaled into its box (the upscaler, else the plain linear stretch), the touch overlay; left ready to present
 typedef struct { vtex *x; VkImage img; VkImageView view; uint32_t w, h; int32_t cx, cy, cw, ch; } pres_src;   // x: the game's frame; NULL: a picture of ours (img / view / w / h, GENERAL layout)
 static void present_compose(VkCommandBuffer cb, uint32_t ii, const pres_src *s, int flip) {
+    ring("present: screen img %p (index %u) from img %p in cb %p", (void *)W.img[ii], ii, (void *)(s->x ? s->x->img : s->img), (void *)cb);
     VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = W.img[ii], .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);

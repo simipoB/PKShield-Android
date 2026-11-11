@@ -6,6 +6,11 @@
 //   2 uniform buffers copied when each draw is recorded (DM_VK_UBO_SNAPSHOT), not bound in the game's pools: a Mali-G615 MC2 on Arm's r44p1 still closed three frames in
 //     with full textures and every later level (#105, v0.55), and the one such phone that plays (#77) has this on
 //   3 BC textures converted on the CPU, not by the BC layer's GPU shaders   4 BC textures decoded, not transcoded to ETC2   5 no float controls (Arm's compiler: #89)
+// Mali crash test build (#158): on a Mali GPU (gpu.txt) the levels are instead one candidate fix each for Arm's r44 crash a few frames in (its image barrier handling
+// meets an image whose driver state is gone), so the log of the start that plays names the one that helped:
+//   1 first-use and upload barriers name their levels and layers instead of VK_REMAINING_* (DM_VK_EXACT_RANGES=1)   2 destroyed images held two more submissions
+//   (DM_VK_DEFER_HOLD=2)   3 no view / image quarantine (DM_VK_VIEW_QUARANTINE=0)   4 all three   5 all three + every switch of the usual levels.
+//   (Split submissions are off for Sword / Shield already: GameActivity sets DM_VK_SPLIT=0.) These are set over env.txt (a test: the log says so); the key is the build's own, so the test starts at 0
 // Past the last level the driver dialog appears as before (boot_guard). Returns 1 when this start went a level up (boot_guard then shows no driver dialog)
 #pragma once
 #include <stdio.h>
@@ -21,7 +26,8 @@ static int safe_start(const char *files) {
     FILE *f = fopen(bp, "r"); if (f) { size_t k = fread(prev, 1, sizeof prev - 1, f); prev[k] = 0; fclose(f); }
     f = fopen(gp, "r"); if (f) { if (!fgets(gpu, sizeof gpu, f)) gpu[0] = 0; fclose(f); } gpu[strcspn(gpu, "\r\n")] = 0;
     const char *drv = getenv("DM_VK_DRIVER"), *ver = getenv("DM_APP_VERSION");
-    snprintf(key, sizeof key, "%s|%s", drv && *drv ? drv : "stock", ver ? ver : "?");
+    int mali = strstr(gpu, "Mali") != NULL;
+    snprintf(key, sizeof key, "%s|%s%s", drv && *drv ? drv : "stock", ver ? ver : "?", mali ? "|mali-test1" : "");
     int level = 0; f = fopen(sp, "r");
     if (f) { if (fgets(line, sizeof line, f)) level = atoi(line); if (fgets(had, sizeof had, f)) had[strcspn(had, "\r\n")] = 0; fclose(f);
         if (strcmp(had, key)) { if (level) fprintf(stderr, "boot: safe start level %d was for another driver or app version: the normal settings again\n", level); level = 0; unlink(sp); } }
@@ -32,7 +38,17 @@ static int safe_start(const char *files) {
         f = fopen(sp, "w"); if (f) { fprintf(f, "%d\n%s\n", level, key); fclose(f); }
         fprintf(stderr, "boot: the last start closed in the graphics driver before 30 s of play: this one is a level safer (safe start level %d of %d)\n", level, SAFE_MAX);
     }
-    if (!level) return up;
+    if (!level) { if (mali) fprintf(stderr, "boot: [mali-test] safe start level 0 for %s: the normal settings (a crash in the driver makes the next start try a fix)\n", gpu); return up; }
+    if (mali) {
+        static const char *mw[SAFE_MAX + 1] = { "", "barriers with exact levels and layers (DM_VK_EXACT_RANGES=1)", "destroyed images held two more submissions (DM_VK_DEFER_HOLD=2)",
+            "no view / image quarantine (DM_VK_VIEW_QUARANTINE=0)", "all three: exact ranges, held longer, no quarantine", "all three + full textures, uniform buffers copied, BC on the CPU and decoded, no float controls" };
+        if (level == 1 || level >= 4) setenv("DM_VK_EXACT_RANGES", "1", 1);
+        if (level == 2 || level >= 4) setenv("DM_VK_DEFER_HOLD", "2", 1);
+        if (level == 3 || level >= 4) setenv("DM_VK_VIEW_QUARANTINE", "0", 1);
+        if (level >= 5) { setenv("DM_VK_TEX_QUALITY", "full", 1); setenv("DM_VK_UBO_SNAPSHOT", "1", 1); setenv("DM_VK_BC_GPU", "0", 1); setenv("DM_VK_BC_TRANSCODE", "off", 1); setenv("DM_VK_FLOAT_CONTROLS", "0", 1); }
+        fprintf(stderr, "boot: [mali-test] safe start level %d of %d for %s: %s\n", level, SAFE_MAX, gpu, mw[level]);
+        return up;
+    }
     static const char *what[SAFE_MAX + 1] = { "", "full textures", "uniform buffers copied", "BC textures converted on the CPU", "BC textures decoded, not transcoded", "no float controls" };
     if (level >= 1) setenv("DM_VK_TEX_QUALITY", "full", 0);
     if (level >= 2) setenv("DM_VK_UBO_SNAPSHOT", "1", 0);
