@@ -44,3 +44,5 @@ t_ub
 t_ub.dSYM/
 t_dirty_race
 t_dirty_race.dSYM/
+t_fgen
+t_fgen_vk

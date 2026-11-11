@@ -36,6 +36,11 @@ t_pace: t_pace.c ../nvn/nvn_pace.h
 	clang -O1 -Wall -o $@ t_pace.c
 t_fstep: t_fstep.c ../nvn/nvn_fstep.h
 	clang -O1 -Wall -o $@ t_fstep.c
+t_fgen: t_fgen.c ../nvn/nvn_fgen.h
+	$(CC) -O1 -Wall -o $@ t_fgen.c
+# Frame generation on a real Vulkan driver (Linux: Mesa's lavapipe is enough). VULKAN_INC: a folder holding vulkan/vulkan.h when the system has none
+t_fgen_vk: t_fgen_vk.c ../nvn/nvn_fgen.h ../nvn/overlay/fgen_spv.h
+	$(CC) -O1 -Wall -Wno-unused-function $(if $(VULKAN_INC),-I$(VULKAN_INC)) -o $@ t_fgen_vk.c $(or $(VULKAN_LIB),-lvulkan) -lm
 t_fuse_check: t_fuse_check.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_fuse_check.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_present_crop: t_present_crop.m ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)

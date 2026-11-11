@@ -297,3 +297,5 @@ Off: the game's own textures (your HD texture mods stay installed)	Désactivé :
 L3 / R3 buttons	Boutons L3 / R3
 Off: no L3 / R3 on screen (a controller's stick buttons still work)	Désactivé : pas de L3 / R3 à l'écran (les boutons des sticks d'une manette fonctionnent toujours)
 On: L3 and R3 above the sticks (move them with Move the touch controls)	Activé : L3 et R3 au-dessus des sticks (déplacez-les avec Déplacer les commandes tactiles)
+Frame generation (experimental)	Génération d'images (expérimental)
+On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later	Activée : une image est créée entre deux images du jeu, donc 30 ips bougent comme 60. Nécessite un GPU rapide ; vos commandes s'affichent environ 17 ms plus tard
