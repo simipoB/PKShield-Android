@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.nxnative.passprobe" android:versionCode="1" android:versionName="1">
+    <uses-sdk android:minSdkVersion="31" android:targetSdkVersion="35" />
+    <application android:label="Galar Mali test" android:extractNativeLibs="false">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- the replay: its own process, so a crash in the graphics driver leaves the screen above running -->
+        <activity android:name="android.app.NativeActivity" android:exported="false" android:process=":probe" android:screenOrientation="sensorLandscape"
+                  android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|uiMode">
+            <meta-data android:name="android.app.lib_name" android:value="passprobe" />
+        </activity>
+    </application>
+</manifest>
