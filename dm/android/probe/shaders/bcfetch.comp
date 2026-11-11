@@ -1,0 +1,13 @@
+#version 450
+// The bc-uploads test: one level and layer of a converted texture as a shader sees it (texelFetch through a 2D-array view), written out as float bits
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0) uniform sampler2DArray t;
+layout(std430, binding = 1) writeonly buffer B { uint d[]; };
+layout(push_constant) uniform P { int level, layer, w, h; } p;
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    if (c.x >= p.w || c.y >= p.h) return;
+    vec4 v = texelFetch(t, ivec3(c, p.layer), p.level);
+    int i = (c.y * p.w + c.x) * 4;
+    d[i] = floatBitsToUint(v.x); d[i + 1] = floatBitsToUint(v.y); d[i + 2] = floatBitsToUint(v.z); d[i + 3] = floatBitsToUint(v.w);
+}
