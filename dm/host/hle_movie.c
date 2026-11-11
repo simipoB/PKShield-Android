@@ -63,7 +63,8 @@ typedef struct {
     void *ev[4];                                 // a copy of DecoderEvents: {input, output, format, error} EventType*. The client's struct need not stay alive (by Metroid Dread's second movie it had been overwritten and Start crashed signalling), so it is copied at registration
     int w, h, fmt_sent, started;
     uint8_t *in[MD_NIN]; int infree[MD_NIN], ninfree;                     // queue of free input indices
-    struct { int used, pic; int64_t pts; uint32_t flags; uint8_t *frm; size_t cap, bytes; } out[MD_NOUT];   // pic: frm holds a decoded picture (audio: bytes of PCM); cap: bytes in frm
+    struct { int used, pic; int64_t pts; uint32_t flags; uint8_t *frm; size_t cap, bytes, rd, give; } out[MD_NOUT];   // pic: frm holds a decoded picture (audio: bytes of PCM); cap: bytes in frm
+    // (audio: rd bytes of it handed over already, give the bytes the last GetOutputBuffer handed; a packet larger than the client's buffer leaves in several outputs, h_movie_RelOut)
     int outq[MD_NOUT], noutq;                                             // queue of ready output indices
     struct { int in, off, size; int64_t pts; uint32_t flags; } pend[MD_NIN]; int npend;   // input packets waiting to be decoded (in arrival order)
     // Decoding: dmu lets only one guest thread take and decode packets at a time (packets enter libvpx in order); wmu / wcv hand one job to the host thread and wait for it
@@ -519,7 +520,7 @@ static void md_reset(mdec_t *d, int close) {
     pthread_mutex_lock(&d->mu);
     for (int i = 0; i < MD_NIN; i++) d->infree[i] = i;
     d->ninfree = MD_NIN; d->noutq = 0; d->npend = 0; d->avc_drain = 0;
-    for (int i = 0; i < MD_NOUT; i++) d->out[i].used = d->out[i].pic = 0;
+    for (int i = 0; i < MD_NOUT; i++) { d->out[i].used = d->out[i].pic = 0; d->out[i].rd = d->out[i].give = 0; }
     pthread_mutex_unlock(&d->mu);
     pthread_mutex_unlock(&d->dmu);
 }
@@ -648,11 +649,15 @@ HLE_FORCE("_ZN5movie7Decoder15GetOutputBufferEiPNS_6BufferE", "movie decoder: ge
     if (!buf || i < 0 || i >= MD_NOUT) return 0x100b;
     if (d->mode == MD_MODE_TEX) return md_out_tex(d, i, buf);
     if (MD_AUDIO(d)) {   // PCM16 interleaved; an output without samples (end of stream) is empty
-        size_t n = d->out[i].pic ? d->out[i].bytes : 0, cap = G.cap(buf); uint8_t *p = G.data(buf);
-        if (!p || cap < n) { LOG("[RED] movie: client audio output buffer is %zu bytes, this packet needs %zu", cap, n); G.set_range(buf, 0, 0); return 0x100b; }
-        if (n) memcpy(p, d->out[i].frm, n);
+        // A packet can decode to more than the client's buffer holds (Sword / Shield's credits movie: Vorbis packets of 12288 / 16384 bytes, buffers of 8192): as many whole
+        // sample frames as fit go now, the rest when the client releases this index (h_movie_RelOut queues it again). Refusing the packet stopped the movie, and the game with it (#144)
+        size_t n = d->out[i].pic && d->out[i].bytes > d->out[i].rd ? d->out[i].bytes - d->out[i].rd : 0, cap = G.cap(buf), fr = (size_t)2 * (d->ch > 0 ? d->ch : 2); uint8_t *p = G.data(buf);
+        if (n > cap) n = cap / fr * fr;
+        if (!p || (!n && d->out[i].pic && d->out[i].bytes > d->out[i].rd)) { LOG("[RED] movie: client audio output buffer is %zu bytes, not one sample frame (%zu bytes)", cap, fr); G.set_range(buf, 0, 0); return 0x100b; }
+        if (n) memcpy(p, d->out[i].frm + d->out[i].rd, n);
+        d->out[i].give = n;
         G.set_range(buf, 0, (int)n);
-        MD_TRACE(d, 12, "GetOutputBuffer index %d → PCM %zu bytes", i, n);
+        MD_TRACE(d, 12, "GetOutputBuffer index %d → PCM %zu bytes%s", i, n, d->out[i].rd + n < d->out[i].bytes && d->out[i].pic ? " (part of a larger packet)" : "");
         return 0;
     }
     int w, h, stride, slice; md_dims(d, &w, &h, &stride, &slice);
@@ -674,7 +679,17 @@ HLE_FORCE("_ZN5movie7Decoder24ReleaseOutputBufferIndexEi", "movie decoder: relea
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     if (i < 0 || i >= MD_NOUT) return 0x100b;
     pthread_mutex_lock(&d->mu);
-    d->out[i].used = 0; d->out[i].pic = 0;
+    if (MD_AUDIO(d) && d->out[i].pic && d->out[i].give && d->out[i].rd + d->out[i].give < d->out[i].bytes && d->noutq < MD_NOUT) {
+        // the rest of a packet larger than the client's buffer: the same index again, first in line, its time moved on by the samples handed over
+        size_t fr = (size_t)2 * (d->ch > 0 ? d->ch : 2); int rate = d->rate > 0 ? d->rate : 48000;
+        d->out[i].rd += d->out[i].give; d->out[i].pts += (int64_t)(d->out[i].give / fr) * 1000000 / rate; d->out[i].give = 0;
+        memmove(d->outq + 1, d->outq, d->noutq * sizeof *d->outq); d->outq[0] = i; d->noutq++;
+        pthread_mutex_unlock(&d->mu);
+        MD_TRACE(d, 13, "ReleaseOutputBufferIndex index %d: %zu bytes of the packet left, queued again", i, d->out[i].bytes - d->out[i].rd);
+        md_event(d, 1);
+        return 0;
+    }
+    d->out[i].used = 0; d->out[i].pic = 0; d->out[i].rd = d->out[i].give = 0;
     int queued = d->npend;
     pthread_mutex_unlock(&d->mu);
     MD_TRACE(d, 13, "ReleaseOutputBufferIndex index %d (%d packets queued)", i, queued);
