@@ -1496,7 +1496,9 @@ typedef struct { uint64_t key; uint16_t streak, ro; uint8_t off, rooff; } skey_t
 static skey_t g_sk[SK_N]; static int g_nsk_keys;
 static pthread_mutex_t g_skmu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_sk_skipped, g_sk_wrong;   // stores skipped, skipped stores read after all (the present line)
-static int sk_on(void) { static int v = -1; if (v < 0) { v = arceus_pass_default("DM_VK_SKIP_STORES", "0", "1"); VLOG("attachment stores: %s", v ? "learnt (a store always overwritten unread is left out; DM_VK_SKIP_STORES=0: every pass stores)" : "every pass stores its attachments"); } return v; }
+// Off by default since v0.16, Arceus too: a battle effect that samples a copy of the scene (Darkrai's Dark Void, 2026-11-11 on a Galaxy S25+) showed big flat grey
+//   slanted boxes over a washed-out scene, what an attachment whose store was skipped reads back. DM_VK_SKIP_STORES=1 turns it on to compare
+static int sk_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_SKIP_STORES"); v = e && !strcmp(e, "1"); VLOG("attachment stores: %s", v ? "learnt (a store always overwritten unread is left out; DM_VK_SKIP_STORES=0: every pass stores)" : "every pass stores its attachments"); } return v; }
 static skey_t *sk_get(uint64_t key) {
     if (!key) key = 1;
     for (uint32_t i = (uint32_t)(key ^ key >> 29) & (SK_N - 1), n = 0; n < SK_N; i = (i + 1) & (SK_N - 1), n++) {
