@@ -830,10 +830,19 @@ static void pin_update(void) {
     if (!top) return;
     if (top == low) { if (!g_pin_top) return; for (int c = 0; c < 32; c++) if (f[c]) { CPU_SET(c, &set); n++; } }   // all alike now: every core
     else for (int c = 0; c < 32; c++) if (f[c] == top) { CPU_SET(c, &set); n++; }
+    // never fewer cores than pinned threads: a hot Galaxy Z Flip5 capped its prime core to 1.71 GHz with the middle ones at 1.56, and both threads a frame waits on
+    //   shared that one core (41-48 ms of CPU work a frame) while three nearly as fast cores sat idle. The next fastest cores join until each thread has one
+    long floor_ = top;
+    while (n < g_pin_n && top != low) {
+        long next = 0; for (int c = 0; c < 32; c++) if (f[c] && f[c] < floor_ && f[c] > next) next = f[c];
+        if (!next) break;
+        for (int c = 0; c < 32; c++) if (f[c] == next) { CPU_SET(c, &set); n++; }
+        floor_ = next; }
     if (top == g_pin_top && !(top == low)) { static cpu_set_t last; if (CPU_EQUAL(&last, &set)) return; last = set; }
     g_pin_top = top;
     for (int i = 0; i < g_pin_n; i++) sched_setaffinity(g_pin_tid[i], sizeof set, &set);
-    fprintf(stderr, "[cpu] main threads on %d core%s limited to %.2f GHz\n", n, n == 1 ? "" : "s", top / 1e6);
+    if (floor_ < top) fprintf(stderr, "[cpu] main threads on %d cores limited to %.2f-%.2f GHz (the fastest alone was fewer cores than threads)\n", n, floor_ / 1e6, top / 1e6);
+    else fprintf(stderr, "[cpu] main threads on %d core%s limited to %.2f GHz\n", n, n == 1 ? "" : "s", top / 1e6);
 }
 // ---------- Performance hints (Android 13+): one session for the game's main thread and the presenting thread, told every frame how long the presenting thread
 // worked against the frame's period (nvn_vk.c mtl_present). That is what brings the fastest cores and higher clocks when the game needs them, and lower ones
