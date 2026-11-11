@@ -27,7 +27,7 @@ static int safe_start(const char *files) {
     f = fopen(gp, "r"); if (f) { if (!fgets(gpu, sizeof gpu, f)) gpu[0] = 0; fclose(f); } gpu[strcspn(gpu, "\r\n")] = 0;
     const char *drv = getenv("DM_VK_DRIVER"), *ver = getenv("DM_APP_VERSION");
     int mali = strstr(gpu, "Mali") != NULL;
-    snprintf(key, sizeof key, "%s|%s%s", drv && *drv ? drv : "stock", ver ? ver : "?", mali ? "|mali-test1" : "");
+    snprintf(key, sizeof key, "%s|%s%s", drv && *drv ? drv : "stock", ver ? ver : "?", mali ? "|mali-test2" : "");
     int level = 0; f = fopen(sp, "r");
     if (f) { if (fgets(line, sizeof line, f)) level = atoi(line); if (fgets(had, sizeof had, f)) had[strcspn(had, "\r\n")] = 0; fclose(f);
         if (strcmp(had, key)) { if (level) fprintf(stderr, "boot: safe start level %d was for another driver or app version: the normal settings again\n", level); level = 0; unlink(sp); } }
