@@ -36,6 +36,15 @@
 | **Xclipse 540 / 940** | Stock | Crash fixes (#41, #45), awaiting reports. |
 | **PowerVR** (Tensor G5 / G6) | Stock | Untested. |
 
+## What's new
+
+- **Mali crash fix (v0.69).** Arm's driver makes more screen buffers than the game asks for (14 for 8 on a Mali-G57). The game had room for 8, so on some Mali phones the driver closed it a few frames in (#158, #163). It now has room for 32 and uses the count the driver reports.
+- **Screen setup fallbacks (v0.72).** If a driver refuses the screen setup, the game tries again with the plainest settings every driver must accept. Before, that left a black screen.
+- **Two Mali tests (v0.72),** in ☰ → White screen tests (Mali), both off by default:
+  - *Multiply by zero as on the Switch.* On the Switch's GPU, 0 × infinity is 0. On phones it's NaN, which can show as white or glowing surfaces. This rewrites each shader's SPIR-V as it loads so that every multiply follows the Switch's rule, so you don't need to run setup again. A little slower.
+  - *Keep unused depth in tile memory.* Depth that nothing reads afterwards isn't written back to memory, which is faster on Mali. Tell us if anything flickers.
+- **Engine built with link-time optimization (v0.72).** The compiler now optimizes the whole engine at once instead of file by file. It should take less CPU time per frame; not yet measured on a phone.
+
 ## Playing
 
 - **Touch:** on-screen controls, with **☰** (settings) next to −. Two-finger tap = B.
