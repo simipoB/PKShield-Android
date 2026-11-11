@@ -485,6 +485,7 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
     { extern void dm_fps_scene_file(const char *path); dm_fps_scene_file(path); }   // (loader.c: Sword / Shield's stadium crowd holds 30 fps)
     return RES_OK;
 }
+_Atomic uint64_t dm_fs_read_bytes;   // bytes the game has read from its files (android_main.c: a burst of reads is a load)
 HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", Result, h_fs_ReadFile, size_t *out, uint64_t h, int64_t off, void *buf, size_t sz) {
     if (!h) { *out = 0; return RES_FAIL; }   // a file handle is an fd; 0 is stdin and never a file the game opened: the null handle the game keeps using after a failed open
     size_t got = 0;
@@ -499,6 +500,7 @@ HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", 
                 errno = e; }
             return err_res("pread", "fd"); }
         if (r == 0) break;
+        atomic_fetch_add(&dm_fs_read_bytes, (uint64_t)r);
         got += r;
     }
     *out = got;

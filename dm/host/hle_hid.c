@@ -30,10 +30,21 @@ static _Atomic int64_t g_sampling = 1 << 16;   // starts high so the history ent
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
 }
+// Right stick (camera) sensitivity, in percent of the stick's travel (DM_RSTICK_SENS, the in-game menu: 50 to 200, 100 by default): the touch camera, the touch
+//   right stick and a controller's right stick alike. Above 100 the camera reaches its full speed with less of the stick; below, it turns more gently
+_Atomic int dm_rstick_pct = -1;   // -1: not read yet (android_main.c sets it from the menu)
+static int32_t rsens(int32_t v) {
+    int p = atomic_load(&dm_rstick_pct);
+    if (p < 0) { const char *e = getenv("DM_RSTICK_SENS"); p = e ? atoi(e) : 100; if (p < 25 || p > 400) p = 100; atomic_store(&dm_rstick_pct, p); }
+    if (p == 100) return v;
+    int64_t s = (int64_t)v * p / 100; return (int32_t)(s > 32767 ? 32767 : s < -32767 ? -32767 : s);
+}
 void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    rx = rsens(rx); ry = rsens(ry);
     uint64_t old = atomic_exchange(&g_btn, buttons); atomic_fetch_or(&g_latch, buttons & ~old); atomic_store(&g_axes, pack(lx, ly, rx, ry));
 }
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    rx = rsens(rx); ry = rsens(ry);
     uint64_t old = atomic_exchange(&g_pad_btn, buttons); atomic_fetch_or(&g_pad_latch, buttons & ~old); atomic_store(&g_pad_axes, pack(lx, ly, rx, ry));
 }
 // Timed presses from the host itself (the Android touch menu driver, touch_menu.c): buttons held until the given time, ORed with the other sources

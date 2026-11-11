@@ -187,6 +187,24 @@ uint32_t *spv_drop_inputs(const uint32_t *code, size_t words, uint64_t drop, siz
     return o;
 }
 
+// Dual-source blending without dualSrcBlend (nvn_vk.c draw): a copy whose outputs at locations 0 and 1 trade places, so the second output reaches the colour
+//   target and the blend can use it as the source. NULL: not a SPIR-V module or no output at location 1
+uint32_t *spv_swap_out01(const uint32_t *code, size_t words, size_t *out_words) {
+    if (words < 5 || code[0] != 0x07230203u) return NULL;
+    uint32_t bound = code[3]; if (!bound || bound > (1u << 22)) return NULL;
+    uint8_t *out = calloc(bound, 1); int has1 = 0;
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) break; const uint32_t *x = code + i;
+        if (op == OpVariable && n >= 4 && x[2] < bound && x[3] == SC_Output) out[x[2]] = 1;
+        i += n; }
+    uint32_t *o = malloc(sizeof(uint32_t) * words); memcpy(o, code, sizeof(uint32_t) * words);
+    for (size_t i = 5; i < words;) { uint32_t n = o[i] >> 16, op = o[i] & 0xffff; if (!n || i + n > words) break; uint32_t *x = o + i;
+        if (op == OpDecorate && n >= 4 && x[1] < bound && out[x[1]] && x[2] == DecLocation && x[3] <= 1) { if (x[3] == 1) has1 = 1; x[3] ^= 1; }
+        i += n; }
+    free(out);
+    if (!has1) { free(o); return NULL; }
+    *out_words = words; return o;
+}
+
 uint32_t *spv_init_outputs(const uint32_t *code, size_t words, size_t *out_words) {
     if (words < 5 || code[0] != 0x07230203u) return NULL;
     uint32_t bound = code[3]; if (!bound || bound > (1u << 22)) return NULL;

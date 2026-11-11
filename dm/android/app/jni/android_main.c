@@ -215,10 +215,11 @@ JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env,
         } else now = 0;
     }
     else if (!strcmp(k, "DM_TOUCH_OPACITY") || !strcmp(k, "DM_TOUCH_FADE") || !strcmp(k, "DM_TOUCH_HAPTIC") || !strcmp(k, "DM_TOUCH_L3R3")) touch_ui_setting(k, v);
-    else if (!strcmp(k, "DM_RUMBLE")) { touch_ui_setting(k, v); now = 0; }   // (the touch click follows it at once; the game's motors are GameActivity's, GameMenu decides)
+    else if (!strcmp(k, "DM_RUMBLE")) { touch_ui_setting(k, v); now = 0; }
+    else if (!strcmp(k, "DM_RSTICK_SENS")) { extern _Atomic int dm_rstick_pct __attribute__((weak)); int p = v ? atoi(v) : 100; if (p < 25 || p > 400) p = 100; if (&dm_rstick_pct) atomic_store(&dm_rstick_pct, p); else now = 0; }   // (the touch click follows it at once; the game's motors are GameActivity's, GameMenu decides)
     else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
     else if (!strcmp(k, "DM_SCALER")) { extern volatile int dm_scaler_mode; if (!v || !*v) v = getenv("DM_AUTO_SCALER"); dm_scaler_mode = v && !strcmp(v, "sgsr") ? 1 : v && !strcmp(v, "smooth") ? 2 : 0; }   // (Auto: the app's pick)
-    else if (!strcmp(k, "DM_FRAMEGEN")) { extern volatile int dm_framegen_mode; dm_framegen_mode = v && (!strcmp(v, "on") || !strcmp(v, "1")) ? 1 : v && !strcmp(v, "debug") ? 2 : v && !strcmp(v, "lsfg") ? 3 : 0;   // nvn_vk.c present_window_locked
+    else if (!strcmp(k, "DM_FRAMEGEN")) { extern volatile int dm_framegen_mode; dm_framegen_mode = v && (!strcmp(v, "on") || !strcmp(v, "1")) ? 1 : v && !strcmp(v, "debug") ? 2 : v && !strcmp(v, "lsfg") ? 3 : 0; window_rate(atomic_load(&g_window));   // nvn_vk.c present_window_locked
         window_rate(atomic_load(&g_window)); }   // (Android is told the doubled rate, or the game's own again)
     else if (!strcmp(k, "DM_LSFG_MULT")) { extern volatile int dm_lsfg_mult; int m = v ? atoi(v) : 0; dm_lsfg_mult = m >= 2 && m <= 4 ? m : 0; }   // nvn_vk.c lsfg_mult: 0 auto
     else if (!strcmp(k, "DM_SCALER_SHARPNESS")) { extern volatile float dm_scaler_sharpness; dm_scaler_sharpness = !v || !strcmp(v, "sharp") ? 0.7f : !strcmp(v, "smooth") ? -1.0f : (float)atof(v); }   // nvn_vk.c scale_draw
@@ -569,6 +570,7 @@ void dm_set_opmode(int m);   // host/hle_oe.c: tells the game the console mode c
 int dm_res_scale_ready(void), dm_res_scale_applies(void); void dm_res_factor_set(float f);   // host/hle_resscale.c
 static const float k_res_steps[] = { 1.0f, 0.85f, 0.7f, 0.6f };
 #define NRES ((int)(sizeof k_res_steps / sizeof k_res_steps[0]))
+#define RES_HOT 2   // the step heat goes straight to: 70 %, about 720p from 1080p (the upscaler brings it back to the screen's size)
 static int g_fps_guard;   // set at start (fps_guard_init): the target, 0 off
 static void fps_guard_init(void) {
     const char *t = getenv("DM_FPS_TARGET"), *off = getenv("DM_FPS_GUARD"), *g = getenv("DM_GRAPHICS");
@@ -583,9 +585,12 @@ static void graphics_auto(void) {
     if (!(g && !strcmp(g, "auto") && g_th_mgr && g_th_st) && !g_fps_guard) return;
     int hot = 0, calm = 1;
     if (g_th_mgr && g_th_st) { int st = g_th_st(g_th_mgr); float hr = g_th_hr ? g_th_hr(g_th_mgr, 10) : -1.0f;
-        hot = st >= 3 || hr >= 0.95f; calm = st <= 1 && (hr < 0 || hr < 0.75f); }
+        // hot from "moderate" (2): the status a Galaxy S25+ sat at with all its cores capped to 1.4-2.2 GHz; "severe" (3) came too late to save the frame rate
+        hot = st >= 2 || hr >= 0.9f; calm = st <= 1 && (hr < 0 || hr < 0.75f); }
     double fps = -1;
-    if (g_fps_guard && dm_nvn_frame_count) { uint64_t fr = dm_nvn_frame_count(); if (primed) fps = (fr - last_fr) / 5.0; last_fr = fr; primed = 1; }
+    // (the first minute of frames does not count: a save loading in runs slow while the game reads the world, Legends: Arceus at 22.6 fps for its first 20 s; that
+    //   dropped TV mode for two minutes on a phone that then held 30 in it, Galaxy S25+ 2026-11-09)
+    if (g_fps_guard && dm_nvn_frame_count) { uint64_t fr = dm_nvn_frame_count(); if (primed && fr >= 1800) fps = (fr - last_fr) / 5.0; last_fr = fr; primed = 1; }
     // decisions on an average, not one 5-s reading: on a hot phone the readings swung 25.6 / 15.4 / 21.6, and the 15.4 made the next reading look like a gain, so the
     //   resolution went 85 → 70 → 60 % in ten seconds without a frame gained (a Galaxy S25+ held back by its CPU)
     static double fps_avg; if (fps > 1) fps_avg = fps_avg > 1 ? 0.5 * fps_avg + 0.5 * fps : fps;
@@ -616,8 +621,9 @@ static void graphics_auto(void) {
         if ((for_heat || for_rate) && lv < NRES - 1) {
             if (!for_heat && held < 24 && wait < 192) wait *= 2;   // short again soon after a step up: wait twice as long next time
             probe = 3; probe_hot = for_heat; fps_was = fps_avg > 1 ? fps_avg : fps;
-            lv++; dm_res_factor_set(k_res_steps[lv]); cool = 0; held = 0; slow = 0; since = 0;
-            if (for_heat) fprintf(stderr, "graphics auto: the phone is hot: 3D render scale %d %%\n", (int)(k_res_steps[lv] * 100 + 0.5f));
+            lv++; if (for_heat && lv < RES_HOT) lv = RES_HOT;   // hot: straight to about 720p (70 % of 1080p), not one step every 30 s while the phone keeps heating up
+            dm_res_factor_set(k_res_steps[lv]); cool = 0; held = 0; slow = 0; since = 0;
+            if (for_heat) fprintf(stderr, "graphics auto: the phone is hot: 3D render scale %d %% (about %dp)\n", (int)(k_res_steps[lv] * 100 + 0.5f), (int)(1080 * k_res_steps[lv] + 0.5f));
             else fprintf(stderr, "fps guard: %.1f fps, short of %d: 3D render scale %d %%; a step up after %d s steady\n", fps, g_fps_guard, (int)(k_res_steps[lv] * 100 + 0.5f), wait * 5);
         } else if (lv > 0 && cool >= wait) {
             lv--; dm_res_factor_set(k_res_steps[lv]); cool = 0; held = 0; slow = 0; since = 0; probe = 0;
@@ -824,19 +830,55 @@ static void pin_update(void) {
     if (!top) return;
     if (top == low) { if (!g_pin_top) return; for (int c = 0; c < 32; c++) if (f[c]) { CPU_SET(c, &set); n++; } }   // all alike now: every core
     else for (int c = 0; c < 32; c++) if (f[c] == top) { CPU_SET(c, &set); n++; }
+    // never fewer cores than pinned threads: a hot Galaxy Z Flip5 capped its prime core to 1.71 GHz with the middle ones at 1.56, and both threads a frame waits on
+    //   shared that one core (41-48 ms of CPU work a frame) while three nearly as fast cores sat idle. The next fastest cores join until each thread has one
+    long floor_ = top;
+    while (n < g_pin_n && top != low) {
+        long next = 0; for (int c = 0; c < 32; c++) if (f[c] && f[c] < floor_ && f[c] > next) next = f[c];
+        if (!next) break;
+        for (int c = 0; c < 32; c++) if (f[c] == next) { CPU_SET(c, &set); n++; }
+        floor_ = next; }
     if (top == g_pin_top && !(top == low)) { static cpu_set_t last; if (CPU_EQUAL(&last, &set)) return; last = set; }
     g_pin_top = top;
     for (int i = 0; i < g_pin_n; i++) sched_setaffinity(g_pin_tid[i], sizeof set, &set);
-    fprintf(stderr, "[cpu] main threads on %d core%s limited to %.2f GHz\n", n, n == 1 ? "" : "s", top / 1e6);
+    if (floor_ < top) fprintf(stderr, "[cpu] main threads on %d cores limited to %.2f-%.2f GHz (the fastest alone was fewer cores than threads)\n", n, floor_ / 1e6, top / 1e6);
+    else fprintf(stderr, "[cpu] main threads on %d core%s limited to %.2f GHz\n", n, n == 1 ? "" : "s", top / 1e6);
 }
 // ---------- Performance hints (Android 13+): one session for the game's main thread and the presenting thread, told every frame how long the presenting thread
 // worked against the frame's period (nvn_vk.c mtl_present). That is what brings the fastest cores and higher clocks when the game needs them, and lower ones
 // when it does not (LAS Recomp's Android port: the prime core otherwise stays parked). The presenting thread also gets the most urgent priority an app may set
 static void *g_hint; static int g_hint_failed; static int64_t g_hint_target;
+// A/B in one run (DM_AB=<frames>:<key>): the switch named <key> alternates every <frames> presented frames, on (1) in the odd stretches, so both sides run in the
+//   same heat: a phone that warms up throttles its cores (a Galaxy S25+ from 4.47 to 1.4 GHz in a long session, 2026-11-09), and two runs one after the other
+//   differed by more than most changes (the A/B idea from another Android port of a Switch game). Returns -1 when <key> is not under test, else 0 or 1. The present line (nvn_vk.c)
+//   names the side each window was on
+int dm_ab(const char *key) {
+    static int init; static long every; static char k[32];
+    if (!init) { init = 1; const char *e = getenv("DM_AB"), *c = e ? strchr(e, ':') : NULL;
+        if (c && (every = atol(e)) > 0) { snprintf(k, sizeof k, "%s", c + 1); fprintf(stderr, "[ab] %s alternates every %ld frames (on in the odd stretches)\n", k, every); } }
+    if (every <= 0 || strcmp(key, k)) return -1;
+    extern uint64_t dm_nvn_frame_count(void) __attribute__((weak));
+    uint64_t f = dm_nvn_frame_count ? dm_nvn_frame_count() : 0; return (int)((f / (uint64_t)every) & 1);
+}
+int dm_ab_side(void) {   // the side of the frame just presented (-1: no DM_AB); the timing lines name it (hle_nvn.c)
+    static int has = -1; if (has < 0) { const char *e = getenv("DM_AB"); has = e && strchr(e, ':') != NULL; }
+    if (!has) return -1;
+    extern uint64_t dm_nvn_frame_count(void) __attribute__((weak)); const char *e = getenv("DM_AB"); long every = e ? atol(e) : 0; if (every <= 0) return -1;
+    uint64_t f = dm_nvn_frame_count ? dm_nvn_frame_count() : 0; return f ? (int)(((f - 1) / (uint64_t)every) & 1) : 0;
+}
+// The target the hint session is given: three quarters of the frame, not all of it (DM_HINT_TARGET=<percent>, 100: the whole frame as before). With the whole frame
+//   the governor lowers the clocks until the work just fits it, and frames that weigh near 33 ms then go over every few frames, each a refresh late: 17-20 fps at
+//   settings that held 30 on a Mali-G925 in another Android port of a Switch game, which moved to 25 ms of 33 for its 30 fps. DM_AB=<n>:hint compares the two
+static int64_t hint_target(uint64_t period_ns) {
+    static int pct = -1; if (pct < 0) { const char *e = getenv("DM_HINT_TARGET"); pct = e ? atoi(e) : 75; if (pct < 30 || pct > 100) pct = 75; }
+    int ab = dm_ab("hint"); int p = ab < 0 ? pct : ab ? 75 : 100;
+    return (int64_t)period_ns * p / 100;
+}
 static void *(*p_hint_mgr)(void); static void *(*p_hint_create)(void *, const int32_t *, size_t, int64_t);
 static int (*p_hint_target)(void *, int64_t); static int (*p_hint_report)(void *, int64_t);
-void front_frame_work(uint64_t busy_ns, uint64_t target_ns) {
+void front_frame_work(uint64_t busy_ns, uint64_t period_ns) {
     if (g_hint_failed) return;
+    uint64_t target_ns = (uint64_t)hint_target(period_ns);
     if (!g_hint) {
         static int tried; if (tried++) return;
         setpriority(PRIO_PROCESS, (id_t)gettid(), -10);
@@ -854,10 +896,30 @@ void front_frame_work(uint64_t busy_ns, uint64_t target_ns) {
         if (!g_hint && n > pinned && m && p_hint_create) g_hint = p_hint_create(m, t, n = pinned, (int64_t)target_ns);   // (refused with the workers: the two threads as before)
         if (!g_hint || !p_hint_report) { g_hint_failed = 1; fprintf(stderr, "[cpu] no performance hint session\n"); return; }
         g_hint_target = (int64_t)target_ns; for (size_t i = 0; i < pinned; i++) g_pin_tid[i] = t[i]; g_pin_n = (int)pinned; pin_update();
-        fprintf(stderr, "[cpu] performance hint session: %zu threads (%zu of them the game's frame workers), target %.1f ms; presenting thread at priority -10\n", n, n - pinned, target_ns / 1e6);
+        fprintf(stderr, "[cpu] performance hint session: %zu threads (%zu of them the game's frame workers), target %.1f ms of the %.1f ms frame; presenting thread at priority -10\n", n, n - pinned, target_ns / 1e6, period_ns / 1e6);
     }
     if ((int64_t)target_ns != g_hint_target && p_hint_target) p_hint_target(g_hint, g_hint_target = (int64_t)target_ns);
     if (busy_ns) p_hint_report(g_hint, (int64_t)busy_ns);
+}
+// Loading (GameActivity polls this every 500 ms and tells Android 13+ through GameManager.setGameState, so the system can raise the clocks and the storage
+//   speed for it): the game reading its files at 8 MB/s or more; over once it reads under 1 MB/s for 2 s. A load also tells the hint session (Android 16:
+//   APerformanceHint_notifyWorkloadSpike) that this frame's CPU work jumps, before the governor sees the late frames. DM_LOAD_HINT=0: neither
+JNIEXPORT jint JNICALL Java_com_nxnative_GameActivity_nativeLoading(JNIEnv *env, jclass c) {
+    (void)env; (void)c;
+    static int off = -1; if (off < 0) { const char *e = getenv("DM_LOAD_HINT"); off = e && !strcmp(e, "0"); } if (off) return 0;
+    extern _Atomic uint64_t dm_fs_read_bytes __attribute__((weak)); if (!&dm_fs_read_bytes) return 0;
+    static uint64_t last_b, last_t, quiet_since; static int loading;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); uint64_t t = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec, b = atomic_load(&dm_fs_read_bytes);
+    if (last_t && t > last_t) {
+        double mbs = (double)(b - last_b) / 1048576.0 / ((double)(t - last_t) / 1e9);
+        if (!loading && mbs >= 8.0) { loading = 1; quiet_since = 0; fprintf(stderr, "[cpu] loading (%.0f MB/s of game files): the system is told\n", mbs);
+            typedef int (*spike_fn)(void *, int, int, const char *); static spike_fn sp; static int looked;
+            if (!looked) { looked = 1; void *lib = dlopen("libandroid.so", RTLD_NOW); sp = lib ? (spike_fn)dlsym(lib, "APerformanceHint_notifyWorkloadSpike") : NULL; }
+            if (sp && g_hint) sp(g_hint, 1, 0, "load"); }
+        else if (loading && mbs < 1.0) { if (!quiet_since) quiet_since = t; else if (t - quiet_since >= 2000000000ull) { loading = 0; fprintf(stderr, "[cpu] loading over\n"); } }
+        else if (loading) quiet_since = 0;
+    }
+    last_b = b; last_t = t; return loading;
 }
 // The host's front_run (main.c): the guest already runs on our big-stack host thread
 void front_run(void (*guest)(void)) { guest(); }

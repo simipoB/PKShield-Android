@@ -490,6 +490,7 @@ static int pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
 // Built-in patches. (No built-in 20:9 camera: the 16:9 that PR #48 patched, MOVK X9, #0x8e39 / #0x3fe3 at +0x607de8, is a camera object's default aspect, which
 // the game replaces for the gameplay camera; patched, the picture was unchanged. DM_ASPECT=20:9 is the presentation alone, for a 20:9 .pchtxt mod.)
 int dm_step_hz; uint8_t *dm_step_word;   // the high frame rate below: its rate and the game's step word, which hle_nvn.c vstep_tick rewrites every frame
+uint8_t *dm_step_table;   // the game's whole frame-time table (5 u64 ns, intervals 1-5), when it holds the game's own values: vstep_tick writes the real step into all of it
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1);
 // Built-in community mods (builtin_mods.h, from dm/games/*/builtin_mods/*.pchtxt), each behind a setting: Scarlet / Violet 4.0.0's dynamic frame rate (Fl4sh's ASM
 // "Dynamic FPS": up to 60, the game's step from the time each frame really took) with DM_FPS_TARGET=60, their 2048×2048 shadow maps (Fl4sh's "2K Shadows") with
@@ -572,6 +573,15 @@ static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
         LOG("[RED] %s: %d fps patch not applied (%s: the step word lies in code, or that code was rewritten)", m->name, fps, FPS_SITES[si].game); return 0; }
     uint32_t wi, wd; memcpy(&wi, m->base + itv, 4); memcpy(&wd, m->base + dt, 4);
     if ((wi != 0x2a1503e1u && wi != 0x52800041u) || wd != 33333334u) { LOG("[RED] %s: %d fps patch not applied (unexpected words %08x %u)", m->name, fps, wi, wd); return 0; }
+    // The game does not take its step from the interval alone: once a frame (Shield FUN_006ea110 / FUN_006df360 in Ghidra, image +0x5ea110 / +0x5df360) it
+    //   measures its own frame cost, max(CPU work without its waits, the GPU time between two timestamp counter reports), rounds it up to whole vsyncs and
+    //   picks that entry of this table (16.7 / 33.3 / 50 / 66.7 / 83.3 ms). On this engine both measures miss time: the waits it subtracts are where our
+    //   translation and a throttled phone make it wait, and the timestamps of one submission are equal (written when it completes), so the game advanced
+    //   33 ms for frames that took 40-62 ms: the world, its animations above all, in slow motion. With the whole table found, every entry gets the real step
+    {   static const uint64_t own[5] = { 16666667, 33333334, 50000000, 66666667, 83333334 }; uint64_t t[5];
+        if (dt >= 8 && dt - 8 >= m->text_end && dt + 32 <= lim) { memcpy(t, m->base + dt - 8, sizeof t);
+            if (!memcmp(t, own, sizeof t)) dm_step_table = m->base + dt - 8; }
+        if (!dm_step_table) LOG("%s: the frame-time table around +%#llx is not the game's own: only its interval-2 entry follows the real step", m->name, (unsigned long long)dt); }
     wi = 0x52800021u; wd = (uint32_t)((1000000000ull + (uint64_t)fps - 1) / (uint64_t)fps);
     memcpy(m->base + itv, &wi, 4); memcpy(m->base + dt, &wd, 4);
     dm_step_hz = fps; dm_step_word = m->base + dt;

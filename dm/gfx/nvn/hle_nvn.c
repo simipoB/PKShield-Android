@@ -389,6 +389,7 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
     OLOG("Texture %p %ux%ux%u lv%u fmt=%#x tgt=%d flags=%#x size=%#llx", (void *)t, o->d.width, o->d.height, o->d.depth,
          o->d.levels, o->d.format, o->d.target, o->d.flags, o->L.size);
     ft_add(o);
+    { extern void mtl_tex_preupload(const tex_t *t) __attribute__((weak)); if (mtl_tex_preupload) mtl_tex_preupload(o); }   // (nvn_vk.c: uploaded ahead by a worker)
     return 1;
 }
 NVN(nvnTextureFinalize, void, NVNtexture *t) { rq_drain(); ft_del(TX(t)->serial); mtl_tex_release(TX(t)); TX(t)->magic = 0; }
@@ -1384,7 +1385,8 @@ static void tsummary(uint64_t frame) {
         double v[TWIN]; memcpy(v, g_tw[k], n * sizeof *v); qsort(v, n, sizeof *v, dcmp);
         o += snprintf(line + o, sizeof line - o, " %s p50 %.2f / p95 %.2f / max %.2f ms (%u frames);", g_tname[k], v[n / 2], v[(n * 95) / 100 < n ? (n * 95) / 100 : n - 1], v[n - 1], n);
     }
-    LOG("[nvn] timing up to frame %llu:%s", frame, line);
+    { extern int dm_ab_side(void) __attribute__((weak)); int ab = dm_ab_side ? dm_ab_side() : -1;   // (DM_AB: which side this window ran on; use a multiple of 300 frames)
+      if (ab >= 0) LOG("[nvn] timing up to frame %llu (ab %d):%s", frame, ab, line); else LOG("[nvn] timing up to frame %llu:%s", frame, line); }
     double tgt = 1000.0 / mtl_fps_target();   // milliseconds one frame should take: 16.7 at 60 fps, 33.3 when the game itself asks for 30 (the over-time / dropped-frame counts below use it)
     { unsigned n = g_tn[0] < TWIN ? g_tn[0] : TWIN, over = 0; double v[TWIN];   // frame interval gets its own line (M1 baseline): number of frames longer than one frame period in this window and p99
       if (n) { memcpy(v, g_tw[0], n * sizeof *v); qsort(v, n, sizeof *v, dcmp); for (unsigned i = 0; i < n; i++) over += v[i] > tgt;
@@ -1599,6 +1601,23 @@ static void vstep_tick(const win_t *o) {
     // at most 2 slots: 30 fps is the floor, 60 when frames fit (a 3-slot hold, 20 fps, swung the picture between 20 and 60). The live target 30 holds every frame 2
     int k0 = g_vs.k, n = nvn_fstep_next(&g_vs, shown, cost, live_fps() == 30 ? 2 : 1, 2, 0);
     uint32_t ns = (uint32_t)(((uint64_t)n * 1000000000ull + (uint64_t)dm_step_hz - 1) / (uint64_t)dm_step_hz);
+    // The game's step follows real time (loader.c fps_patch, dm_step_table): the time since the last frame's start, in whole slots, up to 83.3 ms (the longest
+    //   step the game's own table has), the part of a slot left over carried into the next frame and anything over 83.3 ms of a stall dropped; every entry
+    //   of the table gets it, so whichever the game picks from its own measures, game time = real time. Presentation still holds frames k slots (above).
+    //   DM_GAME_STEP=fixed: only the interval-2 entry, with the hold's step, as before
+    { extern uint8_t *dm_step_table __attribute__((weak)); static int fixed = -1; static double acc, game_sum, real_sum;
+      if (fixed < 0) { const char *e = getenv("DM_GAME_STEP"); fixed = e && !strcmp(e, "fixed"); if (!fixed && &dm_step_table && dm_step_table) LOG("[nvn] game step: real time, whole slots up to 83.3 ms (DM_GAME_STEP=fixed: the hold's step)"); }
+      if (!fixed && &dm_step_table && dm_step_table) {
+          int maxs = (int)(83333334.0 / v); if (maxs < 1) maxs = 1;
+          acc += shown > 0 ? shown : (double)n;
+          int g = (int)floor(acc + 0.5); if (g < 1) g = 1; if (g > maxs) g = maxs;
+          acc -= g; if (acc > maxs) acc = maxs; if (acc < -1) acc = -1;
+          game_sum += g; real_sum += shown > 0 ? shown : (double)n;
+          uint64_t gn = (uint64_t)((double)g * v + 0.5); ns = (uint32_t)gn;
+          dm_guest_write_prepare(dm_step_table, 40);
+          for (int i = 0; i < 5; i++) __atomic_store_n((uint64_t *)(dm_step_table + 8 * i), gn, __ATOMIC_RELAXED);
+          if (o->presents % 1800 == 0 && real_sum > 0) { LOG("[nvn] game step: game time %.3f of real time over the last %.0f slots", game_sum / real_sum, real_sum); game_sum = real_sum = 0; }
+      } }
     dm_guest_write_prepare(dm_step_word, 4); __atomic_store_n((uint32_t *)dm_step_word, ns, __ATOMIC_RELAXED);
     atomic_store(&g_fs_k, g_vs.k); held[g_vs.k]++;
     if (k0 && g_vs.k != k0 && nlog < 40) LOG("[nvn] frame step: hold %d → %d slots of %.2f ms at present %llu (cost %.2f slots, GPU %.2f)%s", k0, g_vs.k, v / 1e6,

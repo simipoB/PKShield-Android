@@ -13,6 +13,7 @@ import android.view.InputDevice;
 public final class GameActivity extends NativeActivity implements InputManager.InputDeviceListener {
     static { System.loadLibrary("nxnative"); }   // loaded through this class's loader, so the native method below resolves (NativeActivity then opens the same library)
     private static native void nativePadConnected(boolean connected);
+    private static native int nativeLoading();   // 1 while the game loads (android_main.c: a burst of its file reads)
     private static native long nativeFrames();   // frames the engine has presented (android_main.c), -1 before it draws
     private InputManager im;
     static volatile boolean alive;   // the game runs in this process (SetupActivity: the app icon goes back to it rather than to the setup screen)
@@ -36,7 +37,50 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         liveShaders();
         handheld();
         if (GameSettings.get(this, "DM_PERF_OVERLAY").equals("on")) perfOverlay(true);
+        displayMode(); sustained(); loadH.postDelayed(loadPoll, 2000);
     }
+    // ---------- the display matched to the game, always (no setting; DM_DISPLAY_RATE=phone in env.txt leaves the phone's own rate, for comparing) ----------
+    // The lowest display mode of at least 60 Hz that the game's frames divide evenly: 60 Hz for a 30 fps game on a 120 Hz phone, which otherwise keeps its
+    //   panel at 120 (more power, more heat, and a hot phone slows down) or drops it to 30 (a late frame then waits a whole 33 ms refresh). With frame
+    //   generation on: 120 Hz, as android_main.c window_rate asks (each picture gets a timed slot). The engine reads the new rate within a second
+    void displayMode() {
+        if (android.os.Build.VERSION.SDK_INT < 30) return;
+        try {
+            android.view.Display d = getDisplay(); if (d == null) return;
+            int want = 0;
+            if (!GameSettings.get(this, "DM_DISPLAY_RATE").equals("phone")) {
+                String fg = GameSettings.get(this, "DM_FRAMEGEN"); boolean gen = !fg.isEmpty() && !fg.equals("off");
+                String f = GameSettings.get(this, "DM_FPS_TARGET"); int fps = f.equals("60") ? 60 : 30;
+                android.view.Display.Mode cur = d.getMode(), best = null;
+                for (android.view.Display.Mode m : d.getSupportedModes()) {
+                    if (m.getPhysicalWidth() != cur.getPhysicalWidth() || m.getPhysicalHeight() != cur.getPhysicalHeight()) continue;
+                    int r = Math.round(m.getRefreshRate());
+                    if (gen ? (r < 120 || r % 60 != 0) : (r < 60 || r % fps != 0)) continue;
+                    if (best == null || m.getRefreshRate() < best.getRefreshRate()) best = m;
+                }
+                if (best != null) want = best.getModeId();
+            }
+            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+            if (lp.preferredDisplayModeId != want) { lp.preferredDisplayModeId = want; getWindow().setAttributes(lp); }
+        } catch (RuntimeException e) { }
+    }
+    // ---------- sustained performance (DM_SUSTAINED=on, on phones that offer it): clocks the phone can hold for hours instead of its peak, which it cannot hold
+    //   once hot (a Galaxy S25+ fell from 4.47 to 1.4 GHz in a long session); steadier, a little slower at first ----------
+    static boolean sustainedSupported(android.content.Context c) {
+        android.os.PowerManager pm = c.getSystemService(android.os.PowerManager.class); return pm != null && pm.isSustainedPerformanceModeSupported();
+    }
+    void sustained() {
+        try { getWindow().setSustainedPerformanceMode(GameSettings.get(this, "DM_SUSTAINED").equals("on") && sustainedSupported(this)); } catch (RuntimeException e) { }
+    }
+    // ---------- loading (android_main.c nativeLoading): told to Android 13+ (GameManager.setGameState), which can raise the clocks and storage speed for it ----------
+    private final android.os.Handler loadH = new android.os.Handler(android.os.Looper.getMainLooper()); private int loadWas = -1;
+    private final Runnable loadPoll = new Runnable() { @Override public void run() {
+        int l; try { l = nativeLoading(); } catch (UnsatisfiedLinkError e) { return; }
+        if (l != loadWas && android.os.Build.VERSION.SDK_INT >= 33) { loadWas = l;
+            try { android.app.GameManager gm = getSystemService(android.app.GameManager.class);
+                  if (gm != null) gm.setGameState(new android.app.GameState(l == 1, android.app.GameState.MODE_GAMEPLAY_INTERRUPTIBLE)); } catch (RuntimeException e) { } }
+        if (alive) loadH.postDelayed(this, 500);
+    } };
     // ---------- rumble (hle_hid.c → touch_ui.c dm_rumble): the game's motor strength 0..1, about every 100 ms while it lasts, on the engine's haptic thread ----------
     // the controller's own motor when the one in use has one, else the phone's (DM_RUMBLE: "" both, "pad" controllers only, "off" none); each call is a 150 ms pulse
     private volatile android.os.Vibrator padVib; private android.os.Vibrator phoneVib; private String rumbleMode; private long rumbleRead;
@@ -136,7 +180,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         }, "live shaders");
         t.setPriority(Thread.MIN_PRIORITY); t.setDaemon(true); t.start();
     }
-    @Override protected void onResume() { super.onResume(); check(); gameRunning(true); }
+    @Override protected void onResume() { super.onResume(); check(); gameRunning(true); displayMode(); }
     @Override protected void onPause() { gameRunning(false); super.onPause(); }
     // game_running: the game is on screen, so a fast setup's rest that runs at full speed (started from the setup screen) gets out of its way (setup_game.py rest)
     private void gameRunning(boolean on) { File f = new File(GameSettings.dir(this), "game_running"); try { if (on) f.createNewFile(); else f.delete(); } catch (java.io.IOException e) { } }

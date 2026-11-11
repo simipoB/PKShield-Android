@@ -7,6 +7,8 @@
 // Layout space: 1920 x 1080, origin at the centre, y up.
 #include <math.h>
 #include <pthread.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -145,7 +147,8 @@ static void cursors_pick(void) {
     for (int i = 0; i < g_nfound && g_ncur < 2048; i++) if (rd(g_found[i] + 0xb0, nm, 24) == 24) { nm[24] = 0; if (is_cursor(nm)) g_cur[g_ncur++] = g_found[i]; }
 }
 static void *watch_main(void *a) {
-    (void)a; if (!setup()) return NULL;
+    (void)a; prctl(PR_SET_NAME, "dm-touch", 0, 0, 0); setpriority(PRIO_PROCESS, (id_t)gettid(), 10);   // (its memory scans take 1-2 s of a core: never ahead of the game's threads)
+    if (!setup()) return NULL;
     for (;;) { usleep(500000);
         pthread_mutex_lock(&g_scan_mu);
         if (!g_nfound || (!atomic_load(&g_menu) && now_s() - g_scan_t > 12)) { scan(g_nreg == 0); cursors_pick(); g_scan_t = now_s(); }
