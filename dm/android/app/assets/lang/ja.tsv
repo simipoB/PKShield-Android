@@ -304,3 +304,8 @@ Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use i
 Import Lossless.dll	Lossless.dllを取り込む
 Lossless Scaling imported. Choose it under Frame generation.	Lossless Scalingを取り込みました。フレーム生成で選んでください。
 Could not import Lossless Scaling: %s	Lossless Scalingを取り込めませんでした：%s
+Lossless Scaling pictures	Lossless Scalingの生成枚数
+Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)	自動：120 Hzの画面では4x、90 Hzでは3x、それ以外は2x（30 fps時）
+2x: one picture between each two of the game's frames (30 fps moves like 60)	2x：ゲームの2つのフレームの間に1枚（30 fpsが60のように動きます）
+3x: two pictures between each two frames (like 90 fps; even on a 90 Hz screen only)	3x：2つのフレームの間に2枚（90 fps相当。均一になるのは90 Hzの画面のみ）
+4x: three pictures between each two frames (like 120 fps; needs a 120 Hz screen and a fast GPU)	4x：2つのフレームの間に3枚（120 fps相当。120 Hzの画面と高速なGPUが必要）

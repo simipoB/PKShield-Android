@@ -304,3 +304,8 @@ Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use i
 Import Lossless.dll	Importar Lossless.dll
 Lossless Scaling imported. Choose it under Frame generation.	Lossless Scaling importado. Escolha-o em Geração de quadros.
 Could not import Lossless Scaling: %s	Não foi possível importar o Lossless Scaling: %s
+Lossless Scaling pictures	Imagens do Lossless Scaling
+Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)	Auto: 4x numa tela de 120 Hz, 3x em 90 Hz, senão 2x (a 30 fps)
+2x: one picture between each two of the game's frames (30 fps moves like 60)	2x: uma imagem entre cada dois quadros do jogo (30 fps se movem como 60)
+3x: two pictures between each two frames (like 90 fps; even on a 90 Hz screen only)	3x: duas imagens entre cada dois quadros (como 90 fps; uniforme só numa tela de 90 Hz)
+4x: three pictures between each two frames (like 120 fps; needs a 120 Hz screen and a fast GPU)	4x: três imagens entre cada dois quadros (como 120 fps; precisa de uma tela de 120 Hz e uma GPU rápida)

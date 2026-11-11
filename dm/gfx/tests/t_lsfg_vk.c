@@ -12,7 +12,8 @@
 #define W 1280
 #define H 720
 static VkDevice dev; static VkPhysicalDevice pd; static VkQueue q; static VkCommandPool pool; static lsfg G;
-static VkBuffer buf[2]; static VkDeviceMemory bmem[2]; static uint8_t *map[2];   // the frame going in, the picture coming out
+#define NB (1 + LS_MAXGEN)
+static VkBuffer buf[NB]; static VkDeviceMemory bmem[NB]; static uint8_t *map[NB];   // the frame going in, the pictures coming out
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fails++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 static float hash(int x, int y, int s) { uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u + (uint32_t)s * 2246822519u; h = (h ^ (h >> 13)) * 1274126177u; return ((h ^ (h >> 16)) & 0xffff) / 65535.0f; }
@@ -41,12 +42,12 @@ static double cb_end(VkCommandBuffer cb) {
 }
 static const VkBufferImageCopy BC = { 0, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { W, H, 1 } };
 static int frame_no;
-static double feed(float t, int gen) {   // frame t into the chain, then (gen) the picture between it and the frame before
+static double feed(float t, int count) {   // frame t into the chain, then (count) the pictures between it and the frame before → map[1..count]
     fill(map[0], t);
     VkCommandBuffer cb = cb_begin(); ls_begin(&G, cb); int p = frame_no++ & 1;
     vkCmdCopyBufferToImage(cb, buf[0], G.c[p].img, VK_IMAGE_LAYOUT_GENERAL, 1, &BC);
     ls_ingest(&G, cb, p);
-    if (gen) { ls_generate(&G, cb); vkCmdCopyImageToBuffer(cb, G.m.img, VK_IMAGE_LAYOUT_GENERAL, buf[1], 1, &BC); }
+    for (int k = 0; k < count; k++) { ls_generate(&G, cb, count, k); vkCmdCopyImageToBuffer(cb, G.m[k].img, VK_IMAGE_LAYOUT_GENERAL, buf[1 + k], 1, &BC); }
     return cb_end(cb);
 }
 static double err(const uint8_t *got, const uint8_t *want, int m) {
@@ -67,8 +68,8 @@ int main(int argc, char **argv) {
     if (vkCreateInstance(&ici, NULL, &inst)) { printf("SKIP: no Vulkan 1.3 instance on this machine\n"); return 0; }
     uint32_t n = 8; VkPhysicalDevice pds[8]; vkEnumeratePhysicalDevices(inst, &n, pds); if (!n) { printf("SKIP: no Vulkan device on this machine\n"); return 0; }
     pd = pds[0]; VkPhysicalDeviceProperties pp; vkGetPhysicalDeviceProperties(pd, &pp);
-    const char *lack = ls_device_lacks(pd, 0); G.lax = 1;
-    if (ls_device_lacks(pd, 1)) printf("(%s lacks %s: run anyway, it only changes how the smallest numbers round)\n", pp.deviceName, ls_device_lacks(pd, 1)); if (lack) { printf("SKIP: %s lacks %s\n", pp.deviceName, lack); return 0; }
+    const char *lack = ls_device_lacks(pd, 0); if (lack) { printf("SKIP: %s lacks %s\n", pp.deviceName, lack); return 0; }
+    if (ls_device_lacks(pd, 1)) printf("(%s lacks %s: the shaders go without their float controls)\n", pp.deviceName, ls_device_lacks(pd, 1));
     uint32_t nq = 16; VkQueueFamilyProperties qp[16]; vkGetPhysicalDeviceQueueFamilyProperties(pd, &nq, qp); uint32_t qf = 0; while (qf < nq && !(qp[qf].queueFlags & VK_QUEUE_COMPUTE_BIT)) qf++;
     float prio = 1; VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = qf, .queueCount = 1, .pQueuePriorities = &prio };
     // every feature the device has, on (as nvn_vk.c creates its device)
@@ -81,7 +82,7 @@ int main(int argc, char **argv) {
     vkGetDeviceQueue(dev, qf, 0, &q);
     VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .queueFamilyIndex = qf }; vkCreateCommandPool(dev, &pci, NULL, &pool);
     VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(pd, &mp);
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < NB; i++) {
         VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = W * H * 4, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT }; vkCreateBuffer(dev, &bci, NULL, &buf[i]);
         VkMemoryRequirements rq; vkGetBufferMemoryRequirements(dev, buf[i], &rq); uint32_t t = 0; const VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         while (t < mp.memoryTypeCount && !((rq.memoryTypeBits >> t & 1) && (mp.memoryTypes[t].propertyFlags & hv) == hv)) t++;
@@ -91,17 +92,21 @@ int main(int argc, char **argv) {
     if (!ls_setup(&G, dev, pd, VK_FORMAT_R8G8B8A8_UNORM, W, H, flow)) { printf("FAIL: cannot set up on %s: %s\n", pp.deviceName, G.why ? G.why : "?"); return 1; }
     printf("LSFG chain on %s: %dx%d frames, flow at %.0f%% (%ux%u), %d images\n", pp.deviceName, W, H, flow * 100, G.fw, G.fh, G.nall);
     static const float pans[][2] = { { 0, 0 }, { 4, 0 }, { 12, -8 }, { -30, 14 }, { 64, 24 } };
+    for (int count = 1; count <= LS_MAXGEN; count += 2)   // 2x (one picture at 0.5), 4x (three at 0.25, 0.5, 0.75)
     for (unsigned c = 0; c < sizeof pans / sizeof *pans; c++) {
-        PX = pans[c][0]; PY = pans[c][1]; G.fresh = 1; frame_no = 0; double ms = 0;
+        PX = pans[c][0]; PY = pans[c][1]; G.fresh = 1; frame_no = 0;
         for (int k = 0; k < 3; k++) feed((float)k, 0);
-        ms = feed(3, 1);
-        fill(before, 2); fill(after, 3); fill(truth, 2.5f);
-        for (int i = 0; i < W * H * 4; i++) blend[i] = (uint8_t)((before[i] + after[i] + 1) / 2);
-        const int M = 48; double e = err(map[1], truth, M), eb = err(blend, truth, M), ea = err(map[1], after, M), e0 = err(map[1], before, M);
-        printf("pan %4.0f,%4.0f px a frame: off the true in-between by %.2f / 255 (plain mix %.2f; the frame before %.2f, after %.2f); one frame + picture took %.0f ms\n", PX, PY, e, eb, e0, ea, ms);
-        char nm[48]; snprintf(nm, sizeof nm, "lsfg_pan%u_mid", c); ppm(dir, nm, map[1]); snprintf(nm, sizeof nm, "lsfg_pan%u_truth", c); ppm(dir, nm, truth);
-        if (PX == 0 && PY == 0) CHECK(e < 1.5, "a still picture changed: %.2f", e);
-        else if (fabsf(PX) < 40) CHECK(e < eb, "pan %g,%g: %.2f, plain mix %.2f", PX, PY, e, eb); }
+        double ms = feed(3, count);
+        fill(before, 2); fill(after, 3);
+        for (int k = 0; k < count; k++) {
+            float t = (float)(k + 1) / (float)(count + 1); fill(truth, 2 + t);
+            for (int i = 0; i < W * H * 4; i++) blend[i] = (uint8_t)(before[i] * (1 - t) + after[i] * t + 0.5f);
+            const int M = 48; double e = err(map[1 + k], truth, M), eb = err(blend, truth, M);
+            printf("%dx, pan %4.0f,%4.0f px a frame, picture at %.2f: off the true picture by %.2f / 255 (plain mix %.2f)%s", count + 1, PX, PY, t, e, eb, k + 1 < count ? "\n" : "");
+            char nm[48]; snprintf(nm, sizeof nm, "lsfg_%dx_pan%u_%d", count + 1, c, k); ppm(dir, nm, map[1 + k]);
+            if (PX == 0 && PY == 0) CHECK(e < 1.5, "%dx: a still picture changed: %.2f", count + 1, e);
+            else if (fabsf(PX) < 40) CHECK(e < eb, "%dx pan %g,%g at %.2f: %.2f, plain mix %.2f", count + 1, PX, PY, t, e, eb); }
+        printf("; the frame and %d picture(s) took %.0f ms\n", count, ms); }
     printf(fails ? "t_lsfg_vk: %d FAILED\n" : "t_lsfg_vk: all passed\n", fails);
     return fails != 0;
 }

@@ -8,9 +8,10 @@
 //   ls_load:     reads <dir>/<id>.spv for the 25 shaders and checks each one's bindings against what the chain will give it (refuses anything else)
 //   ls_setup:    pipelines once, then the images and descriptor sets for a frame size
 //   ls_ingest:   the frame copy c[p] → its 7 flow levels (255), features per level (290..293, three frames of history), the scene's change over time (298..302)
-//   ls_generate: motion from the coarsest level to the finest (280, 282..285), detail on the four finest (280, 286..289, 281, 294..297), then the picture m (256)
+//   ls_generate: motion from the coarsest level to the finest (280, 282..285), detail on the four finest (280, 286..289, 281, 294..297), then the picture m[gen] (256);
+//                count pictures between each two frames (1..3: 2x, 3x, 4x), gen 0..count-1 of them, each at its own time between the two
 // Like nvn_fgen.h: it owns its images and pipelines, every image stays in the GENERAL layout, a memory barrier comes before each pass, and the caller serializes the
-// queue and waits for the device before ls_setup changes size. One in-between picture per pair of frames (timestamp 0.5)
+// queue and waits for the device before ls_setup changes size
 #pragma once
 #include <stdint.h>
 #include <stdio.h>
@@ -31,8 +32,10 @@ static void fg_mem_put(VkDevice dev, fg_mem m) { if (m.mem) vkFreeMemory(dev, m.
 #endif
 #define LS_MIPS 7
 #define LS_NSH 25    // 255, 256, 280..302
-#define LS_NSET 144
+#define LS_NSET 148
 #define LS_NIMG 160
+#define LS_MAXGEN 3   // pictures between two frames at most (4x)
+#define LS_BLOCKS 7   // constants: block 0 time 0; blocks 1..6 Eden's generation slots, (count - 1) * count / 2 + gen, time (gen + 1) / (count + 1); 3 kinds each
 #define LS_IX(id) ((id) < 280 ? (id) - 255 : (id) - 278)
 static int ls_id(int ix) { return ix < 2 ? 255 + ix : 278 + ix; }
 // What each shader binds, in binding order (set 0): uniform buffers, samplers, sampled images, storage images
@@ -44,17 +47,17 @@ static const uint8_t LS_CNT[LS_NSH][4] = {
 enum { LS_S_ZERO, LS_S_WHITE, LS_S_EDGE };   // samplers: outside the image is transparent black / opaque white / the edge texel
 typedef struct { VkImage img; VkImageView view, pview; fg_mem mem; int has; uint32_t w, h; } ls_img;   // (pview: the picture in the frame's own format, for the caller)
 typedef struct {
-    VkDevice dev; VkPhysicalDevice pd; VkFormat fmt, ufmt; uint32_t w, h, fw, fh; float flow; int base, failed, fresh, p, hist, lax; uint64_t n; const char *why;
+    VkDevice dev; VkPhysicalDevice pd; VkFormat fmt, ufmt; uint32_t w, h, fw, fh; float flow; int base, failed, fresh, p, hist, stripped; uint64_t n; const char *why;
     uint32_t *spv[LS_NSH]; size_t nspv[LS_NSH];   // the player's shaders (bytes)
     VkSampler samp[3]; VkDescriptorSetLayout dsl[LS_NSH]; VkPipelineLayout pl[LS_NSH]; VkPipeline pipe[LS_NSH]; VkDescriptorPool dp;
-    VkBuffer ubo; VkDeviceMemory umem; uint8_t *umap; uint32_t ustride;   // four sets of constants: [0] time 0, [1] time 0.5, [2] 0.5 and "first motion pass", [3] 0.5 and "first detail pass"
+    VkBuffer ubo; VkDeviceMemory umem; uint8_t *umap; uint32_t ustride;   // LS_BLOCKS blocks of 3 kinds: plain, "first motion pass", "first detail pass" (bound as a dynamic offset)
     ls_img *all[LS_NIMG]; int nall;
-    ls_img c[2], m, zero, mip[LS_MIPS];   // frame copies (swapping), the in-between picture, a black texel for "no coarser level", the flow levels
+    ls_img c[2], m[LS_MAXGEN], zero, mip[LS_MIPS];   // frame copies (swapping), the in-between pictures, a black texel for "no coarser level", the flow levels
     struct { ls_img t1, t2, t3[2], out[3][2]; VkDescriptorSet ds[3], last[3]; } al[LS_MIPS];
     struct { ls_img t1[2], t2[2], out[6]; VkDescriptorSet first[3], ds[4]; } be;
     struct { ls_img t1[3], t2[2], out; VkDescriptorSet first[3], ds[4]; } ga[LS_MIPS];
     struct { ls_img t1[3], t2[2], out1, out2; VkDescriptorSet first[3], ds[4], sixth[3], ds2[4]; } de[3];
-    VkDescriptorSet ds_mip[2], ds_gen[2];
+    VkDescriptorSet ds_mip[2], ds_gen[2][LS_MAXGEN];
 } lsfg;
 static int ls_fail(lsfg *g, const char *why) { g->failed = 1; g->why = why; return 0; }
 
@@ -104,6 +107,18 @@ static int ls_load(lsfg *g, const char *dir) {
         if (bad) { free(w); snprintf(why, sizeof why, "shader %d: %s", ls_id(ix), bad); g->why = why; ls_unload(g); return 0; }
         free(g->spv[ix]); g->spv[ix] = w; g->nspv[ix] = (size_t)sz; }
     return 1;
+}
+// The float controls the converted shaders declare (how the smallest numbers and halfway cases round), taken out for a driver without them: without this it would
+// refuse the shaders, and the picture differs only in the last bit of a few values (the PC test, lavapipe). In place; returns the new word count
+static size_t ls_spv_strip_float_controls(uint32_t *w, size_t n) {
+    size_t o = 5;
+    for (size_t i = 5; i < n; ) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16; if (!len || i + len > n) return n;
+        int drop = (op == 17 && len >= 2 && w[i + 1] >= 4464 && w[i + 1] <= 4468)      // OpCapability DenormPreserve .. RoundingModeRTZ
+                || (op == 16 && len >= 3 && w[i + 2] >= 4459 && w[i + 2] <= 4463);     // OpExecutionMode DenormPreserve .. RoundingModeRTZ
+        if (!drop) { memmove(w + o, w + i, len * 4); o += len; }
+        i += len; }
+    return o;
 }
 // What the converted shaders need of the driver (the device must have been created with these features on): NULL when it has all of it.
 // precise 0: the float controls (rounding, denormals) are not asked; a driver without them only rounds the smallest numbers differently (the PC test on lavapipe)
@@ -170,12 +185,12 @@ static VkDescriptorSet ls_set(lsfg *g, int id) {
     VkDescriptorSet s = VK_NULL_HANDLE; if (vkAllocateDescriptorSets(g->dev, &ai, &s)) { g->failed = 1; return VK_NULL_HANDLE; }
     return s;
 }
-// One set of shader `id`: its constants (which of the four), its first sampler (the second is always the edge one), the images it reads and the images it writes
+// One set of shader `id`: its constants (which kind: 0 plain, 1 first motion pass, 2 first detail pass; the block, the time, comes at binding), its first sampler (the second is always the edge one), the images it reads and the images it writes
 static void ls_write(lsfg *g, VkDescriptorSet ds, int id, int ubo, int s0, ls_img **tex, ls_img **sto) {
     const uint8_t *c = LS_CNT[LS_IX(id)]; VkWriteDescriptorSet w[16]; VkDescriptorImageInfo ii[16]; uint32_t n = 0;
     VkDescriptorBufferInfo bi = { g->ubo, (VkDeviceSize)ubo * g->ustride, 48 };
 #define LS_W(type) w[n] = (VkWriteDescriptorSet){ .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = ds, .dstBinding = n, .descriptorCount = 1, .descriptorType = type, .pImageInfo = &ii[n], .pBufferInfo = &bi }; n++
-    if (c[0]) { ii[n] = (VkDescriptorImageInfo){ 0 }; LS_W(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER); }
+    if (c[0]) { ii[n] = (VkDescriptorImageInfo){ 0 }; LS_W(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC); }
     for (int k = 0; k < c[1]; k++) { ii[n] = (VkDescriptorImageInfo){ g->samp[k ? LS_S_EDGE : s0], VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED }; LS_W(VK_DESCRIPTOR_TYPE_SAMPLER); }
     for (int k = 0; k < c[2]; k++) { ii[n] = (VkDescriptorImageInfo){ VK_NULL_HANDLE, tex[k]->view, VK_IMAGE_LAYOUT_GENERAL }; LS_W(VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE); }
     for (int k = 0; k < c[3]; k++) { ii[n] = (VkDescriptorImageInfo){ VK_NULL_HANDLE, sto[k]->view, VK_IMAGE_LAYOUT_GENERAL }; LS_W(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE); }
@@ -194,22 +209,23 @@ static int ls_base(lsfg *g) {
         if (vkCreateSampler(dev, &sci, NULL, &g->samp[s])) return ls_fail(g, "no sampler"); }
     for (int ix = 0; ix < LS_NSH; ix++) {
         const uint8_t *c = LS_CNT[ix]; VkDescriptorSetLayoutBinding b[16]; uint32_t n = 0;
-        static const VkDescriptorType T[4] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_SAMPLER, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE };
+        static const VkDescriptorType T[4] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, VK_DESCRIPTOR_TYPE_SAMPLER, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE };
         for (int k = 0; k < 4; k++) for (int j = 0; j < c[k]; j++, n++) b[n] = (VkDescriptorSetLayoutBinding){ n, T[k], 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL };
         VkDescriptorSetLayoutCreateInfo dli = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, .bindingCount = n, .pBindings = b };
         if (vkCreateDescriptorSetLayout(dev, &dli, NULL, &g->dsl[ix])) return ls_fail(g, "no descriptor layout");
         VkPipelineLayoutCreateInfo pli = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &g->dsl[ix] };
         if (vkCreatePipelineLayout(dev, &pli, NULL, &g->pl[ix])) return ls_fail(g, "no pipeline layout");
+        if (g->stripped) g->nspv[ix] = ls_spv_strip_float_controls(g->spv[ix], g->nspv[ix] / 4) * 4;
         VkShaderModuleCreateInfo mi = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = g->nspv[ix], .pCode = g->spv[ix] }; VkShaderModule mod;
         if (vkCreateShaderModule(dev, &mi, NULL, &mod)) return ls_fail(g, "the driver refused a shader");
         VkComputePipelineCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, .layout = g->pl[ix],
             .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = mod, .pName = "main" } };
         VkResult r = vkCreateComputePipelines(dev, VK_NULL_HANDLE, 1, &ci, NULL, &g->pipe[ix]); vkDestroyShaderModule(dev, mod, NULL);
         if (r) { g->pipe[ix] = VK_NULL_HANDLE; return ls_fail(g, "the driver could not build a shader"); } }
-    VkDescriptorPoolSize ps[4] = { { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, LS_NSET }, { VK_DESCRIPTOR_TYPE_SAMPLER, LS_NSET * 2 }, { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, LS_NSET * 6 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, LS_NSET * 7 } };
+    VkDescriptorPoolSize ps[4] = { { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, LS_NSET }, { VK_DESCRIPTOR_TYPE_SAMPLER, LS_NSET * 2 }, { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, LS_NSET * 6 }, { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, LS_NSET * 7 } };
     VkDescriptorPoolCreateInfo dpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = LS_NSET, .poolSizeCount = 4, .pPoolSizes = ps };
     if (vkCreateDescriptorPool(dev, &dpi, NULL, &g->dp)) return ls_fail(g, "no descriptor pool");
-    for (int i = 0; i < 2; i++) { g->ds_mip[i] = ls_set(g, 255); g->ds_gen[i] = ls_set(g, 256); }
+    for (int i = 0; i < 2; i++) { g->ds_mip[i] = ls_set(g, 255); for (int k = 0; k < LS_MAXGEN; k++) g->ds_gen[i][k] = ls_set(g, 256); }
     for (int l = 0; l < LS_MIPS; l++) { for (int k = 0; k < 3; k++) { g->al[l].ds[k] = ls_set(g, 290 + k); g->al[l].last[k] = ls_set(g, 293); } }
     for (int k = 0; k < 3; k++) g->be.first[k] = ls_set(g, 298);
     for (int k = 0; k < 4; k++) g->be.ds[k] = ls_set(g, 299 + k);
@@ -218,7 +234,7 @@ static int ls_base(lsfg *g) {
                                   for (int k = 0; k < 4; k++) { g->de[i].ds[k] = ls_set(g, 286 + k); g->de[i].ds2[k] = ls_set(g, 294 + k); } }
     if (g->failed) return ls_fail(g, "no descriptor sets");
     VkPhysicalDeviceProperties pp; vkGetPhysicalDeviceProperties(g->pd, &pp); VkDeviceSize al = pp.limits.minUniformBufferOffsetAlignment; g->ustride = al > 256 ? (uint32_t)al : 256;
-    VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 4 * g->ustride, .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT };
+    VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)LS_BLOCKS * 3 * g->ustride, .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT };
     if (vkCreateBuffer(dev, &bci, NULL, &g->ubo)) return ls_fail(g, "no buffer for its constants");
     VkMemoryRequirements rq; vkGetBufferMemoryRequirements(dev, g->ubo, &rq); VkPhysicalDeviceMemoryProperties mp; vkGetPhysicalDeviceMemoryProperties(g->pd, &mp); uint32_t t = 0;
     const VkMemoryPropertyFlags hv = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
@@ -236,7 +252,8 @@ static int ls_setup(lsfg *g, VkDevice dev, VkPhysicalDevice pd, VkFormat fmt, ui
     if (g->w == w && g->h == h && g->fmt == fmt && g->flow == flow) return 1;
     g->dev = dev; g->pd = pd;
     if (!g->base) {
-        const char *lack = ls_device_lacks(pd, !g->lax); if (lack) { static char why[96]; snprintf(why, sizeof why, "the graphics driver lacks %s", lack); return ls_fail(g, why); }
+        const char *lack = ls_device_lacks(pd, 0); if (lack) { static char why[96]; snprintf(why, sizeof why, "the graphics driver lacks %s", lack); return ls_fail(g, why); }
+        g->stripped = ls_device_lacks(pd, 1) != NULL;   // (no float controls: the shaders go without theirs, ls_spv_strip_float_controls)
         if (!ls_base(g)) return 0; }
     if (w < 64 || h < 64) { g->why = "the frame is too small"; return 0; }
     const VkFormat u = ls_unorm(fmt), R8 = VK_FORMAT_R8_UNORM, C8 = VK_FORMAT_R8G8B8A8_UNORM, F16 = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -245,7 +262,7 @@ static int ls_setup(lsfg *g, VkDevice dev, VkPhysicalDevice pd, VkFormat fmt, ui
     uint32_t fw = (uint32_t)((float)w * flow), fh = (uint32_t)((float)h * flow); fw = fw ? fw : 1; fh = fh ? fh : 1;
     int ok = 1;
 #define MK(i, f, ww, hh) ok = ok && ls_img_make(g, i, f, ww, hh, f)
-    MK(&g->zero, F16, 1, 1); ok = ok && ls_img_make(g, &g->m, u, w, h, fmt) && ls_img_make(g, &g->c[0], u, w, h, fmt) && ls_img_make(g, &g->c[1], u, w, h, fmt);
+    MK(&g->zero, F16, 1, 1); ok = ok && ls_img_make(g, &g->m[0], u, w, h, fmt) && ls_img_make(g, &g->m[1], u, w, h, fmt) && ls_img_make(g, &g->m[2], u, w, h, fmt) && ls_img_make(g, &g->c[0], u, w, h, fmt) && ls_img_make(g, &g->c[1], u, w, h, fmt);
     for (int l = 0; l < LS_MIPS; l++) MK(&g->mip[l], R8, fw >> l, fh >> l);
     for (int l = 0; l < LS_MIPS && ok; l++) { uint32_t hw = (g->mip[l].w + 1) >> 1, hh = (g->mip[l].h + 1) >> 1, qw = (hw + 1) >> 1, qh = (hh + 1) >> 1;
         MK(&g->al[l].t1, C8, hw, hh); MK(&g->al[l].t2, C8, hw, hh); MK(&g->al[l].t3[0], C8, qw, qh); MK(&g->al[l].t3[1], C8, qw, qh);
@@ -263,11 +280,13 @@ static int ls_setup(lsfg *g, VkDevice dev, VkPhysicalDevice pd, VkFormat fmt, ui
         MK(&g->de[i].out1, F16, e->w, e->h); MK(&g->de[i].out2, F16, e->w, e->h); }
 #undef MK
     if (!ok) { ls_images_free(g); return ls_fail(g, "no memory for its images"); }
-    for (int v = 0; v < 4; v++) { struct { uint32_t off[2], first, first_s, color, hdr; float inv, ts, ui; uint32_t pad[3]; } k = { .first = v == 2, .first_s = v == 3, .inv = 1.0f / flow, .ts = v ? 0.5f : 0, .ui = 0.5f };
-        memcpy(g->umap + (size_t)v * g->ustride, &k, 48); }
+    for (int b = 0; b < LS_BLOCKS; b++) {   // block b > 0: generation slot b - 1 (count 1: slot 0; count 2: slots 1, 2; count 3: slots 3..5)
+        int slot = b - 1, cnt = slot < 1 ? 1 : slot < 3 ? 2 : 3, gen = slot - (cnt - 1) * cnt / 2; float ts = b ? (float)(gen + 1) / (float)(cnt + 1) : 0;
+        for (int v = 0; v < 3; v++) { struct { uint32_t off[2], first, first_s, color, hdr; float inv, ts, ui; uint32_t pad[3]; } k = { .first = v == 1, .first_s = v == 2, .inv = 1.0f / flow, .ts = ts, .ui = 0.5f };
+            memcpy(g->umap + (size_t)(b * 3 + v) * g->ustride, &k, 48); } }
     for (int i = 0; i < 2; i++) {
         ls_write(g, g->ds_mip[i], 255, 0, LS_S_ZERO, LSV(&g->c[i]), LSV(&g->mip[0], &g->mip[1], &g->mip[2], &g->mip[3], &g->mip[4], &g->mip[5], &g->mip[6]));
-        ls_write(g, g->ds_gen[i], 256, 1, LS_S_ZERO, LSV(&g->c[1 - i], &g->c[i], &g->ga[6].out, &g->de[2].out1, &g->de[2].out2), LSV(&g->m)); }
+        for (int k = 0; k < LS_MAXGEN; k++) ls_write(g, g->ds_gen[i][k], 256, 0, LS_S_ZERO, LSV(&g->c[1 - i], &g->c[i], &g->ga[6].out, &g->de[2].out1, &g->de[2].out2), LSV(&g->m[k])); }
     for (int l = 0; l < LS_MIPS; l++) {
         ls_write(g, g->al[l].ds[0], 290, 0, LS_S_ZERO, LSV(&g->mip[l]), LSV(&g->al[l].t1));
         ls_write(g, g->al[l].ds[1], 291, 0, LS_S_ZERO, LSV(&g->al[l].t1), LSV(&g->al[l].t2));
@@ -279,14 +298,14 @@ static int ls_setup(lsfg *g, VkDevice dev, VkPhysicalDevice pd, VkFormat fmt, ui
       ls_write(g, g->be.ds[0], 299, 0, LS_S_ZERO, LSV(&g->be.t1[0], &g->be.t1[1]), LSV(&g->be.t2[0], &g->be.t2[1]));
       ls_write(g, g->be.ds[1], 300, 0, LS_S_ZERO, LSV(&g->be.t2[0], &g->be.t2[1]), LSV(&g->be.t1[0], &g->be.t1[1]));
       ls_write(g, g->be.ds[2], 301, 0, LS_S_ZERO, LSV(&g->be.t1[0], &g->be.t1[1]), LSV(&g->be.t2[0], &g->be.t2[1]));
-      ls_write(g, g->be.ds[3], 302, 1, LS_S_ZERO, LSV(&g->be.t2[0], &g->be.t2[1]), LSV(&g->be.out[0], &g->be.out[1], &g->be.out[2], &g->be.out[3], &g->be.out[4], &g->be.out[5])); }
-    for (int i = 0; i < LS_MIPS; i++) { int L = LS_MIPS - 1 - i, ub = i ? 1 : 2; ls_img (*in)[2] = g->al[L].out, *prev = i ? &g->ga[i - 1].out : &g->zero, *flw = &g->be.out[L < 5 ? L : 5], *t1 = g->ga[i].t1, *t2 = g->ga[i].t2;
+      ls_write(g, g->be.ds[3], 302, 0, LS_S_ZERO, LSV(&g->be.t2[0], &g->be.t2[1]), LSV(&g->be.out[0], &g->be.out[1], &g->be.out[2], &g->be.out[3], &g->be.out[4], &g->be.out[5])); }
+    for (int i = 0; i < LS_MIPS; i++) { int L = LS_MIPS - 1 - i, ub = i ? 0 : 1; ls_img (*in)[2] = g->al[L].out, *prev = i ? &g->ga[i - 1].out : &g->zero, *flw = &g->be.out[L < 5 ? L : 5], *t1 = g->ga[i].t1, *t2 = g->ga[i].t2;
         for (int k = 0; k < 3; k++) { int a = (k + 2) % 3; ls_write(g, g->ga[i].first[k], 280, ub, LS_S_WHITE, LSV(&in[a][0], &in[a][1], &in[k][0], &in[k][1], prev), LSV(&t1[0], &t1[1], &t1[2])); }
         ls_write(g, g->ga[i].ds[0], 282, 0, LS_S_ZERO, LSV(&t1[0], &t1[1], &t1[2]), LSV(&t2[0], &t2[1]));
         ls_write(g, g->ga[i].ds[1], 283, 0, LS_S_ZERO, LSV(&t2[0], &t2[1]), LSV(&t1[0], &t1[1]));
         ls_write(g, g->ga[i].ds[2], 284, 0, LS_S_ZERO, LSV(&t1[0], &t1[1]), LSV(&t2[0], &t2[1]));
         ls_write(g, g->ga[i].ds[3], 285, ub, LS_S_ZERO, LSV(&t2[0], &t2[1], prev, flw), LSV(&g->ga[i].out)); }
-    for (int i = 0; i < 3; i++) { int L = 2 - i, ub = i ? 1 : 3; ls_img (*in)[2] = g->al[L].out, *pg = i ? &g->ga[i + 3].out : &g->zero, *p1 = i ? &g->de[i - 1].out1 : &g->zero, *p2 = i ? &g->de[i - 1].out2 : &g->zero;
+    for (int i = 0; i < 3; i++) { int L = 2 - i, ub = i ? 0 : 2; ls_img (*in)[2] = g->al[L].out, *pg = i ? &g->ga[i + 3].out : &g->zero, *p1 = i ? &g->de[i - 1].out1 : &g->zero, *p2 = i ? &g->de[i - 1].out2 : &g->zero;
         ls_img *flw = &g->be.out[L], *t1 = g->de[i].t1, *t2 = g->de[i].t2;
         for (int k = 0; k < 3; k++) { int a = (k + 2) % 3;
             ls_write(g, g->de[i].first[k], 280, ub, LS_S_WHITE, LSV(&in[a][0], &in[a][1], &in[k][0], &in[k][1], pg), LSV(&t1[0], &t1[1], &t1[2]));
@@ -318,8 +337,10 @@ static void ls_bar(VkCommandBuffer cb) {
     VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
 }
+static int g_ls_block;   // the constants' block the passes being recorded use (0: time 0, else 1 + the generation slot)
 static void ls_disp(lsfg *g, VkCommandBuffer cb, int id, VkDescriptorSet ds, const ls_img *e, uint32_t tile) {
-    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pl[LS_IX(id)], 0, 1, &ds, 0, NULL); vkCmdDispatch(cb, (e->w + tile - 1) / tile, (e->h + tile - 1) / tile, 1);
+    uint32_t off = (uint32_t)g_ls_block * 3 * g->ustride;
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pl[LS_IX(id)], 0, 1, &ds, LS_CNT[LS_IX(id)][0], &off); vkCmdDispatch(cb, (e->w + tile - 1) / tile, (e->h + tile - 1) / tile, 1);
 }
 static void ls_run(lsfg *g, VkCommandBuffer cb, int id, VkDescriptorSet ds, const ls_img *e, uint32_t tile) {
     ls_bar(cb); vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pipe[LS_IX(id)]); ls_disp(g, cb, id, ds, e, tile);
@@ -327,17 +348,22 @@ static void ls_run(lsfg *g, VkCommandBuffer cb, int id, VkDescriptorSet ds, cons
 // The frame the caller has just copied into c[p] (p swaps every frame): everything that depends on one frame alone or on the frames so far
 static void ls_ingest(lsfg *g, VkCommandBuffer cb, int p) {
     int h = (int)(g->n % 3); ls_img fl = { .w = g->fw, .h = g->fh };
-    ls_run(g, cb, 255, g->ds_mip[p], &fl, 64);
+    g_ls_block = 0; ls_run(g, cb, 255, g->ds_mip[p], &fl, 64);
     for (int s = 0; s < 4; s++) { ls_bar(cb); vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g->pipe[LS_IX(290 + s)]);
         for (int l = 0; l < LS_MIPS; l++) ls_disp(g, cb, 290 + s, s < 3 ? g->al[l].ds[s] : g->al[l].last[h], s < 2 ? &g->al[l].t1 : &g->al[l].t3[0], 8); }
     ls_run(g, cb, 298, g->be.first[h], &g->be.t1[0], 8);
     for (int k = 0; k < 3; k++) ls_run(g, cb, 299 + k, g->be.ds[k], &g->be.t1[0], 8);
-    ls_run(g, cb, 302, g->be.ds[3], &g->be.t1[0], 32);
+    g_ls_block = 1; ls_run(g, cb, 302, g->be.ds[3], &g->be.t1[0], 32);   // (time 0.5, as Eden's chain gives it whatever the count)
     g->p = p; g->hist = h; g->n++;
 }
-// The picture between the last two ingested frames → m (then readable by a fragment shader or a copy). g->n says how many frames it has seen since its images were new
-static void ls_generate(lsfg *g, VkCommandBuffer cb) {
+// Picture gen of count between the last two ingested frames (time (gen + 1) / (count + 1) from the older) → m[gen], then readable by a fragment shader or a copy.
+// g->n says how many frames it has seen since its images were new
+static void ls_generate(lsfg *g, VkCommandBuffer cb, int count, int gen) {
     int h = g->hist;
+    if (count < 1) count = 1;
+    if (count > LS_MAXGEN) count = LS_MAXGEN;
+    if (gen < 0 || gen >= count) gen = 0;
+    g_ls_block = 1 + (count - 1) * count / 2 + gen;
     for (int i = 0; i < LS_MIPS; i++) { const ls_img *e = &g->ga[i].t1[0];
         ls_run(g, cb, 280, g->ga[i].first[h], e, 8);
         for (int k = 0; k < 4; k++) ls_run(g, cb, 282 + k, g->ga[i].ds[k], e, 8);
@@ -347,7 +373,7 @@ static void ls_generate(lsfg *g, VkCommandBuffer cb) {
         for (int k = 0; k < 4; k++) ls_run(g, cb, 286 + k, g->de[d].ds[k], e, 8);
         ls_run(g, cb, 281, g->de[d].sixth[h], e, 8);
         for (int k = 0; k < 4; k++) ls_run(g, cb, 294 + k, g->de[d].ds2[k], e, 8); }
-    ls_run(g, cb, 256, g->ds_gen[g->p], &g->m, 16);
+    ls_run(g, cb, 256, g->ds_gen[g->p][gen], &g->m[gen], 16);
     VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT };
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
 }
