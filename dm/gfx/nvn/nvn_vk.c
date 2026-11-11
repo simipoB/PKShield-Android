@@ -2849,12 +2849,13 @@ static void pass_writes(int depth, int stencil) {
     }
     if (depth) P.dwrote = 1; if (stencil) P.swrote = 1;
 }
-// Target changes that need no new pass (DM_VK_PASS_DEFER=1, opt-in until measured): the game sets target A, then B with nothing drawn, then A again, and every change
+// Target changes that need no new pass (DM_VK_PASS_DEFER, on by default on Adreno; =0 / =1 decides on any GPU): the game sets target A, then B with nothing drawn, then A again, and every change
 //   ended the pass, so the driver set up a new one for the same attachments (about 4 of Legends: Arceus' ~55 a frame; on Adreno each costs the driver an allocation
 //   in vkCmdBeginRendering). A change while a pass is open now only records the new targets (g_rt_stale); the next draw or clear goes on in the open pass when they
 //   are the ones it was begun with (g_pass_resumed), and ends it as before when they are not. Pending clears belong to the old targets: then the change ends the pass at once
 static p_set_rt g_pass_rt; static uint64_t g_pass_resumed;
-static int pass_defer_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_PASS_DEFER"); v = e && atoi(e) != 0; if (v) VLOG("target changes that need no new pass keep it open (DM_VK_PASS_DEFER)"); } return v; }
+static int pass_defer_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_PASS_DEFER"); v = e ? atoi(e) != 0 : g_props.vendorID == 0x5143;   // (on by default on Adreno, Qualcomm 0x5143; Mali and the rest as before)
+    if (v) VLOG("target changes that need no new pass keep it open (DM_VK_PASS_DEFER)"); } return v; }
 static int rt_same(const p_set_rt *a, const p_set_rt *b);
 static void sub_split_at_target(void);
 static void rt_resolve(void) {   // a deferred target change: the open pass goes on if the targets came back to its own, else it ends as a target change ends it
@@ -3136,7 +3137,7 @@ static VkPipeline pso_lookup_s(vprog *pr, const pkey *k, const sst *ss, int reco
     pthread_mutex_unlock(&g_psomu);
     return p;
 }
-// Pipelines built in the background (DM_VK_ASYNC_PSO=1, opt-in until measured on phones): one the game needs that neither the prewarm list nor the cache had is
+// Pipelines built in the background (DM_VK_ASYNC_PSO, on by default on Adreno; =0 / =1 decides on any GPU): one the game needs that neither the prewarm list nor the cache had is
 //   compiled by a worker, and the draws that need it are skipped until it is done (an object missing for a frame or two instead of a hitch, as emulators' asynchronous
 //   shaders do). The queue holds 256; a full queue compiles on the spot as before
 #define APSO_N 256
@@ -3155,7 +3156,8 @@ static void *apso_main(void *a) {
 }
 static int apso_on(void) {
     static int v = -1;
-    if (v < 0) { const char *e = getenv("DM_VK_ASYNC_PSO"); v = e && atoi(e) != 0;
+    if (v < 0) { const char *e = getenv("DM_VK_ASYNC_PSO"); v = e ? atoi(e) != 0 : g_props.vendorID == 0x5143;   // (on by default on Adreno, Qualcomm 0x5143; Mali and the rest as before)
+   
         if (v) { pthread_t t; if (pthread_create(&t, NULL, apso_main, NULL)) v = 0; else { pthread_detach(t); VLOG("pipelines the lists did not have: built in the background, their draws skipped until then (DM_VK_ASYNC_PSO)"); } } }
     return v;
 }
