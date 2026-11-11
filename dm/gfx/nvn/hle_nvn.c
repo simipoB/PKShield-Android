@@ -1385,7 +1385,8 @@ static void tsummary(uint64_t frame) {
         double v[TWIN]; memcpy(v, g_tw[k], n * sizeof *v); qsort(v, n, sizeof *v, dcmp);
         o += snprintf(line + o, sizeof line - o, " %s p50 %.2f / p95 %.2f / max %.2f ms (%u frames);", g_tname[k], v[n / 2], v[(n * 95) / 100 < n ? (n * 95) / 100 : n - 1], v[n - 1], n);
     }
-    LOG("[nvn] timing up to frame %llu:%s", frame, line);
+    { extern int dm_ab_side(void) __attribute__((weak)); int ab = dm_ab_side ? dm_ab_side() : -1;   // (DM_AB: which side this window ran on; use a multiple of 300 frames)
+      if (ab >= 0) LOG("[nvn] timing up to frame %llu (ab %d):%s", frame, ab, line); else LOG("[nvn] timing up to frame %llu:%s", frame, line); }
     double tgt = 1000.0 / mtl_fps_target();   // milliseconds one frame should take: 16.7 at 60 fps, 33.3 when the game itself asks for 30 (the over-time / dropped-frame counts below use it)
     { unsigned n = g_tn[0] < TWIN ? g_tn[0] : TWIN, over = 0; double v[TWIN];   // frame interval gets its own line (M1 baseline): number of frames longer than one frame period in this window and p99
       if (n) { memcpy(v, g_tw[0], n * sizeof *v); qsort(v, n, sizeof *v, dcmp); for (unsigned i = 0; i < n; i++) over += v[i] > tgt;

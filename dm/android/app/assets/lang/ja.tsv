@@ -309,3 +309,6 @@ Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)	自動：120 Hzの
 2x: one picture between each two of the game's frames (30 fps moves like 60)	2x：ゲームの2つのフレームの間に1枚（30 fpsが60のように動きます）
 3x: two pictures between each two frames (like 90 fps; even on a 90 Hz screen only)	3x：2つのフレームの間に2枚（90 fps相当。均一になるのは90 Hzの画面のみ）
 4x: three pictures between each two frames (like 120 fps; needs a 120 Hz screen and a fast GPU)	4x：2つのフレームの間に3枚（120 fps相当。120 Hzの画面と高速なGPUが必要）
+Sustained performance	持続パフォーマンス
+Off: the phone's full speed, which drops when it gets hot	オフ：端末の最大速度（熱くなると下がります）
+On: a speed the phone can hold for hours, fewer slowdowns when hot	オン：何時間も保てる速度。熱くなっても遅くなりにくくなります

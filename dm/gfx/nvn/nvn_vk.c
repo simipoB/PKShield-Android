@@ -341,7 +341,11 @@ void mtl_init(void) {
             VkExternalBufferProperties xp = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_BUFFER_PROPERTIES };
             if (want && dmabuf && vkGetPhysicalDeviceExternalBufferProperties) vkGetPhysicalDeviceExternalBufferProperties(g_pd, &xi, &xp);
             if (want && dmabuf && (xp.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
-                static const char *heaps[] = { "/dev/dma_heap/system-uncached", "/dev/dma_heap/system" };
+                // DM_VK_DMAHEAP_CACHED=1: the cached heap first. The CPU reads and writes uncached memory slowly (the game's own code works in these pools, and the
+                //   texture uploads read them); the cached heap is right without cache upkeep only where the GPU sees the CPU's caches, which the self-test's
+                //   heap-speed line reports per phone ("right without cache upkeep"). Off by default: wrong on a phone without that, the picture would show stale data
+                static const char *heaps_u[] = { "/dev/dma_heap/system-uncached", "/dev/dma_heap/system" }, *heaps_c[] = { "/dev/dma_heap/system", "/dev/dma_heap/system-uncached" };
+                const char *hc = getenv("DM_VK_DMAHEAP_CACHED"); const char **heaps = hc && atoi(hc) ? heaps_c : heaps_u;
                 for (int i = 0; i < 2 && g_heapfd < 0; i++) if ((g_heapfd = open(heaps[i], O_RDONLY | O_CLOEXEC)) >= 0) g_heapname = heaps[i];
                 if (g_heapfd >= 0) { g_heapmap = -1; g_fdmap = 0; g_fdtype = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
                     VLOG("memory pools: dma-bufs from %s imported into the driver, mapped over the pools (to try)", g_heapname); }
@@ -1145,6 +1149,7 @@ static VkCommandBuffer ucb(void);   // the upload command buffer of the current 
 static void pass_end(void);
 static void state_reset(void);
 static uint64_t g_frame_no;
+static uint64_t g_dsc_gen = 1;   // descriptor pools reset (desc_flush's reuse: a set from an older generation is gone)
 static uint64_t g_wait_ring_ns;   // DM_VK_PROF: waits for a free submission slot (the GPU 6 submissions behind)
 void mtl_sub_begin(void) {
     mtl_init();
@@ -1154,7 +1159,7 @@ void mtl_sub_begin(void) {
     if (s->fence) { uint64_t t0 = mono_ns(); mtl_wait(s->fence, UINT64_MAX); g_wait_ring_ns += mono_ns() - t0; }
     defer_drain();
     VKCHECK(vkResetCommandPool(g_dev, s->pool, 0)); arena_reset(s);
-    for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(g_dev, s->dp[i], 0); s->cdp = 0;
+    for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(g_dev, s->dp[i], 0); s->cdp = 0; g_dsc_gen++;   // (desc_flush's reused sets were in these pools)
     s->npost = 0; s->ucb_open = 0;
     VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
     VKCHECK(vkBeginCommandBuffer(s->cb, &bi));
@@ -3024,6 +3029,50 @@ static void pso_record_s(const vprog *pr, const pkey *k, const sst *s) {   // ca
     fwrite(&r, sizeof r, 1, g_psorec_s); fflush(g_psorec_s);
 }
 static VkPipeline pso_make(vprog *pr, pkey k, const sst *ss);
+// ---- Pipelines kept (Arm's driver, phones under 7.5 GB): at most pso_cap(), the ones unused longest destroyed. Arm's driver keeps ~0.4 MB of the process's memory
+//   and a GPU mapping for each pipeline: 5500 of them were 2.3 GB of malloc and 61k mappings when a Mali-G720 closed after ~30 minutes in BOTWRecompAndroid (#310
+//   there, MIT); here the Mali players' apps held 1.7-2.6 GB against 1 GB on an Adreno (Shield builds ~1500 at start). Every 300 presents (pso_evict), over the
+//   cap, the pipelines unused for 900 presents go, oldest first, after the GPU is done with them (defer_add); one needed again is built again from the pipeline
+//   cache. The record lists get each pipeline once (g_pso_rec*), not again when it comes back. DM_VK_PIPE_KEEP=<n> (0: never)
+static nvn_hmap g_pso_used = {.klen = sizeof(VkPipeline)}, g_pso_rec = {.klen = sizeof(pkey)}, g_pso_rec_s = {.klen = sizeof(pkey_s)};
+static uint64_t g_pso_evicted;
+static int pso_cap(void) {
+    static int cap = -2; if (cap > -2) return cap;
+    const char *e = getenv("DM_VK_PIPE_KEEP"); long kb = 0;
+    if (!e) { FILE *f = fopen("/proc/meminfo", "r"); char ln[128]; while (f && fgets(ln, sizeof ln, f)) if (sscanf(ln, "MemTotal: %ld kB", &kb) == 1) break; if (f) fclose(f); }
+    cap = e ? atoi(e) : (g_props.vendorID == 0x13B5 || (kb > 0 && kb < 7500000)) ? 800 : 0;
+    if (cap > 0) VLOG("pipelines kept: at most %d (the least recently used ones destroyed when unused for 30 s)", cap); else cap = 0;
+    return cap;
+}
+static void pso_used(VkPipeline p) {   // a draw binds p (the cap is on): its last use
+    pthread_mutex_lock(&g_psomu); nvn_hm_put(&g_pso_used, &p, (void *)(uintptr_t)(g_frame_no + 1)); pthread_mutex_unlock(&g_psomu);
+}
+typedef struct { uint64_t last; VkPipeline p; int s; uint32_t slot; } pso_old;
+static int pso_old_cmp(const void *a, const void *b) { uint64_t x = ((const pso_old *)a)->last, y = ((const pso_old *)b)->last; return x < y ? -1 : x > y; }
+static void pso_evict(void) {
+    int cap = pso_cap(); if (!cap) return;
+    pthread_mutex_lock(&g_psomu);
+    uint32_t live = g_pso.n + g_pso_s.n;
+    if (live <= (uint32_t)cap) { pthread_mutex_unlock(&g_psomu); return; }
+    pso_old *c = malloc(sizeof *c * live); uint32_t nc = 0;
+    for (int which = 0; which < 2 && c; which++) { nvn_hmap *m = which ? &g_pso_s : &g_pso;
+        for (uint32_t i = 0; i < m->cap; i++) { if (!m->vals[i]) continue; VkPipeline p = (VkPipeline)m->vals[i];
+            uint64_t last = (uint64_t)(uintptr_t)nvn_hm_get(&g_pso_used, &p); if (last && last + 900 > g_frame_no + 1) continue;   // (used in the last 30 s)
+            c[nc++] = (pso_old){ last, p, which, i }; } }
+    if (c && nc) {
+        qsort(c, nc, sizeof *c, pso_old_cmp);
+        uint32_t drop = live - (uint32_t)cap * 9 / 10; if (drop > nc) drop = nc;
+        // the keys of the chosen slots first (deleting from a map moves its other entries), then the deletions by key
+        uint8_t *keys = malloc((size_t)drop * (sizeof(pkey_s) > sizeof(pkey) ? sizeof(pkey_s) : sizeof(pkey)));
+        size_t ks = sizeof(pkey_s) > sizeof(pkey) ? sizeof(pkey_s) : sizeof(pkey);
+        for (uint32_t i = 0; keys && i < drop; i++) { nvn_hmap *m = c[i].s ? &g_pso_s : &g_pso; memcpy(keys + i * ks, m->keys + (size_t)c[i].slot * m->klen, m->klen); }
+        for (uint32_t i = 0; keys && i < drop; i++) { nvn_hmap *m = c[i].s ? &g_pso_s : &g_pso;
+            if (nvn_hm_del(m, keys + i * ks)) { nvn_hm_del(&g_pso_used, &c[i].p); defer_add((dfr){ .kind = DF_PIPELINE, .h.pipe = c[i].p }); g_pso_evicted++; } }
+        free(keys);
+    }
+    uint32_t now = g_pso.n + g_pso_s.n; pthread_mutex_unlock(&g_psomu); free(c);
+    static int said; if (said++ < 20) VLOG("pipelines kept: %u of %u left (%llu destroyed so far, at most %d kept)", now, live, (unsigned long long)g_pso_evicted, cap);
+}
 // the pipeline for k with the draw state ss built in (g_eds 0); record: a draw's (the shared list gets k once, this phone's list k with ss), not the prewarm's
 static VkPipeline pso_lookup_s(vprog *pr, const pkey *k, const sst *ss, int record) {
     pkey_s ks; memset(&ks, 0, sizeof ks); ks.k = *k; ks.s = *ss;
@@ -3036,7 +3085,7 @@ static VkPipeline pso_lookup_s(vprog *pr, const pkey *k, const sst *ss, int reco
     VkPipeline q = nvn_hm_get(&g_pso_s, &ks);
     if (q) { pthread_mutex_unlock(&g_psomu); if (p) vkDestroyPipeline(g_dev, p, NULL); return q; }
     if (p) { nvn_hm_put(&g_pso_s, &ks, p); atomic_fetch_add(&g_pso_new, 1);
-             if (record) { atomic_fetch_add(&g_pso_ingame, 1); pso_record_s(pr, k, ss);
+             if (record && !nvn_hm_get(&g_pso_rec_s, &ks)) { nvn_hm_put(&g_pso_rec_s, &ks, (void *)1); atomic_fetch_add(&g_pso_ingame, 1); pso_record_s(pr, k, ss);
                            if (!nvn_hm_get(&g_pso_s_rec, k)) { nvn_hm_put(&g_pso_s_rec, k, (void *)1); pso_record(pr, k); } } }
     else nvn_hm_put(&g_pso_s_fail, &ks, (void *)1);
     pthread_mutex_unlock(&g_psomu);
@@ -3051,7 +3100,7 @@ static VkPipeline pso_lookup(vprog *pr, const pkey *k, int record) {
     pthread_mutex_lock(&g_psomu);
     VkPipeline q = nvn_hm_get(&g_pso, k);
     if (q) { pthread_mutex_unlock(&g_psomu); if (p) vkDestroyPipeline(g_dev, p, NULL); return q; }   // the other thread finished the same one first
-    if (p) { nvn_hm_put(&g_pso, k, p); if (record) { pso_record(pr, k); atomic_fetch_add(&g_pso_ingame, 1); } atomic_fetch_add(&g_pso_new, 1); }
+    if (p) { nvn_hm_put(&g_pso, k, p); if (record && !nvn_hm_get(&g_pso_rec, k)) { nvn_hm_put(&g_pso_rec, k, (void *)1); pso_record(pr, k); atomic_fetch_add(&g_pso_ingame, 1); } atomic_fetch_add(&g_pso_new, 1); }
     else nvn_hm_put(&g_pso_fail, k, (void *)1);
     pthread_mutex_unlock(&g_psomu);
     return p;
@@ -3333,11 +3382,36 @@ static VkDescriptorSet desc_set_alloc(VkDescriptorSetLayout dsl) {
         s->cdp++;   // full: the next pool (made above when there is none)
     }
 }
+// Descriptor sets reused within a submission (drivers without push descriptors: Mali, Xclipse, the emulator; programs over maxPushDescriptors). A set whose writes are
+//   the same as one already written in this submission (layout, bindings, buffers, offsets, ranges, views, samplers) is bound again instead of allocated and written
+//   anew: vkAllocateDescriptorSets and vkUpdateDescriptorSets were ~18 % of the render thread on Qualcomm's own driver in BOTWRecompAndroid (MIT), and consecutive
+//   draws of one material often bind exactly the same. Keyed by two 64-bit hashes of every write; the sets stay valid until the submission's pools reset (g_dsc_gen).
+//   DM_VK_DESC_REUSE=0: a new set for every draw as before
+enum { DSC_N = 4096 };
+static struct { uint64_t h1, h2, gen; VkDescriptorSet ds; } g_dsc[DSC_N];
+static uint64_t g_dsc_hits, g_dsc_new;   // sets reused / written (the present line)
+static int dsc_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_DESC_REUSE"); v = !(e && !strcmp(e, "0")); if (!v) VLOG("DM_VK_DESC_REUSE=0: a new descriptor set for every draw"); } return v; }
+static void dsc_mix(uint64_t *h1, uint64_t *h2, uint64_t v) { *h1 = (*h1 ^ v) * 0x100000001b3ull; *h2 = (*h2 + v) * 0x9E3779B97F4A7C15ull; *h2 ^= *h2 >> 29; }
 static void desc_flush(VkPipelineBindPoint bp, VkPipelineLayout pl, VkDescriptorSetLayout dsl) {
     if (!g_np || !D.n) { D.n = 0; return; }
+    uint64_t h1 = 0xcbf29ce484222325ull, h2 = 0x84222325cbf29ce4ull; uint32_t slot = 0; int reuse = dsc_on() && (D.n < 320);
+    if (reuse) {
+        dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)dsl); dsc_mix(&h1, &h2, D.n);
+        for (uint32_t i = 0; i < D.n; i++) { const VkWriteDescriptorSet *w = &D.w[i];
+            dsc_mix(&h1, &h2, (uint64_t)w->dstBinding << 32 | (uint32_t)w->descriptorType); dsc_mix(&h1, &h2, w->dstArrayElement); dsc_mix(&h1, &h2, w->descriptorCount);
+            for (uint32_t k = 0; k < w->descriptorCount; k++) {
+                if (w->pBufferInfo) { dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)w->pBufferInfo[k].buffer); dsc_mix(&h1, &h2, w->pBufferInfo[k].offset); dsc_mix(&h1, &h2, w->pBufferInfo[k].range); }
+                else if (w->pImageInfo) { dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)w->pImageInfo[k].imageView); dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)w->pImageInfo[k].sampler); dsc_mix(&h1, &h2, w->pImageInfo[k].imageLayout); }
+                else if (w->pTexelBufferView) dsc_mix(&h1, &h2, (uint64_t)(uintptr_t)w->pTexelBufferView[k]);
+                else dsc_mix(&h1, &h2, 0x5eedull); } }
+        slot = (uint32_t)(h1 ^ h2 >> 17) & (DSC_N - 1);
+        if (g_dsc[slot].gen == g_dsc_gen && g_dsc[slot].h1 == h1 && g_dsc[slot].h2 == h2 && g_dsc[slot].ds) {
+            vkCmdBindDescriptorSets(CB(), bp, pl, 0, 1, &g_dsc[slot].ds, 0, NULL); g_dsc_hits++; D.n = 0; return; }
+    }
     VkDescriptorSet ds = desc_set_alloc(dsl);
     for (uint32_t i = 0; i < D.n; i++) D.w[i].dstSet = ds;
-    vkUpdateDescriptorSets(g_dev, D.n, D.w, 0, NULL);
+    vkUpdateDescriptorSets(g_dev, D.n, D.w, 0, NULL); g_dsc_new++;
+    if (reuse) { g_dsc[slot].h1 = h1; g_dsc[slot].h2 = h2; g_dsc[slot].gen = g_dsc_gen; g_dsc[slot].ds = ds; }
     vkCmdBindDescriptorSets(CB(), bp, pl, 0, 1, &ds, 0, NULL);
     D.n = 0;
 }
@@ -3558,7 +3632,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di, uint64_t *mark) {
     VkCommandBuffer cb = CB(); if (mark) mark[1] = mono_ns();
     { static VkCommandBuffer bcb; static VkPipeline bp; static uint64_t bfence;   // the same pipeline already bound in this command buffer: no rebind (Vulkan keeps it across passes)
       static int off = -1; if (off < 0) off = getenv("DM_VK_BIND_ALWAYS") != NULL;
-      if (off || cb != bcb || bp != p || bfence != g_sub->fence) { vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p); bcb = cb; bp = p; bfence = g_sub->fence; } }
+      if (off || cb != bcb || bp != p || bfence != g_sub->fence) { vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p); bcb = cb; bp = p; bfence = g_sub->fence; if (pso_cap()) pso_used(p); } }
     // dynamic state
     float vx = 0, vy = 0, vw = (float)P.tw, vh = (float)P.th;
     if (S.has_vp) { vx = S.vp[0][0]; vy = S.vp[0][1]; vw = S.vp[0][2]; vh = S.vp[0][3]; }
@@ -4827,6 +4901,8 @@ uint64_t mtl_present(const tex_t *t, double period_s, const int crop[4]) {
              "stores skipped %llu (read after all %llu), depth / stencil begun store-none %llu (written after all %llu)", (unsigned long long)n,
              (unsigned long long)g_bar_full, (unsigned long long)g_bar_narrow, (unsigned long long)g_bar_none, (unsigned long long)g_ubd_deferred, (unsigned long long)g_ubd_conflicts,
              (unsigned long long)g_sk_skipped, (unsigned long long)g_sk_wrong, (unsigned long long)g_ro_passes, (unsigned long long)g_ro_wrong);
+    if (n % 300 == 0) pso_evict();   // (pipelines kept: Arm's driver, phones under 7.5 GB)
+    if (n % 300 == 0 && g_dsc_hits + g_dsc_new) VLOG("present %llu: descriptor sets written %llu, reused %llu (%.0f %%)", (unsigned long long)n, (unsigned long long)g_dsc_new, (unsigned long long)g_dsc_hits, 100.0 * (double)g_dsc_hits / (double)(g_dsc_hits + g_dsc_new));
     if (n == 1 || n % 300 == 0) VLOG("present %llu: %llu render target sets (%llu kept the open pass, %llu passes begun), %llu draws so far; textures uploaded %llu (re-uploaded %llu, %.1f MB)%s", (unsigned long long)n, (unsigned long long)g_stat_passes, (unsigned long long)g_stat_rt_same, (unsigned long long)g_stat_begins,
                                      (unsigned long long)g_stat_draws, (unsigned long long)g_pkg_uploads, (unsigned long long)g_pkg_reuploads, g_up_bytes / 1048576.0,
                                      g_bcgpu ? (snprintf(g_bc_line, sizeof g_bc_line, "; BC layer: %llu levels, %llu copies", (unsigned long long)g_bc_gpu_levels, (unsigned long long)g_bc_gpu_copies), g_bc_line) : "");

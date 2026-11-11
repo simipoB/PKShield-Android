@@ -309,3 +309,6 @@ Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)	Auto: 4x numa tela
 2x: one picture between each two of the game's frames (30 fps moves like 60)	2x: uma imagem entre cada dois quadros do jogo (30 fps se movem como 60)
 3x: two pictures between each two frames (like 90 fps; even on a 90 Hz screen only)	3x: duas imagens entre cada dois quadros (como 90 fps; uniforme só numa tela de 90 Hz)
 4x: three pictures between each two frames (like 120 fps; needs a 120 Hz screen and a fast GPU)	4x: três imagens entre cada dois quadros (como 120 fps; precisa de uma tela de 120 Hz e uma GPU rápida)
+Sustained performance	Desempenho sustentado
+Off: the phone's full speed, which drops when it gets hot	Não: toda a velocidade do telefone, que cai quando esquenta
+On: a speed the phone can hold for hours, fewer slowdowns when hot	Sim: uma velocidade que o telefone mantém por horas, menos quedas quando esquenta
