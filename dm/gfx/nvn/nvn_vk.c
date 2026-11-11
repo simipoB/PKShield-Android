@@ -4178,13 +4178,18 @@ static int fg_mem_get(VkDevice dev, VkPhysicalDevice pd, VkImage im, fg_mem *m) 
 }
 static void fg_mem_put(VkDevice dev, fg_mem m) { (void)dev; vk_free(m); }
 #include "nvn_fgen.h"
-__attribute__((weak)) volatile int dm_framegen_mode = -1;   // 0 off, 1 on, 2 on with the motion drawn over the picture (DM_FRAMEGEN=debug); -1: not read yet; the in-game menu sets it
+// DM_FRAMEGEN=lsfg: the same presentation, the picture made by the player's own Lossless Scaling shaders (nvn_lsfg.h, GPL-3.0-or-later) instead of nvn_fgen.h.
+// DM_LSFG_DIR: the folder of the shaders converted from the player's Lossless.dll (<id>.spv; the app's import puts them there), DM_LSFG_FLOW: the motion search's
+// size in percent of the frame (25..100, default 100)
+#include "nvn_lsfg.h"
+__attribute__((weak)) volatile int dm_framegen_mode = -1;   // 0 off, 1 on, 2 on with the motion drawn over the picture (DM_FRAMEGEN=debug), 3 Lossless Scaling's (DM_FRAMEGEN=lsfg);
+                                                            // -1: not read yet; the in-game menu sets it
 static int framegen_mode(void) {
     int m = dm_framegen_mode; if (m >= 0) return m;
-    const char *e = getenv("DM_FRAMEGEN"); m = e && (!strcmp(e, "on") || !strcmp(e, "1")) ? 1 : e && !strcmp(e, "debug") ? 2 : 0;
+    const char *e = getenv("DM_FRAMEGEN"); m = e && (!strcmp(e, "on") || !strcmp(e, "1")) ? 1 : e && !strcmp(e, "debug") ? 2 : e && !strcmp(e, "lsfg") ? 3 : 0;
     dm_framegen_mode = m; return m;
 }
-static struct { fgen g; fg_plan plan; int off, up, p, have_prev, resizes; uint64_t resize_t;
+static struct { fgen g; lsfg ls; int ls_tried; fg_plan plan; int off, up, p, have_prev, resizes; uint64_t resize_t;
                 VkSemaphore acq2[3], done2[3]; VkQueryPool qp; double tsper; int q_live[3]; uint64_t budget;
                 int pending; uint32_t pii; VkSemaphore pdone; uint64_t due, seq, arrived; sem_t wake;   // the real frame waiting for its time (under g_wmu)
                 uint64_t n_gen, n_plain, gpu_sum, gpu_n, gpu_max, cpu_sum, lag_sum, lag_n, last_log; } FGE;
@@ -4230,13 +4235,26 @@ static int fg_ready(vtex *x, int32_t cx, int32_t cy, int32_t cw, int32_t ch) {
             VLOG("frame generation: DM_FRAMEGEN_TUNE: the in-between picture asked %.2f refreshes ahead, the real frame handed over %.2f refreshes before that time", a / 100.0, b / 100.0); } }
         FGE.up = 1;
     }
-    fgen *g = &FGE.g;
-    if (g->w == (uint32_t)cw && g->h == (uint32_t)ch && g->fmt == x->fmt) return 1;
+    fgen *g = &FGE.g; lsfg *ls = framegen_mode() == 3 ? &FGE.ls : NULL; float flow = 1;
+    if (ls) {
+        if (!FGE.ls_tried) { FGE.ls_tried = 1; const char *d = getenv("DM_LSFG_DIR");
+            if (g_api < VK_API_VERSION_1_3) { fg_off("Lossless Scaling frame generation needs a Vulkan 1.3 driver"); return 0; }
+            if (!d || !*d || !ls_load(ls, d)) { fg_off(d && *d ? ls->why : "the Lossless Scaling shaders are not imported"); return 0; } }
+        { const char *e = getenv("DM_LSFG_FLOW"); int pc = e ? atoi(e) : 100; flow = (pc < 25 ? 25 : pc > 100 ? 100 : pc) / 100.0f; }
+        if (ls->w == (uint32_t)cw && ls->h == (uint32_t)ch && ls->fmt == x->fmt && ls->flow == flow) return 1; }
+    else if (g->w == (uint32_t)cw && g->h == (uint32_t)ch && g->fmt == x->fmt) return 1;
     uint64_t now = mono_ns();   // a game that changes its frame size all the time (dynamic resolution) would rebuild the images each time: not for it
     if (now - FGE.resize_t > 20000000000ull) { FGE.resize_t = now; FGE.resizes = 0; }
     if (++FGE.resizes > 8) { fg_off("the game's frame size changed 8 times in 20 s"); return 0; }
-    if (g->w) { pthread_mutex_lock(&g_qmu); vkDeviceWaitIdle(g_dev); pthread_mutex_unlock(&g_qmu); }   // (its images are destroyed: nothing in flight may use them)
+    if (ls ? ls->w : g->w) { pthread_mutex_lock(&g_qmu); vkDeviceWaitIdle(g_dev); pthread_mutex_unlock(&g_qmu); }   // (its images are destroyed: nothing in flight may use them)
     FGE.have_prev = 0; memset(FGE.q_live, 0, sizeof FGE.q_live);
+    if (ls) {
+        if (!ls_setup(ls, g_dev, g_pd, x->fmt, (uint32_t)cw, (uint32_t)ch, flow)) {
+            if (ls->failed) fg_off(ls->why ? ls->why : "setup failed"); else RED_ONCE(122, "Lossless Scaling frame generation: %s (%dx%d): normal presentation", ls->why ? ls->why : "not for this frame", cw, ch);
+            return 0; }
+        VLOG("Lossless Scaling frame generation ready: %dx%d frames (format %d), motion on %ux%u (%.0f%%), %d images; the GPU's time for it %s; off above %.1f ms a picture", cw, ch, (int)x->fmt,
+             ls->fw, ls->fh, flow * 100, ls->nall, FGE.qp ? "measured" : "cannot be measured on this driver (no timestamps)", FGE.budget / 1e6);
+        return 1; }
     if (!fg_setup(g, g_dev, g_pd, x->fmt, (uint32_t)cw, (uint32_t)ch)) {
         if (g->failed) fg_off(g->why ? g->why : "setup failed"); else RED_ONCE(121, "frame generation: %s (%dx%d): normal presentation", g->why ? g->why : "not for this frame", cw, ch);
         return 0; }
@@ -4286,8 +4304,8 @@ static void present_window_locked(vtex *x, const int crop[4]) {
             uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * FGE.tsper); FGE.gpu_sum += ns; FGE.gpu_n++; if (ns > FGE.gpu_max) FGE.gpu_max = ns;
             if (!FGE.off && fg_plan_cost(&FGE.plan, ns, t_arr, FGE.budget)) { char why[96]; snprintf(why, sizeof why, "the GPU needs over %.1f ms for a picture, %.1f ms the last one", FGE.budget / 1e6, ns / 1e6); fg_off(why); } } }
     int fgm = framegen_mode(), fg = fgm && !FGE.off && fg_ready(x, cx, cy, cw, ch), gen = 0;
-    if (!fg) FGE.have_prev = 0;   // (the copy of the frame before goes stale the moment a frame is not copied)
-    else { FGE.g.debug = fgm == 2; gen = fg_plan_frame(&FGE.plan, t_arr, period) && FGE.have_prev; }
+    if (!fg) { FGE.have_prev = 0; FGE.ls.n = 0; }   // (the copy of the frame before goes stale the moment a frame is not copied; Lossless Scaling's history starts again)
+    else { FGE.g.debug = fgm == 2; gen = fg_plan_frame(&FGE.plan, t_arr, period) && FGE.have_prev && (fgm != 3 || FGE.ls.n >= 2); }   // (lsfg: three frames of history first)
     uint32_t ii, i2 = 0; VkResult r = vkAcquireNextImageKHR(g_dev, W.sc, UINT64_MAX, W.acq[sl], VK_NULL_HANDLE, &ii);
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_ERROR_SURFACE_LOST_KHR) { swap_destroy(); return; }
     if (r && r != VK_SUBOPTIMAL_KHR) return;
@@ -4300,11 +4318,18 @@ static void present_window_locked(vtex *x, const int crop[4]) {
     int flip = atomic_load(&g_origin_ll);
     pres_src real = { x, VK_NULL_HANDLE, VK_NULL_HANDLE, 0, 0, cx, cy, cw, ch };
     if (fg) {   // the frame copied (the game draws over its own next), its brightness pyramid, and with a frame before it the picture between the two
-        fgen *g = &FGE.g; int p = FGE.p ^= 1; uint64_t c0 = mono_ns();
+        fgen *g = &FGE.g; lsfg *ls = fgm == 3 ? &FGE.ls : NULL; int p = FGE.p ^= 1; uint64_t c0 = mono_ns();
         if (FGE.qp && gen) { vkCmdResetQueryPool(cb, FGE.qp, sl * 2, 2); vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, FGE.qp, sl * 2); }
-        fg_begin(g, cb);
+        if (ls) ls_begin(ls, cb); else fg_begin(g, cb);
         VkImageCopy ic = { { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { cx, cy, 0 }, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { (uint32_t)cw, (uint32_t)ch, 1 } };
-        vkCmdCopyImage(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, g->c[p].img, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
+        vkCmdCopyImage(cb, x->img, VK_IMAGE_LAYOUT_GENERAL, ls ? ls->c[p].img : g->c[p].img, VK_IMAGE_LAYOUT_GENERAL, 1, &ic);
+        if (ls) {   // (its own barriers: the copy is made visible to its compute passes)
+            ls_ingest(ls, cb, p);
+            if (gen) { ls_generate(ls, cb);
+                if (FGE.qp) { vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, FGE.qp, sl * 2 + 1); FGE.q_live[sl] = 1; }
+                pres_src mid = { NULL, ls->m.img, ls->m.pview, ls->w, ls->h, 0, 0, cw, ch };
+                present_compose(cb, ii, &mid, flip); }
+        } else {
         VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_SHADER_READ_BIT };
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
         fg_ingest(g, cb, p);
@@ -4312,6 +4337,7 @@ static void present_window_locked(vtex *x, const int crop[4]) {
             if (FGE.qp) { vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, FGE.qp, sl * 2 + 1); FGE.q_live[sl] = 1; }
             pres_src mid = { NULL, g->m.img, g->m.view, g->w, g->h, 0, 0, cw, ch };
             present_compose(cb, ii, &mid, flip); }
+        }
         FGE.have_prev = 1; FGE.cpu_sum += mono_ns() - c0;
     }
     present_compose(cb, gen ? i2 : ii, &real, flip);

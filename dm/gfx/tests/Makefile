@@ -41,6 +41,9 @@ t_fgen: t_fgen.c ../nvn/nvn_fgen.h
 # Frame generation on a real Vulkan driver (Linux: Mesa's lavapipe is enough). VULKAN_INC: a folder holding vulkan/vulkan.h when the system has none
 t_fgen_vk: t_fgen_vk.c ../nvn/nvn_fgen.h ../nvn/overlay/fgen_spv.h
 	$(CC) -O1 -Wall -Wno-unused-function $(if $(VULKAN_INC),-I$(VULKAN_INC)) -o $@ t_fgen_vk.c $(or $(VULKAN_LIB),-lvulkan) -lm
+# The Lossless Scaling chain (nvn_lsfg.h) on a real Vulkan driver; run with the folder of the player's converted shaders, which never enter the repository
+t_lsfg_vk: t_lsfg_vk.c ../nvn/nvn_lsfg.h
+	$(CC) -O1 -Wall -Wno-unused-function $(if $(VULKAN_INC),-I$(VULKAN_INC)) -o $@ t_lsfg_vk.c $(or $(VULKAN_LIB),-lvulkan) -lm
 t_fuse_check: t_fuse_check.m ../../host/crash.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_fuse_check.m ../../host/crash.c $(filter-out ../nvn/nvn_mtl.m ../nvn/nvn_entry.S ../nvn/nvn_thunks.S,$(GFX)) $(FW)
 t_present_crop: t_present_crop.m ../nvn/hle_nvn.c ../../host/crash.c $(GFX) $(GFX_H)
