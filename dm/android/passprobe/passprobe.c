@@ -40,6 +40,37 @@ static ANativeActivity *g_act; static ANativeWindow *g_win; static pthread_mutex
 static int g_variant;   // the test: 0, 1 or 2 (see the top)
 static VkInstance inst; static VkPhysicalDevice pd; static VkDevice dev; static VkQueue q; static uint32_t qf; static VkPhysicalDeviceMemoryProperties mp;
 static VkImage img[256]; static VkFormat imgfmt[256]; static VkImageView view[256];
+static int g_dynren; static PFN_vkCmdBeginRendering p_begin; static PFN_vkCmdEndRendering p_end;
+static VkRenderPass g_rp[512]; static VkFramebuffer g_fb[512]; static int g_nrp;   // this frame's (pass_free after its fence)
+// A pass described as dynamic rendering; without it (Vulkan 1.1) a render pass and framebuffer with the same attachments, layouts and load / store ops
+// (as nvn_vk.c rend_begin). cf: each colour attachment's format; df: the depth / stencil attachment's; samples: the attachments' sample count
+static void pass_begin(VkCommandBuffer cb, const VkRenderingInfo *ri, const VkFormat *cf, VkFormat df, uint32_t samples) {
+    if (g_dynren) { p_begin(cb, ri); return; }
+    VkAttachmentDescription ad[9]; VkAttachmentReference cr[8], dr; VkImageView v[9]; VkClearValue cv[9]; uint32_t n = 0;
+    VkSampleCountFlagBits sc = (VkSampleCountFlagBits)(samples ? samples : 1);
+    for (uint32_t i = 0; i < ri->colorAttachmentCount && i < 8; i++) {
+        const VkRenderingAttachmentInfo *c = &ri->pColorAttachments[i];
+        if (!c->imageView) { cr[i] = (VkAttachmentReference){ VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_UNDEFINED }; continue; }
+        ad[n] = (VkAttachmentDescription){ 0, cf[i], sc, c->loadOp, c->storeOp, VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE, c->imageLayout, c->imageLayout };
+        cr[i] = (VkAttachmentReference){ n, c->imageLayout }; memset(&cv[n], 0, sizeof cv[n]); v[n++] = c->imageView;
+    }
+    const VkRenderingAttachmentInfo *d = ri->pDepthAttachment && ri->pDepthAttachment->imageView ? ri->pDepthAttachment : ri->pStencilAttachment && ri->pStencilAttachment->imageView ? ri->pStencilAttachment : NULL;
+    if (d) { ad[n] = (VkAttachmentDescription){ 0, df, sc, d->loadOp, d->storeOp, d->loadOp, d->storeOp, d->imageLayout, d->imageLayout };
+        dr = (VkAttachmentReference){ n, d->imageLayout }; memset(&cv[n], 0, sizeof cv[n]); v[n++] = d->imageView; }
+    VkSubpassDescription sp = { .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, .colorAttachmentCount = ri->colorAttachmentCount, .pColorAttachments = ri->colorAttachmentCount ? cr : NULL,
+        .pDepthStencilAttachment = d ? &dr : NULL };
+    VkRenderPassCreateInfo rci = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, .attachmentCount = n, .pAttachments = ad, .subpassCount = 1, .pSubpasses = &sp };
+    VkRenderPass rp; if (vkCreateRenderPass(dev, &rci, NULL, &rp)) { LOG("FAIL vkCreateRenderPass"); return; }
+    uint32_t w = ri->renderArea.offset.x + ri->renderArea.extent.width, h = ri->renderArea.offset.y + ri->renderArea.extent.height;
+    VkFramebufferCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp, .attachmentCount = n, .pAttachments = v, .width = w ? w : 1, .height = h ? h : 1,
+        .layers = ri->layerCount ? ri->layerCount : 1 };
+    VkFramebuffer fb; if (vkCreateFramebuffer(dev, &fci, NULL, &fb)) { LOG("FAIL vkCreateFramebuffer"); return; }
+    if (g_nrp < 512) { g_rp[g_nrp] = rp; g_fb[g_nrp++] = fb; }
+    VkRenderPassBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp, .framebuffer = fb, .renderArea = ri->renderArea, .clearValueCount = n, .pClearValues = cv };
+    vkCmdBeginRenderPass(cb, &bi, VK_SUBPASS_CONTENTS_INLINE);
+}
+static void pass_end(VkCommandBuffer cb) { if (g_dynren) p_end(cb); else vkCmdEndRenderPass(cb); }
+static void pass_free(void) { for (int i = 0; i < g_nrp; i++) { vkDestroyFramebuffer(dev, g_fb[i], NULL); vkDestroyRenderPass(dev, g_rp[i], NULL); } g_nrp = 0; }
 
 static int is_depth(VkFormat f) { return f == VK_FORMAT_D16_UNORM || f == VK_FORMAT_X8_D24_UNORM_PACK32 || f == VK_FORMAT_D32_SFLOAT || f == VK_FORMAT_S8_UINT ||
     f == VK_FORMAT_D16_UNORM_S8_UINT || f == VK_FORMAT_D24_UNORM_S8_UINT || f == VK_FORMAT_D32_SFLOAT_S8_UINT; }
@@ -114,10 +145,17 @@ static void run(ANativeWindow *win) {
     uint32_t nq = 0; vkGetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL); VkQueueFamilyProperties qp[16]; if (nq > 16) nq = 16; vkGetPhysicalDeviceQueueFamilyProperties(pd, &nq, qp);
     for (qf = 0; qf < nq && !(qp[qf].queueFlags & VK_QUEUE_GRAPHICS_BIT); qf++) {}
     float pri = 1; VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = qf, .queueCount = 1, .pQueuePriorities = &pri };
-    VkPhysicalDeviceVulkan13Features f13 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .dynamicRendering = VK_TRUE };
+    // dynamic rendering where the GPU has Vulkan 1.3 (as the engine), else render passes and framebuffers (the engine's path on Vulkan 1.1 drivers, Mali r32 and older)
+    VkPhysicalDeviceVulkan13Features f13 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+    if (VK_API_VERSION_MINOR(pr.apiVersion) >= 3) { VkPhysicalDeviceFeatures2 f2 = { .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f13 }; vkGetPhysicalDeviceFeatures2(pd, &f2); }
+    g_dynren = f13.dynamicRendering == VK_TRUE;
+    f13 = (VkPhysicalDeviceVulkan13Features){ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .dynamicRendering = VK_TRUE };
     const char *dext[] = { "VK_KHR_swapchain" };
-    VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &f13, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = 1, .ppEnabledExtensionNames = dext };
+    VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = g_dynren ? &f13 : NULL, .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = 1, .ppEnabledExtensionNames = dext };
     CHECK(vkCreateDevice(pd, &dci, NULL, &dev)); vkGetDeviceQueue(dev, qf, 0, &q);
+    if (g_dynren) { p_begin = (PFN_vkCmdBeginRendering)vkGetDeviceProcAddr(dev, "vkCmdBeginRendering"); p_end = (PFN_vkCmdEndRendering)vkGetDeviceProcAddr(dev, "vkCmdEndRendering"); }
+    if (!p_begin || !p_end) g_dynren = 0;
+    LOG("passes: %s", g_dynren ? "dynamic rendering (Vulkan 1.3)" : "render passes and framebuffers (no Vulkan 1.3 dynamic rendering here)");
     // the swapchain, as the engine's (8 images, mailbox when there is one)
     VkAndroidSurfaceCreateInfoKHR sci = { .sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, .window = win }; VkSurfaceKHR surf; CHECK(vkCreateAndroidSurfaceKHR(inst, &sci, NULL, &surf));
     VkSurfaceCapabilitiesKHR caps; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(pd, surf, &caps);
@@ -155,7 +193,7 @@ static void run(ANativeWindow *win) {
     }
     CHECK(vkEndCommandBuffer(cb));
     VkSubmitInfo si0 = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb }; CHECK(vkQueueSubmit(q, 1, &si0, fence));
-    vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX); vkResetFences(dev, 1, &fence);
+    vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX); vkResetFences(dev, 1, &fence); pass_free();
     LOG("made %d images and %d views", NIMG, NVIEW);
     // buffers for the per-frame copies (the engine's pool mirror updates, uniform copies) and the overlay's font upload
     VkBuffer buf[3]; VkDeviceMemory bmem[3];
@@ -224,7 +262,10 @@ static void run(ANativeWindow *win) {
             VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, { P->w, P->h } }, .layerCount = P->layers ? P->layers : 1,
                 .colorAttachmentCount = (uint32_t)P->ncol, .pColorAttachments = ca, .pDepthAttachment = P->hasd && P->dview >= 0 ? &da : NULL, .pStencilAttachment = P->hass && P->dview >= 0 ? &da : NULL };
             char w[128]; snprintf(w, sizeof w, "game pass %d %ux%u colours %d depth %s%d", p, P->w, P->h, P->ncol, P->dview >= 0 ? "img" : "-", P->dview >= 0 ? PP_VIEWS[P->dview].img : 0);
-            CMD(w, FULLBAR(); vkCmdBeginRendering(cb, &ri); vkCmdEndRendering(cb)); total++;
+            VkFormat cf[8] = { 0 }; uint32_t smp = 1;
+            for (int c = 0; c < P->ncol && c < 8; c++) if (P->col[c] >= 0) { const pp_view *v = &PP_VIEWS[P->col[c]]; cf[c] = is_depth(imgfmt[v->img]) ? imgfmt[v->img] : (VkFormat)v->fmt; smp = PP_IMGS[v->img].samples; }
+            VkFormat df = P->dview >= 0 ? imgfmt[PP_VIEWS[P->dview].img] : VK_FORMAT_UNDEFINED; if (P->dview >= 0) smp = PP_IMGS[PP_VIEWS[P->dview].img].samples;
+            CMD(w, FULLBAR(); pass_begin(cb, &ri, cf, df, smp); pass_end(cb)); total++;
         }
         // the present (nvn_vk.c mtl_present / scale_draw / ovl_draw)
         VkImageMemoryBarrier sb = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .image = si[ii],
@@ -258,7 +299,7 @@ static void run(ANativeWindow *win) {
             VkRenderingAttachmentInfo ca = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = sv[ii], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
             VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, ext }, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca };
-            CMD("overlay pass on the screen image", vkCmdBeginRendering(cb, &ri); vkCmdEndRendering(cb));
+            CMD("overlay pass on the screen image", pass_begin(cb, &ri, &fmt.format, VK_FORMAT_UNDEFINED, 1); pass_end(cb));
             sb.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; sb.dstAccessMask = 0; sb.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; sb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
             CMD("screen image COLOR_ATTACHMENT -> PRESENT_SRC", vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &sb));
         } else {
@@ -272,7 +313,7 @@ static void run(ANativeWindow *win) {
         CMD("vkQueueSubmit", CHECK(vkQueueSubmit(q, 1, &s, fence)));
         VkPresentInfoKHR pi = { .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done, .swapchainCount = 1, .pSwapchains = &sw, .pImageIndices = &ii };
         CMD("vkQueuePresentKHR", vkQueuePresentKHR(q, &pi));
-        vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX); vkResetFences(dev, 1, &fence);
+        vkWaitForFences(dev, 1, &fence, VK_TRUE, UINT64_MAX); vkResetFences(dev, 1, &fence); pass_free();
     }
     LOG("DONE: %d frames x 3 rounds, %d game passes, %d steps, no crash (test %d)", nframes, total, step, g_variant + 1);
 }

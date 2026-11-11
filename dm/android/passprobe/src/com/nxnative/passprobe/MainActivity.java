@@ -30,7 +30,7 @@ public class MainActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.VERTICAL); int p = (int) (16 * getResources().getDisplayMetrics().density); l.setPadding(p, p, p, p);
-        TextView t = new TextView(this); t.setText("Galar Native: Mali test 2\nNo game files needed. Tap Run test; it takes under a minute and may close by itself once or twice (that is the test). Then tap Share result and post it on GitHub."); t.setTextSize(16);
+        TextView t = new TextView(this); t.setText("Galar Native: Mali test 2.1\nNo game files needed. Tap Run test; it takes under a minute and may close by itself once or twice (that is the test). Then tap Share result and post it on GitHub."); t.setTextSize(16);
         run = new Button(this); run.setText("Run test"); run.setOnClickListener(v -> { for (int x : VARIANTS) new File(getFilesDir(), "run-" + x + ".txt").delete(); next(); });
         share = new Button(this); share.setText("Share result"); share.setOnClickListener(v -> {
             Intent i = new Intent(Intent.ACTION_SEND); i.setType("text/plain"); i.putExtra(Intent.EXTRA_TEXT, report(true)); startActivity(Intent.createChooser(i, "Share the result")); });
@@ -62,7 +62,7 @@ public class MainActivity extends Activity {
     }
     String report(boolean full) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Galar Native Mali test 2\nPhone: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append(" (").append(Build.HARDWARE).append("), Android ").append(Build.VERSION.RELEASE).append('\n');
+        sb.append("Galar Native Mali test 2.1\nPhone: ").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append(" (").append(Build.HARDWARE).append("), Android ").append(Build.VERSION.RELEASE).append('\n');
         boolean any = false;
         for (int k = 0; k < VARIANTS.length; k++) {
             List<String> L = lines(new File(getFilesDir(), "run-" + VARIANTS[k] + ".txt")); if (L.isEmpty()) continue; any = true;
