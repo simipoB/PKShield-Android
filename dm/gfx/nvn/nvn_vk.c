@@ -82,8 +82,9 @@ static void dummies_init(void);
 static int host_import_mark(int set);   // (queue_submit)
 static int fd_export_mark(int op);   // (mtl_init, mtl_pool_add)
 static void pcache_open(void); static void *prewarm_main(void *arg);   // pipeline list and cache (below)
-// The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (an Adreno driver such as Mesa Turnip, chosen on the setup screen) is opened through libadrenotools
-// (BSD-2-Clause, shipped in the app with its hook libraries); without it, or when that fails, the system's libvulkan
+// The Vulkan driver: DM_VK_DRIVER=<folder>/<library> (a driver package chosen on the setup screen: Mesa Turnip for Adreno, Mesa PanVK for Mali) is opened through
+// libadrenotools (BSD-2-Clause, shipped in the app with its hook libraries); when that is missing or fails, the library itself (PanVK talks to the Mali kernel driver,
+// kbase, on its own and needs none of the Adreno hooks); when that fails too, the system's libvulkan
 static void *vk_open(void) {
 #ifdef __ANDROID__
     const char *drv = getenv("DM_VK_DRIVER");
@@ -100,7 +101,9 @@ static void *vk_open(void) {
             void *h = op(RTLD_NOW, 1 /* ADRENOTOOLS_DRIVER_CUSTOM */, NULL, libdir, ddir, lib, NULL, NULL);
             if (h) { VLOG("Vulkan driver %s (opened through libadrenotools)", drv); return h; }
         }
-        VLOG("[RED] Vulkan driver %s could not be opened (libadrenotools %s): the system driver is used", drv, op ? "failed" : "missing");
+        void *h = dlopen(drv, RTLD_NOW | RTLD_LOCAL);
+        if (h) { VLOG("Vulkan driver %s (opened directly; libadrenotools %s)", drv, op ? "failed" : "missing"); return h; }
+        VLOG("[RED] Vulkan driver %s could not be opened (libadrenotools %s, directly: %s): the system driver is used", drv, op ? "failed" : "missing", dlerror());
     }
     return dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
 #else
@@ -121,7 +124,9 @@ void mtl_init(void) {
     if (g_dev) return;
     if (!vkGetInstanceProcAddr) {
         void *lib = vk_open(); if (!lib) VDIE("no Vulkan driver could be opened");
-        vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr"); if (!vkGetInstanceProcAddr) VDIE("the Vulkan driver has no vkGetInstanceProcAddr");
+        vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
+        if (!vkGetInstanceProcAddr) vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vk_icdGetInstanceProcAddr");   // a Mesa driver opened directly: its loader entry point
+        if (!vkGetInstanceProcAddr) VDIE("the Vulkan driver has no vkGetInstanceProcAddr");
         VK_GLOBAL(VK_LOAD_G)
     }
     uint32_t instance_api = VK_API_VERSION_1_0;

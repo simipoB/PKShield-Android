@@ -27,6 +27,19 @@ shaders translated to SPIR-V by Ryujinx's shader translator, on the phone, durin
    opens straight into it every time, and your dump files are no longer needed. A Pokémon Shield shortcut with the game's own icon (from your
    dump) goes on the home screen.
 
+### Official downloads
+
+Official APKs come **only** from this repository's [Releases](https://github.com/simipoB/PKShield-Android/releases). They never include game
+files: an APK that comes with the game already in it is not from this project. Every official release from v0.37 on is signed with this certificate:
+
+```
+SHA-256: a5f49b44b6181758d82504f3beb0851c92093f454c792b49688728130673a070
+```
+
+Check a download with `apksigner verify --print-certs PokemonShield.apk`. A build signed with any other key says **"Unofficial build: not
+supported"** on its setup screen, and its log records it (`DM_BUILD_SIGNER=unofficial …`). Reports from APKs repackaged by others are
+closed; if you built the APK yourself from this repository, say so in your report.
+
 Long-press the app's icon for **Settings**: graphics, touch controls, the graphics driver, exporting your save data as a ZIP, or setting the game up again.
 A few shaders the game builds while it runs are saved the first time and added at the next start.
 If a file picker does not expose a path the app can read directly, the selected game file is copied into the app's storage; this needs free space for both the copy and the setup output.

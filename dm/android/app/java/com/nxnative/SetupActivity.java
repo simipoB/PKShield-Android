@@ -36,6 +36,7 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
 import java.io.*;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -59,6 +60,7 @@ public final class SetupActivity extends Activity {
     // static: the setup runs in its own thread and outlives this screen; a new screen (Android may still make one, despite configChanges in the manifest, which keeps it
     // across rotation: #42) must not start a second setup next to it
     private static volatile boolean running;
+    private static final String UNOFFICIAL = "Unofficial build: not supported. Official PKShield releases come only from github.com/simipoB/PKShield-Android/releases.";
 
     private File gameDir() { return getExternalFilesDir(null); }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
@@ -76,17 +78,23 @@ public final class SetupActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         boolean asked = getIntent().getBooleanExtra("setup", false);
+        // official release or not (BuildSigner): into env.txt every start, so the game's log says which; an unofficial build is told so before the game starts
+        String[] signers = BuildSigner.digests(this); boolean official = BuildSigner.official(signers);
+        envSet("DM_BUILD_SIGNER", BuildSigner.label(signers));
+        if (!official) Toast.makeText(this, UNOFFICIAL, Toast.LENGTH_LONG).show();
         if (ready()) setupShortcut();
         if (ready() && !asked && !running) { gameIcon(); if (pendingCaptures().isEmpty()) { startGame(); return; } }
         LinearLayout root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL); root.setPadding(48, 48, 48, 48); root.setGravity(Gravity.CENTER_HORIZONTAL);
         logo = new ImageView(this); logo.setVisibility(android.view.View.GONE); root.addView(logo, new LinearLayout.LayoutParams(320, 320));
         TextView title = new TextView(this); title.setText("Pokémon Shield"); title.setTextSize(28); root.addView(title);
+        if (!official) { TextView u = new TextView(this); u.setText(UNOFFICIAL); u.setTextColor(0xffff5252); u.setPadding(0, 16, 0, 0); root.addView(u); }
         TextView note = new TextView(this); note.setText("Set the game up from your own dump. No game files or keys come with this app; yours never leave the phone."); note.setPadding(0, 16, 0, 32); root.addView(note);
         gameText = row(root, "Game files", "Choose", v -> pick(PICK_GAME, true));
         keysText = row(root, "Keys", "Choose", v -> pick(PICK_KEYS, true));
         // the Vulkan driver: the phone's own, or an Adreno driver package (a zip with meta.json and the library, e.g. Mesa Turnip) opened through libadrenotools
         driverText = row(root, "Graphics driver", "Choose", v -> pick(PICK_DRIVER, false));
-        button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); refresh(); });
+        button(root, "Use the phone's own driver", v -> { envSet("DM_VK_DRIVER", ""); envSet("DM_VK_DRIVER_SHA256", ""); driverChanged(); refresh(); });
+        maliOptions(root);
         settings(root);
         setup = button(root, "Set up the game", v -> startSetup());
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); bar.setMax(600); root.addView(bar);
@@ -236,25 +244,64 @@ public final class SetupActivity extends Activity {
         if (!value.isEmpty()) lines.add(key + "=" + value.replace("\n", " "));
         try (FileWriter w = new FileWriter(envFile())) { for (String l : lines) w.write(l + "\n"); } catch (IOException e) { }
     }
+    // Another driver: the pipeline cache the game kept (android_main.c DM_VK_PCACHE) was compiled by the old one. Drivers are meant to refuse a cache that is not
+    // theirs, but an experimental one (PanVK) may not, so it starts empty
+    private void driverChanged() { new File(gameDir(), "vk_pipeline_cache.bin").delete(); }
+    // The Mali driver's switches (MaliDriver), shown while a PanVK package is the driver: env.txt, read before the driver opens, so they reach it as its environment
+    private LinearLayout maliBox;
+    private void maliOptions(LinearLayout root) {
+        maliBox = new LinearLayout(this); maliBox.setOrientation(LinearLayout.VERTICAL); root.addView(maliBox);
+        TextView h = new TextView(this); h.setText("Mali driver (PanVK) options"); h.setPadding(0, 16, 0, 0); maliBox.addView(h);
+        check(maliBox, "Driver log (for bug reports)", MaliDriver.LOG, "1");
+        check(maliBox, "Fix for the driver not starting (some Exynos and Mali-G52 phones)", MaliDriver.STRIDE, "56");
+        check(maliBox, "Late stencil (fixes black triangles or missing light; can be darker and slower)", MaliDriver.STENCIL, "1");
+        TextView hl = new TextView(this); hl.setText("GPU memory reported to the game"); hl.setPadding(0, 8, 0, 0); maliBox.addView(hl);
+        android.widget.RadioGroup rg = new android.widget.RadioGroup(this); String cur = envGet(MaliDriver.HEAP);
+        for (int k = 0; k < MaliDriver.HEAP_MB.length; k++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this); b.setId(3000 + k);
+            b.setText(k == 0 ? "Driver's choice (a quarter of the RAM)" : MaliDriver.HEAP_MB[k] + " MB" + (k == 2 ? " (fixes missing textures on 4 GB phones)" : "")); rg.addView(b);
+            if (MaliDriver.HEAP_MB[k].equals(cur)) b.setChecked(true);
+        }
+        rg.setOnCheckedChangeListener((g, id) -> envSet(MaliDriver.HEAP, MaliDriver.HEAP_MB[id - 3000]));
+        maliBox.addView(rg);
+    }
+    private void check(LinearLayout root, String label, String key, String on) {
+        android.widget.CheckBox c = new android.widget.CheckBox(this); c.setText(label); c.setChecked(on.equals(envGet(key)));
+        c.setOnCheckedChangeListener((b, v) -> envSet(key, v ? on : "")); root.addView(c);
+    }
     // a driver package into the app's private storage (libadrenotools loads drivers only from there): its meta.json names the library
     private void installDriver(Uri u, String name) {
         File dir = new File(getFilesDir(), "drivers/" + name.replaceAll("[^A-Za-z0-9._-]", "_").replaceAll("\\.zip$", "")); String lib = null;
         try {
             deleteTree(dir); dir.mkdirs();
-            try (ZipInputStream z = new ZipInputStream(new BufferedInputStream(getContentResolver().openInputStream(u)))) { ZipEntry e;
+            java.security.MessageDigest zmd; try { zmd = java.security.MessageDigest.getInstance("SHA-256"); } catch (java.security.NoSuchAlgorithmException e) { throw new IOException(e); }
+            try (java.security.DigestInputStream zd = new java.security.DigestInputStream(new BufferedInputStream(getContentResolver().openInputStream(u)), zmd);
+                 ZipInputStream z = new ZipInputStream(zd)) { ZipEntry e;
                 while ((e = z.getNextEntry()) != null) { if (e.isDirectory()) continue; String n = new File(e.getName()).getName();
-                    try (OutputStream o = new FileOutputStream(new File(dir, n))) { copy(z, o); } } }
+                    try (OutputStream o = new FileOutputStream(new File(dir, n))) { copy(z, o); } }
+                byte[] rest = new byte[1 << 16]; while (zd.read(rest) > 0) { } }   // the zip's central directory too: the digest covers the whole file
+            String zipSha = MaliDriver.hex(zmd.digest());
             File meta = new File(dir, "meta.json");
             if (meta.exists()) { StringBuilder sb = new StringBuilder(); try (BufferedReader r = new BufferedReader(new FileReader(meta))) { String l; while ((l = r.readLine()) != null) sb.append(l); }
                 java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"libraryName\"\\s*:\\s*\"([^\"]+)\"").matcher(sb); if (m.find()) lib = m.group(1); }
             if (lib == null) { String[] so = dir.list((d, n) -> n.endsWith(".so")); if (so != null && so.length == 1) lib = so[0]; }
             if (lib == null || !new File(dir, lib).exists()) { status.setText(name + " is not a driver package (no meta.json naming its library)"); deleteTree(dir); return; }
-            envSet("DM_VK_DRIVER", new File(dir, lib).getPath()); status.setText("Driver " + name + " installed: it is used from the next start.");
+            File so = new File(dir, lib); String note = "";
+            // a PanVK (Mali) package: named when it is a known build (MaliDriver.KNOWN), else a warning with its digest; the digest goes into env.txt, so the log names the build
+            if (MaliDriver.isPanvk(lib)) {
+                String libSha = MaliDriver.sha256(so), known = MaliDriver.known(zipSha, libSha);
+                envSet("DM_VK_DRIVER_SHA256", libSha);
+                note = known != null ? "\nVerified: " + known + " (SHA-256 matches the release)."
+                     : "\nNot a known FristOneRR PanVK release (SHA-256 " + zipSha.substring(0, 16) + "…): download drivers only from the developer's own Releases page.";
+            } else envSet("DM_VK_DRIVER_SHA256", "");
+            envSet("DM_VK_DRIVER", so.getPath()); driverChanged();
+            status.setText("Driver " + name + " installed: it is used from the next start." + note); refresh();
         } catch (IOException e) { status.setText("could not read " + name + ": " + e.getMessage()); }
     }
     private static void deleteTree(File f) { File[] k = f.listFiles(); if (k != null) for (File c : k) deleteTree(c); f.delete(); }
     private void refresh() {
-        if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? "the phone's own Vulkan driver" : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")"); }
+        if (driverText != null) { String d = envGet("DM_VK_DRIVER"); driverText.setText(d.isEmpty() ? "the phone's own Vulkan driver" : new File(d).getParentFile().getName() + " (" + new File(d).getName() + ")");
+                                  if (maliBox != null) maliBox.setVisibility(MaliDriver.isPanvk(d) ? android.view.View.VISIBLE : android.view.View.GONE); }
         gameText.setText(games.isEmpty() ? "none chosen (.nsp / .xci: base game, update 1.3.2, DLC)" : String.join("\n", games));
         boolean keys = new File(keysDir(), "prod.keys").exists();
         keysText.setText(keys ? "prod.keys" + (new File(keysDir(), "title.keys").exists() ? " + title.keys" : "") + " (kept in the app's private storage)" : "none chosen (prod.keys, and title.keys if needed)");
