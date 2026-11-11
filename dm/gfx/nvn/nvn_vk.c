@@ -4180,7 +4180,7 @@ static void fg_mem_put(VkDevice dev, fg_mem m) { (void)dev; vk_free(m); }
 #include "nvn_fgen.h"
 // DM_FRAMEGEN=lsfg: the same presentation, the picture made by the player's own Lossless Scaling shaders (nvn_lsfg.h, GPL-3.0-or-later) instead of nvn_fgen.h.
 // DM_LSFG_DIR: the folder of the shaders converted from the player's Lossless.dll (<id>.spv; the app's import puts them there), DM_LSFG_FLOW: the motion search's
-// size in percent of the frame (25..100, default 100)
+// size in percent of the frame (25..100; default 50 for frames 1000 lines or taller, else 75)
 #include "nvn_lsfg.h"
 __attribute__((weak)) volatile int dm_framegen_mode = -1;   // 0 off, 1 on, 2 on with the motion drawn over the picture (DM_FRAMEGEN=debug), 3 Lossless Scaling's (DM_FRAMEGEN=lsfg);
                                                             // -1: not read yet; the in-game menu sets it
@@ -4240,7 +4240,8 @@ static int fg_ready(vtex *x, int32_t cx, int32_t cy, int32_t cw, int32_t ch) {
         if (!FGE.ls_tried) { FGE.ls_tried = 1; const char *d = getenv("DM_LSFG_DIR");
             if (g_api < VK_API_VERSION_1_3) { fg_off("Lossless Scaling frame generation needs a Vulkan 1.3 driver"); return 0; }
             if (!d || !*d || !ls_load(ls, d)) { fg_off(d && *d ? ls->why : "the Lossless Scaling shaders are not imported"); return 0; } }
-        { const char *e = getenv("DM_LSFG_FLOW"); int pc = e ? atoi(e) : 100; flow = (pc < 25 ? 25 : pc > 100 ? 100 : pc) / 100.0f; }
+        { const char *e = getenv("DM_LSFG_FLOW"); int pc = e && atoi(e) > 0 ? atoi(e) : ch >= 1000 ? 50 : 75;
+          flow = (pc < 25 ? 25 : pc > 100 ? 100 : pc) / 100.0f; }   // (S25+, 1080p: 100% took 6 ms a picture, 50% 2.9-4.4 ms)
         if (ls->w == (uint32_t)cw && ls->h == (uint32_t)ch && ls->fmt == x->fmt && ls->flow == flow) return 1; }
     else if (g->w == (uint32_t)cw && g->h == (uint32_t)ch && g->fmt == x->fmt) return 1;
     uint64_t now = mono_ns();   // a game that changes its frame size all the time (dynamic resolution) would rebuild the images each time: not for it
