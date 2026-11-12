@@ -316,5 +316,11 @@ Camera sensitivity	カメラ感度
 Slower camera: the right stick and the touch camera turn less	カメラが遅くなります：右スティックとタッチ操作の回転が小さくなります
 As on the Switch	Switchと同じ
 Faster camera: full speed with less of the stick	カメラが速くなります：少ない入力で最高速度に達します
-Auto: on for Mali GPUs (white screens and black patches)	自動：Mali GPUではオン（白い画面や黒い斑点の対策）
 Off: plain multiplies, as before v0.74	オフ：通常の乗算（v0.74より前と同じ）
+Auto: on with PanVK (black patches), off with the phone's own Mali driver	自動：PanVKではオン（黒い斑点）、端末のMaliドライバーではオフ
+White-screen probe	白画面の調査
+Inputs	入力
+Divisions	除算
+Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	テクスチャ：テクスチャの読み取り値をすべて妥当な範囲に制限します。白が消えたら教えてください（テクスチャの読み取りが誤っています）
+Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	入力：頂点シェーダーから渡される値をすべて制限します。白が消えたら教えてください
+Divisions: every division is limited. If the white goes away, tell us	除算：すべての除算結果を制限します。白が消えたら教えてください

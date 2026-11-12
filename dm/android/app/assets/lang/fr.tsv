@@ -316,5 +316,11 @@ Camera sensitivity	Sensibilité de la caméra
 Slower camera: the right stick and the touch camera turn less	Caméra plus lente : le stick droit et la caméra tactile tournent moins
 As on the Switch	Comme sur Switch
 Faster camera: full speed with less of the stick	Caméra plus rapide : pleine vitesse avec moins de course du stick
-Auto: on for Mali GPUs (white screens and black patches)	Auto : activé sur les GPU Mali (écrans blancs et taches noires)
 Off: plain multiplies, as before v0.74	Désactivé : multiplications ordinaires, comme avant la v0.74
+Auto: on with PanVK (black patches), off with the phone's own Mali driver	Auto : activé avec PanVK (taches noires), désactivé avec le pilote Mali du téléphone
+White-screen probe	Sonde d'écran blanc
+Inputs	Entrées
+Divisions	Divisions
+Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Textures : chaque lecture de texture est limitée à une plage raisonnable. Si le blanc disparaît, dites-le-nous : une texture est mal lue
+Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entrées : chaque valeur transmise par le shader de sommets est limitée. Si le blanc disparaît, dites-le-nous
+Divisions: every division is limited. If the white goes away, tell us	Divisions : chaque division est limitée. Si le blanc disparaît, dites-le-nous
