@@ -2133,11 +2133,21 @@ static VkImageView dummy_view(const spv_res *r, int storage) {
 }
 // Texture ID → view of the kind the shader declares (nvn_mtl.m tex_by_id + tex_fit): the registered view's format / levels / layers, its channel mapping (else the builder's) on top of
 // the format's own; a depth-stencil texture reads depth unless the view asks for stencil. VK_NULL_HANDLE: no fitting view (the slot reads 0)
-static int tex_is_int(int tid) {   // the texture ID's view format is an integer one
+// A format the GPU cannot filter (VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT missing): Arm's Mali has no linear filtering of 32-bit floats (no OES_texture_float_linear
+//   either), Adreno has. A linear sampler on such a texture is undefined and on Mali reads 0, which would leave e.g. an exposure value at 0 (the white scenes, #215)
+static int fmt_no_linear(VkFormat f) {
+    static uint8_t known[256];   // 0 unknown, 1 filterable, 2 not
+    if ((unsigned)f < 256 && known[f]) return known[f] == 2;
+    VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_pd, f, &fp);
+    int no = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) && !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+    if ((unsigned)f < 256) { known[f] = no ? 2 : 1; if (no) VLOG("textures: vk format %d cannot be filtered on this GPU: sampled without filtering", (int)f); }
+    return no;
+}
+static int tex_is_int(int tid) {   // the texture ID's view format is an integer one, or one the GPU cannot filter: sampled through the unfiltered sampler
     treg_t rg; if (!treg_get(tid, &rg)) return 0;
     vtex *x = tex_res(&rg.t); if (!x) return 0;
     VkFormat f = x->fmt; if (rg.has_v && rg.v.set_format) { uint32_t vf = 0; uint8_t s2[4]; if (nvn_fmt_to_vk(rg.v.format, &vf, s2) && vf) f = (VkFormat)vf; }
-    return fmt_int_class(f) != 0;
+    return fmt_int_class(f) != 0 || fmt_no_linear(f);
 }
 static VkImageView tex_view_for(int tid, const spv_res *r, int storage) {
     if (g_tpool_n && tid >= g_tpool_n) return VK_NULL_HANDLE;
