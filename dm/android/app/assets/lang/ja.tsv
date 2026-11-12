@@ -328,3 +328,9 @@ Output	出力
 Float target	浮動小数の描画先
 Output: what each shader writes is limited. If the white goes away, tell us	出力：各シェーダーが書き込む値を制限します。白が消えたら教えてください
 Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	浮動小数の描画先：ライティング後のシーンを圧縮形式ではなく16ビット浮動小数の画像に保存します。白が消えたら教えてください
+Multiplies	乗算
+Additions	加算
+Multiply-adds	積和
+Multiplies: every multiply result is limited. If the white goes away, tell us	乗算：すべての乗算結果を制限します。白が消えたら教えてください
+Additions: every add / subtract result is limited. If the white goes away, tell us	加算：すべての加算・減算結果を制限します。白が消えたら教えてください
+Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	積和：すべての積和演算の結果を制限します。白が消えたら教えてください

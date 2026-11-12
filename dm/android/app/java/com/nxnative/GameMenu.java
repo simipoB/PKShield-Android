@@ -540,6 +540,9 @@ public final class GameMenu {
                 { "inputs", t(a, "Inputs"), t(a, "Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us") },
                 { "div", t(a, "Divisions"), t(a, "Divisions: every division is limited. If the white goes away, tell us") },
                 { "output", t(a, "Output"), t(a, "Output: what each shader writes is limited. If the white goes away, tell us") },
+                { "mul", t(a, "Multiplies"), t(a, "Multiplies: every multiply result is limited. If the white goes away, tell us") },
+                { "add", t(a, "Additions"), t(a, "Additions: every add / subtract result is limited. If the white goes away, tell us") },
+                { "fma", t(a, "Multiply-adds"), t(a, "Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us") },
                 { "f16target", t(a, "Float target"), t(a, "Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us") } });
             choice(a, "DM_VK_DEPTH_DISCARD", t(a, "Keep unused depth in tile memory"), new String[][] { { "", t(a, "Off"), "" },
                 { "1", t(a, "On"), t(a, "On: depth that nothing reads afterwards is not written back to memory (faster on Mali; a test: tell us if anything flickers)") } });
