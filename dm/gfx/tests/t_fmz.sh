@@ -58,6 +58,8 @@ run scalar "" '%m = OpFMul %float %a %b
 OpStore %out %m'
 check '[ "$(cat $D/scalar.rc)" = 0 ]' "a scalar FMul is patched"
 check '"$T/spirv-val$X" --target-env vulkan1.0 "$(w "$D/scalar.out.spv")"' "the patched scalar module is valid"
+T_GUARD=1 "$D/t" "$D/scalar.spv" "$D/scalar.g.spv"; rc=$?
+check '[ $rc = 0 ] && cmp -s "$D/scalar.out.spv" "$D/scalar.g.spv"' "a module ending right before an unmapped page: nothing read past its end (Galar #172 #181)"
 check '[ "$(dis scalar | grep -c OpFOrdEqual)" = 2 ] && [ "$(dis scalar | grep -c OpLogicalOr)" = 1 ] && [ "$(dis scalar | grep -c OpSelect)" = 1 ]' "two compares, an or and a select for one multiply"
 check 'dis scalar | grep -q "OpTypeBool" && dis scalar | grep -q "OpConstant %[0-9]* 0$"' "a bool type and a float zero added (the module had neither)"
 
