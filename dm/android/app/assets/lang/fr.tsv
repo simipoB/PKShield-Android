@@ -326,3 +326,5 @@ Inputs: every value the vertex shader hands over is limited. If the white goes a
 Divisions: every division is limited. If the white goes away, tell us	Divisions : chaque division est limitée. Si le blanc disparaît, dites-le-nous
 Low: 3D at about 600p, lighter	Faible : 3D à environ 600p, plus léger
 Lowest: 3D at 960x540, coolest	Minimum : 3D en 960x540, le plus frais
+Locked for now	Verrouillé pour l'instant
+Off for every phone until the game holds a solid frame rate without it. It comes back after that.	Désactivé sur tous les téléphones jusqu'à ce que le jeu tienne une fréquence d'images stable sans cela. Il reviendra ensuite.

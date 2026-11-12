@@ -326,3 +326,5 @@ Inputs: every value the vertex shader hands over is limited. If the white goes a
 Divisions: every division is limited. If the white goes away, tell us	除算：すべての除算結果を制限します。白が消えたら教えてください
 Low: 3D at about 600p, lighter	低：3Dを約600pで描画、軽め
 Lowest: 3D at 960x540, coolest	最低：3Dを960x540で描画、最も発熱が少ない
+Locked for now	現在はロック中
+Off for every phone until the game holds a solid frame rate without it. It comes back after that.	ゲームがこれなしで安定したフレームレートを保てるようになるまで、すべての端末でオフです。その後で戻ってきます。

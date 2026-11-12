@@ -783,6 +783,13 @@ static void host_start(void) {
     // graphics (the app's settings screen): high = the console's TV mode (1080p, full effects), low = handheld mode (720p, the game's own lighter settings),
     // auto = TV mode, made lighter while the phone is hot or slow (graphics_auto below), lowest = handheld mode with the game's 3D render scale capped at 75 % (960x540 in
     // Pokémon Sword / Shield, hle_resscale.c; other games: as low). DM_OPMODE and DM_RES_CAP in env.txt still win
+    // Frame generation (DM_FRAMEGEN, Lossless Scaling's too) and Faster rendering (DM_NVN_ASYNC) are locked off for now, whatever env.txt says: first a solid frame
+    //   rate without them on every phone, then they come back (the owner's call, 2026-11-12). DM_UNLOCK_EXPERIMENTS=1 in env.txt lifts the lock (development)
+    { const char *u = getenv("DM_UNLOCK_EXPERIMENTS"); if (!(u && !strcmp(u, "1"))) {
+        const char *fg = getenv("DM_FRAMEGEN"), *as = getenv("DM_NVN_ASYNC");
+        if ((fg && *fg && strcmp(fg, "0") && strcmp(fg, "off")) || (as && *as && strcmp(as, "0") && strcmp(as, "off")))
+            fprintf(stderr, "boot: frame generation and Faster rendering are locked off for now (env.txt had DM_FRAMEGEN=%s DM_NVN_ASYNC=%s)\n", fg ? fg : "", as ? as : "");
+        setenv("DM_FRAMEGEN", "0", 1); setenv("DM_NVN_ASYNC", "0", 1); } }
     // Pokémon Sword / Shield: low and lowest stay in TV mode, the 3D lowered by the engine's cap instead (hle_resscale.c): 0.55 of 1080p ≈ 594p (handheld drew 576p),
     //   0.50 = 960x540 (as lowest drew before). In handheld mode a Dynamax (the Poké Ball growing) crashed: the game's file loader got a null buffer from one of its
     //   own sub-heaps and unpacked an LZ4 entry into it (main+0x5dd7b8 alloc, no null check → main+0x1865410; #211 Adreno 613 on lowest, #115 Xclipse 530 on low,

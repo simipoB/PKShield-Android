@@ -209,6 +209,11 @@ public final class GameMenu {
         });
         c.addView(sb);
     }
+    // a feature locked off for now (android_main.c): its title and why, in place of its choices
+    private static void lockedNote(Activity a, String title) {
+        LinearLayout c = card(a); titleRow(a, c, title, t(a, "Locked for now"));
+        c.addView(text(a, t(a, "Off for every phone until the game holds a solid frame rate without it. It comes back after that."), 13, SUB, false));
+    }
     private static void note(Activity a, String s) { TextView n = text(a, s, 13, SUB, false); n.setPadding(dp(a, 6), dp(a, 2), dp(a, 6), dp(a, 10)); body.addView(n); }
     private static TextView button(Activity a, LinearLayout parent, String label, boolean primary, Runnable r) {
         TextView b = text(a, label, 14, primary ? Color.WHITE : TEXT, true); b.setGravity(Gravity.CENTER); b.setPadding(dp(a, 16), dp(a, 9), dp(a, 16), dp(a, 9));
@@ -251,6 +256,7 @@ public final class GameMenu {
         String[][] fgc = { { "", t(a, "Off"), "" },
             { "on", t(a, "On"), t(a, "On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later") },
             { "lsfg", "Lossless Scaling", t(a, "Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)") } };
+        if (!GameSettings.experimentsUnlocked(a)) { lockedNote(a, t(a, "Frame generation (experimental)")); } else {   // (locked off for now: android_main.c)
         choice(a, "DM_FRAMEGEN", t(a, "Frame generation (experimental)"), GameSettings.hasLsfg(a) ? fgc : java.util.Arrays.copyOf(fgc, 2));
         if (GameSettings.hasLsfg(a))   // Lossless Scaling's pictures a game frame (nvn_vk.c lsfg_mult); Auto: as many as the display's rate divides evenly
             choice(a, "DM_LSFG_MULT", t(a, "Lossless Scaling pictures"), new String[][] {
@@ -261,7 +267,7 @@ public final class GameMenu {
         if (!GameSettings.hasLsfg(a)) {   // (the player's own copy: Lossless Scaling is a paid app, nothing of it comes with this one)
             note(a, t(a, "Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here."));
             LinearLayout lr = new LinearLayout(a); body.addView(lr);
-            button(a, lr, t(a, "Import Lossless.dll"), false, () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_LSFG)); }
+            button(a, lr, t(a, "Import Lossless.dll"), false, () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_LSFG)); } }
         // HD textures: the player's own retexture mods (Mods), on Auto only on phones with the memory for them (GameSettings.profile, android_main.c mod_root);
         //   offered once such a mod is in the mods folder
         if (GameSettings.hasTexturePack(a)) {
@@ -513,6 +519,7 @@ public final class GameMenu {
         // the replay on its own thread (hle_nvn.c DM_NVN_ASYNC): the game's thread hands each frame's graphics work over instead of translating it itself (about a quarter
         //   of a frame on a slow CPU, #99). Off by default until players have run it on many phones
         heading(a, t(a, "Performance"));
+        if (!GameSettings.experimentsUnlocked(a)) lockedNote(a, t(a, "Faster rendering (experimental)")); else
         choice(a, "DM_NVN_ASYNC", t(a, "Faster rendering (experimental)"), new String[][] { { "", t(a, "Off"), "" },
             { "1", t(a, "On"), t(a, "On: the graphics work runs on its own thread, next to the game's. Not tested on every phone yet: if the game misbehaves, turn it off and tell us on GitHub") } });
         // a frame capture for a bug report (nvn_vk.c, Frame capture): the engine reads capture.req (frames to wait, so the menu can be closed first) and writes the ZIP
