@@ -17,6 +17,7 @@ final class DriverPackages {
     static final String TURNIP_RELEASES = "https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases";
     static final String RADV_XCLIPSE_RELEASES = "https://github.com/JimVulkan/radv-xclipse/releases";
     static final String PANVK_RELEASES = "https://github.com/FristOneRR/FristOneRR-Panvk-Driver/releases";
+    static final String PANVK_FAUX_RELEASES = "https://github.com/faux123/panvk-faux123-driver-pixel7/releases/latest";   // (the Mali-G710 repository; the package is the same in all four)
 
     static File root(Context c) { return new File(c.getFilesDir(), "drivers"); }
     // every game's folder (the driver is the phone's): its env.txt and pipeline cache
@@ -74,7 +75,7 @@ final class DriverPackages {
             if (MaliDriver.isPanvk(lib)) {   // a PanVK (Mali) package: named when it is a known build, else a warning with its digest
                 String known = MaliDriver.known(zipSha, MaliDriver.sha256(so));
                 note = known != null ? "\nVerified: " + known + " (SHA-256 matches the release)."
-                     : "\nNot a known FristOneRR PanVK release (SHA-256 " + zipSha.substring(0, 16) + "…): download drivers only from the developer's own Releases page.";
+                     : "\nNot a known PanVK release (SHA-256 " + zipSha.substring(0, 16) + "…): download drivers only from the developer's own Releases page (FristOneRR or faux123).";
             }
             String why = mismatch(c, so);
             if (why != null) return "Driver " + name + " installed, but not used: " + why + ". The phone's own driver stays.";
@@ -90,7 +91,9 @@ final class DriverPackages {
             boolean a8 = gpu.matches(".*adreno[^0-9]*8[0-9][0-9].*");
             return new String[] { "Get Turnip for Adreno (StevenMXZ's releases: pick a " + (a8 ? "\"Turnip Gen8\" build for this Adreno 8xx)" : "\"Turnip v…-R\" build)"), TURNIP_RELEASES }; }
         if (gpu.matches(".*mali-g(57|68|77|78|52|72|76).*")) return new String[] { "Get PanVK for Mali (FristOneRR's releases)", PANVK_RELEASES };
-        // (not offered for Valhall, G610 / G615 / G710 / G715: PanVK on a Mali-G615 gave a black picture at 0 fps, #71)
+        // the CSF Malis (G610 / G615 / G620 / G710 / G715 / G720 / G725, Immortalis-G715 / G720 / G925): faux123's PanVK, the build that draws the game where Arm's own
+        //   driver drew it white (#47 Mali-G615 MC6, #111 Immortalis-G925). (An earlier PanVK on a G615 gave a black picture at 0 fps, #71)
+        if (gpu.matches(".*(mali|immortalis)-g(610|615|620|710|715|720|725|925).*")) return new String[] { "Get PanVK for Mali (faux123's releases)", PANVK_FAUX_RELEASES };
         // Mesa RADV built for Samsung's Xclipse (JimVulkan's radv-xclipse): Xclipse 920 / 940 / 530 / 540 / 550 / 950 / 960, Android 14 and newer; its zip (meta.json naming
         //   vulkan.radeon.so) installs as any package here. Not yet tried with this app: offered as experimental (#76 asked for it on an Xclipse 530)
         if (gpu.matches(".*xclipse[^0-9]*(920|940|530|540|550|950|960).*") && android.os.Build.VERSION.SDK_INT >= 34)
