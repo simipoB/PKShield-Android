@@ -324,3 +324,5 @@ Divisions	Divisions
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Textures : chaque lecture de texture est limitée à une plage raisonnable. Si le blanc disparaît, dites-le-nous : une texture est mal lue
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entrées : chaque valeur transmise par le shader de sommets est limitée. Si le blanc disparaît, dites-le-nous
 Divisions: every division is limited. If the white goes away, tell us	Divisions : chaque division est limitée. Si le blanc disparaît, dites-le-nous
+Locked for now	Verrouillé pour l'instant
+Off for every phone until the game holds a solid frame rate without it. It comes back after that.	Désactivé sur tous les téléphones jusqu'à ce que le jeu tienne une fréquence d'images stable sans cela. Il reviendra ensuite.

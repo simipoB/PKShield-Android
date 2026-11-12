@@ -49,7 +49,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
             android.view.Display d = getDisplay(); if (d == null) return;
             int want = 0;
             if (!GameSettings.get(this, "DM_DISPLAY_RATE").equals("phone")) {
-                String fg = GameSettings.get(this, "DM_FRAMEGEN"); boolean gen = !fg.isEmpty() && !fg.equals("off");
+                String fg = GameSettings.get(this, "DM_FRAMEGEN"); boolean gen = GameSettings.experimentsUnlocked(this) && !fg.isEmpty() && !fg.equals("off");   // (locked off for now)
                 String f = GameSettings.get(this, "DM_FPS_TARGET"); int fps = f.equals("60") ? 60 : 30;
                 android.view.Display.Mode cur = d.getMode(), best = null;
                 for (android.view.Display.Mode m : d.getSupportedModes()) {

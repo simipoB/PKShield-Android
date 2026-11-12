@@ -324,3 +324,5 @@ Divisions	Divisões
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Texturas: cada leitura de textura é limitada a um intervalo razoável. Se o branco sumir, avise-nos: uma textura é lida errado
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entradas: cada valor passado pelo shader de vértices é limitado. Se o branco sumir, avise-nos
 Divisions: every division is limited. If the white goes away, tell us	Divisões: cada divisão é limitada. Se o branco sumir, avise-nos
+Locked for now	Bloqueado por enquanto
+Off for every phone until the game holds a solid frame rate without it. It comes back after that.	Desligado em todos os celulares até o jogo manter uma taxa de quadros estável sem isso. Volta depois disso.
