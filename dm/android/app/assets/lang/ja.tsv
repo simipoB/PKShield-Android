@@ -333,3 +333,7 @@ App folder	アプリのフォルダー
 App folder: Android/data, as before	アプリのフォルダー：これまでどおり Android/data
 Documents	ドキュメント
 Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save（Syncthingなどの同期ツール用）。次回の起動時にセーブがそこへコピーされ、既にあったものはバックアップとして残ります。すべてのファイルへのアクセスが必要です
+Output	出力
+Float target	浮動小数の描画先
+Output: what each shader writes is limited. If the white goes away, tell us	出力：各シェーダーが書き込む値を制限します。白が消えたら教えてください
+Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	浮動小数の描画先：ライティング後のシーンを圧縮形式ではなく16ビット浮動小数の画像に保存します。白が消えたら教えてください

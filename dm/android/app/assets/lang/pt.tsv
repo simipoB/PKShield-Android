@@ -333,3 +333,7 @@ App folder	Pasta do app
 App folder: Android/data, as before	Pasta do app: Android/data, como antes
 Documents	Documentos
 Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save, para ferramentas de sincronização como o Syncthing. Seu save é copiado para lá no próximo início; o que já estiver lá é mantido como backup. Requer acesso a todos os arquivos
+Output	Saída
+Float target	Destino flutuante
+Output: what each shader writes is limited. If the white goes away, tell us	Saída: o que cada shader escreve é limitado. Se o branco sumir, avise-nos
+Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	Destino flutuante: a cena iluminada é guardada numa imagem de ponto flutuante de 16 bits em vez da compactada. Se o branco sumir, avise-nos
