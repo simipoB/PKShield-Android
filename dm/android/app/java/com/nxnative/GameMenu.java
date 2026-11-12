@@ -447,11 +447,11 @@ public final class GameMenu {
     }
 
     // ---------- saves, online, system ----------
-    // the folder the save is in now (android_main.c save_place: save_place.txt says "shared" while it is in Documents/NXNative/<title id>/save)
+    // the folder the save is in now (android_main.c save_place: save_place.txt says "shared" while it is in Documents/Galar Native/<title id>/save)
     static File activeSave(Activity a, File files) {
         try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(new File(files, "save_place.txt")))) {
             String l = r.readLine();
-            if (l != null && l.trim().equals("shared")) return new File("/storage/emulated/0/Documents/NXNative/" + GameSettings.game(a)[0].toUpperCase(java.util.Locale.ROOT) + "/save");
+            if (l != null && l.trim().equals("shared")) return new File("/storage/emulated/0/Documents/Galar Native/" + GameSettings.game(a)[0].toUpperCase(java.util.Locale.ROOT) + "/save");
         } catch (java.io.IOException e) { }
         return new File(files, "save");
     }
@@ -462,7 +462,7 @@ public final class GameMenu {
         action(a, t(a, "Import save data"), t(a, "Your current save is kept as a backup."), () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_IMPORT));
         // where the save lives (android_main.c save_place, Arceus-Native-Android#8): Documents for a sync tool; copied over at the next start, the earlier save there kept as a backup
         choice(a, "DM_SAVE_SHARED", t(a, "Save folder"), new String[][] { { "", t(a, "App folder"), t(a, "App folder: Android/data, as before") },
-            { "1", t(a, "Documents"), t(a, "Documents/NXNative/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access", GameSettings.game(a)[0].toUpperCase(java.util.Locale.ROOT)) } });
+            { "1", t(a, "Documents"), t(a, "Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access", GameSettings.game(a)[0].toUpperCase(java.util.Locale.ROOT)) } });
     }
     // Online room (hle_relay.c, dm/server): local play with players elsewhere through a room server someone hosts (their own Railway service, or any PC); everyone enters the
     // same server address and room code. Applies from the next start; mods stay off for local play, as on Wi-Fi

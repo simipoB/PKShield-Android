@@ -332,4 +332,4 @@ Save folder	セーブの保存先
 App folder	アプリのフォルダー
 App folder: Android/data, as before	アプリのフォルダー：これまでどおり Android/data
 Documents	ドキュメント
-Documents/NXNative/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/NXNative/%s/save（Syncthingなどの同期ツール用）。次回の起動時にセーブがそこへコピーされ、既にあったものはバックアップとして残ります。すべてのファイルへのアクセスが必要です
+Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save（Syncthingなどの同期ツール用）。次回の起動時にセーブがそこへコピーされ、既にあったものはバックアップとして残ります。すべてのファイルへのアクセスが必要です
