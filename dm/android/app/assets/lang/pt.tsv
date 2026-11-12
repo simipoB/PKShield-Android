@@ -324,3 +324,8 @@ Divisions	Divisões
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Texturas: cada leitura de textura é limitada a um intervalo razoável. Se o branco sumir, avise-nos: uma textura é lida errado
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entradas: cada valor passado pelo shader de vértices é limitado. Se o branco sumir, avise-nos
 Divisions: every division is limited. If the white goes away, tell us	Divisões: cada divisão é limitada. Se o branco sumir, avise-nos
+Save folder	Pasta do save
+App folder	Pasta do app
+App folder: Android/data, as before	Pasta do app: Android/data, como antes
+Documents	Documentos
+Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save, para ferramentas de sincronização como o Syncthing. Seu save é copiado para lá no próximo início; o que já estiver lá é mantido como backup. Requer acesso a todos os arquivos
