@@ -324,3 +324,5 @@ Divisions	除算
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	テクスチャ：テクスチャの読み取り値をすべて妥当な範囲に制限します。白が消えたら教えてください（テクスチャの読み取りが誤っています）
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	入力：頂点シェーダーから渡される値をすべて制限します。白が消えたら教えてください
 Divisions: every division is limited. If the white goes away, tell us	除算：すべての除算結果を制限します。白が消えたら教えてください
+Locked for now	現在はロック中
+Off for every phone until the game holds a solid frame rate without it. It comes back after that.	ゲームがこれなしで安定したフレームレートを保てるようになるまで、すべての端末でオフです。その後で戻ってきます。

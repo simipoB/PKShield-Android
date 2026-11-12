@@ -783,6 +783,13 @@ static void host_start(void) {
     // graphics (the app's settings screen): high = the console's TV mode (1080p, full effects), low = handheld mode (720p, the game's own lighter settings),
     // auto = TV mode, made lighter while the phone is hot or slow (graphics_auto below), lowest = handheld mode with the game's 3D render scale capped at 75 % (960x540 in
     // Pokémon Sword / Shield, hle_resscale.c; other games: as low). DM_OPMODE and DM_RES_CAP in env.txt still win
+    // Frame generation (DM_FRAMEGEN, Lossless Scaling's too) and Faster rendering (DM_NVN_ASYNC) are locked off for now, whatever env.txt says: first a solid frame
+    //   rate without them on every phone, then they come back (the owner's call, 2026-11-12). DM_UNLOCK_EXPERIMENTS=1 in env.txt lifts the lock (development)
+    { const char *u = getenv("DM_UNLOCK_EXPERIMENTS"); if (!(u && !strcmp(u, "1"))) {
+        const char *fg = getenv("DM_FRAMEGEN"), *as = getenv("DM_NVN_ASYNC");
+        if ((fg && *fg && strcmp(fg, "0") && strcmp(fg, "off")) || (as && *as && strcmp(as, "0") && strcmp(as, "off")))
+            fprintf(stderr, "boot: frame generation and Faster rendering are locked off for now (env.txt had DM_FRAMEGEN=%s DM_NVN_ASYNC=%s)\n", fg ? fg : "", as ? as : "");
+        setenv("DM_FRAMEGEN", "0", 1); setenv("DM_NVN_ASYNC", "0", 1); } }
     { const char *g = getenv("DM_GRAPHICS"); if (g && (!strcmp(g, "low") || !strcmp(g, "lowest"))) setenv("DM_OPMODE", "0", 0); else if (g && (!strcmp(g, "high") || !strcmp(g, "auto"))) setenv("DM_OPMODE", "1", 0);
       if (g && !strcmp(g, "lowest")) setenv("DM_RES_CAP", "0.75", 0); }
 #if defined(DM_GAME_ANDROID_OPMODE) && DM_GAME_ANDROID_OPMODE >= 0
