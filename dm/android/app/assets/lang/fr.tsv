@@ -328,3 +328,8 @@ Low: 3D at about 600p, lighter	Faible : 3D à environ 600p, plus léger
 Lowest: 3D at 960x540, coolest	Minimum : 3D en 960x540, le plus frais
 Locked for now	Verrouillé pour l'instant
 Off for every phone until the game holds a solid frame rate without it. It comes back after that.	Désactivé sur tous les téléphones jusqu'à ce que le jeu tienne une fréquence d'images stable sans cela. Il reviendra ensuite.
+Save folder	Dossier de sauvegarde
+App folder	Dossier de l'app
+App folder: Android/data, as before	Dossier de l'app : Android/data, comme avant
+Documents	Documents
+Documents/NXNative/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/NXNative/%s/save, pour les outils de synchronisation comme Syncthing. Votre sauvegarde y est copiée au prochain démarrage ; ce qui s'y trouvait déjà est gardé en copie de secours. Nécessite l'accès à tous les fichiers
