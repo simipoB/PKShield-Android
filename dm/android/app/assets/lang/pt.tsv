@@ -298,7 +298,6 @@ L3 / R3 buttons	Botões L3 / R3
 Off: no L3 / R3 on screen (a controller's stick buttons still work)	Desligado: sem L3 / R3 na tela (os botões dos analógicos de um controle continuam funcionando)
 On: L3 and R3 above the sticks (move them with Move the touch controls)	Ligado: L3 e R3 acima dos analógicos (mova-os com Mover os controles de toque)
 Frame generation (experimental)	Geração de quadros (experimental)
-On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later	Ativada: uma imagem é criada entre cada dois quadros do jogo, então 30 fps se movem como 60. Precisa de uma GPU rápida; seus comandos aparecem cerca de 17 ms depois
 Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)	Lossless Scaling: a imagem intermediária é criada pela sua própria cópia da geração de quadros do Lossless Scaling (movimento mais nítido, precisa de uma GPU mais rápida)
 Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here.	Tem o Lossless Scaling? Importe o Lossless.dll dele (na pasta do programa) para usar a geração de quadros dele aqui.
 Import Lossless.dll	Importar Lossless.dll
@@ -318,3 +317,7 @@ As on the Switch	Como no Switch
 Faster camera: full speed with less of the stick	Câmera mais rápida: velocidade máxima com menos curso do analógico
 Auto: on for Mali GPUs (white screens and black patches)	Auto: ligado em GPUs Mali (telas brancas e manchas pretas)
 Off: plain multiplies, as before v0.74	Desligado: multiplicações normais, como antes da v0.74
+On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU and the game at 25 fps or more; your input shows about 17 ms later	Ligado: uma imagem é criada entre cada dois quadros do jogo, então 30 fps se movem como 60. Requer uma GPU rápida e o jogo a 25 fps ou mais; seus comandos aparecem cerca de 17 ms depois
+Paused: the game runs at %s fps here, and frame generation needs 25 fps or more. It comes back on by itself above 27.	Pausada: o jogo roda a %s fps aqui, e a geração de quadros precisa de 25 fps ou mais. Ela volta sozinha acima de 27.
+Off: this GPU needs %s ms for each picture, more than the game can spare. Switch it off and on to try again.	Desligada: esta GPU precisa de %s ms para cada imagem, mais do que o jogo pode ceder. Desligue e ligue para tentar de novo.
+Off until the next start (see the log for why).	Desligada até o próximo início (o motivo está no log).

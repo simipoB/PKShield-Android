@@ -298,7 +298,6 @@ L3 / R3 buttons	L3 / R3 ボタン
 Off: no L3 / R3 on screen (a controller's stick buttons still work)	オフ：画面に L3 / R3 を表示しない（コントローラーのスティック押し込みは使えます）
 On: L3 and R3 above the sticks (move them with Move the touch controls)	オン：スティックの上に L3 と R3（「タッチ操作の配置を変更」で動かせます）
 Frame generation (experimental)	フレーム生成（試験的）
-On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later	オン：ゲームの2つのフレームの間に画像を1枚作り、30 fpsを60のように動かします。高速なGPUが必要です。操作の反映が約17ミリ秒遅れます
 Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)	Lossless Scaling：中間の画像を、お持ちのLossless Scalingのフレーム生成で作ります（動きがより鮮明、より高速なGPUが必要）
 Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here.	Lossless Scalingをお持ちですか？そのLossless.dll（プログラムのフォルダー内）を取り込むと、ここでそのフレーム生成を使えます。
 Import Lossless.dll	Lossless.dllを取り込む
@@ -318,3 +317,7 @@ As on the Switch	Switchと同じ
 Faster camera: full speed with less of the stick	カメラが速くなります：少ない入力で最高速度に達します
 Auto: on for Mali GPUs (white screens and black patches)	自動：Mali GPUではオン（白い画面や黒い斑点の対策）
 Off: plain multiplies, as before v0.74	オフ：通常の乗算（v0.74より前と同じ）
+On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU and the game at 25 fps or more; your input shows about 17 ms later	オン：ゲームの2フレームごとに中間の画像を作り、30 fpsを60のように動かします。速いGPUと25 fps以上のゲームが必要です。操作は約17 ms遅れて表示されます
+Paused: the game runs at %s fps here, and frame generation needs 25 fps or more. It comes back on by itself above 27.	一時停止中：ここではゲームが%s fpsで動いており、フレーム生成には25 fps以上が必要です。27を超えると自動で再開します。
+Off: this GPU needs %s ms for each picture, more than the game can spare. Switch it off and on to try again.	オフ：このGPUは1枚の画像に%s msかかり、ゲームが割ける時間を超えています。オフにしてからオンにすると再試行します。
+Off until the next start (see the log for why).	次回の起動までオフ（理由はログにあります）。
