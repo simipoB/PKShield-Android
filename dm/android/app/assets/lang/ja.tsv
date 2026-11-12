@@ -318,3 +318,8 @@ As on the Switch	Switchと同じ
 Faster camera: full speed with less of the stick	カメラが速くなります：少ない入力で最高速度に達します
 Auto: on for Mali GPUs (white screens and black patches)	自動：Mali GPUではオン（白い画面や黒い斑点の対策）
 Off: plain multiplies, as before v0.74	オフ：通常の乗算（v0.74より前と同じ）
+Sticks	スティック
+Fixed	固定
+Fixed: the sticks stay where they are drawn, as on Joy-Cons	固定：スティックは表示された位置にとどまります（Joy-Conと同じ）
+Floating	フローティング
+Floating: touch anywhere on the left half to move (the stick comes to your thumb); drag on the right half to turn the camera	フローティング：画面の左半分のどこに触れても移動できます（スティックが親指の位置に来ます）。右半分をドラッグするとカメラが回ります

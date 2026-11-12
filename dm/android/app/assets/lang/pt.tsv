@@ -318,3 +318,8 @@ As on the Switch	Como no Switch
 Faster camera: full speed with less of the stick	Câmera mais rápida: velocidade máxima com menos curso do analógico
 Auto: on for Mali GPUs (white screens and black patches)	Auto: ligado em GPUs Mali (telas brancas e manchas pretas)
 Off: plain multiplies, as before v0.74	Desligado: multiplicações normais, como antes da v0.74
+Sticks	Analógicos
+Fixed	Fixos
+Fixed: the sticks stay where they are drawn, as on Joy-Cons	Fixos: os analógicos ficam onde são desenhados, como nos Joy-Con
+Floating	Flutuantes
+Floating: touch anywhere on the left half to move (the stick comes to your thumb); drag on the right half to turn the camera	Flutuantes: toque em qualquer lugar da metade esquerda para andar (o analógico vai até o seu polegar); arraste na metade direita para girar a câmera

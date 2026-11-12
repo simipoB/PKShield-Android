@@ -77,6 +77,11 @@ static void layout_apply(float w, float h) {
 // L3 / R3 on screen: an option (DM_TOUCH_L3R3=on, Controls → Touch controls), off by default: Sword and Shield hardly use them. -1: not read yet
 static int g_l3r3 = -1;
 static int l3r3_on(void) { if (g_l3r3 < 0) { const char *e = getenv("DM_TOUCH_L3R3"); g_l3r3 = e && !strcmp(e, "on"); } return g_l3r3; }
+// Floating sticks (DM_TOUCH_STICKS=floating, Controls → Touch controls): the movement stick's base comes to wherever the thumb lands on the left half (below the top
+// row), and the right half is the camera alone, by dragging (no right stick on screen). Fixed (default): the sticks where the layout puts them, as on Joy-Cons.
+// Asked for by a player whose thumbs kept hitting the game's own touch buttons (the Poké Ball / satchel) around the fixed sticks
+static int g_float = -1;
+static int float_on(void) { if (g_float < 0) { const char *e = getenv("DM_TOUCH_STICKS"); g_float = e && !strcmp(e, "floating"); } return g_float; }
 static void layout(float w, float h) {
     static int init; if (!init++) for (int i = 0; i < 10; i++) g_ptr[i].id = -1;   // no finger down
     if (w == g_w && h == g_h) return;
@@ -119,6 +124,7 @@ static void layout(float w, float h) {
     if (!g_rstick_on) { g_rknob_x = g_c[C_RSTICK].cx; g_rknob_y = g_c[C_RSTICK].cy; }
     layout_apply(w, h);
     if (!l3r3_on()) g_c[C_L3].shown = g_c[C_R3].shown = 0;   // (an option, off by default: the layout editor's own choice only counts while it is on)
+    if (float_on()) g_c[C_RSTICK].shown = g_c[C_R3].shown = 0;   // (floating: the right half drags the camera; R3 went with the stick it sat on)
     if (!g_stick_on) { g_stick_x = g_knob_x = g_c[C_STICK].cx; g_stick_y = g_knob_y = g_c[C_STICK].cy; }
 }
 static int ctl_off(int c) { return (c == C_L3 || c == C_R3) && !l3r3_on(); }   // left out entirely, the layout editor too
@@ -129,7 +135,7 @@ static int hit(int c, float x, float y, float slack) {
 static int target_at(float x, float y) {
     if (hit(C_RSTICK, x, y, 1.3f)) return C_RSTICK;
     for (int c = C_A; c < NCTL; c++) if (hit(c, x, y, 1.3f)) return c;   // thumbs miss: touch areas 1.3 times the drawing
-    if (x < g_w * 0.42f && y > g_h * 0.30f) return C_STICK;
+    if (float_on() ? x < g_w * 0.5f && y > g_h * 0.16f : x < g_w * 0.42f && y > g_h * 0.30f) return C_STICK;   // (floating: the whole left half below L / ZL)
     if (x > g_w * 0.45f) return C_CAM;
     return -1;
 }
@@ -302,7 +308,8 @@ void touch_ui_event(const AInputEvent *e, float w, float h, uint64_t *btn, int32
             if (t >= C_A) g_held_until[t] = now_s() + 0.08;
             if (t == C_RSTICK || (t >= C_UP && t <= C_RIGHT)) g_inner_t = now_s();
             if (t == C_STICK) { float r = g_c[C_STICK].r; g_stick_on = 1;   // the base comes to the thumb, kept on screen
-                (void)r; g_stick_x = g_c[C_STICK].cx; g_stick_y = g_c[C_STICK].cy; }   // fixed, as on a Joy-Con: the thumb's offset from the base is the tilt
+                if (float_on()) { g_stick_x = clampf(x, r, g_w - r); g_stick_y = clampf(y, r, g_h - r); }   // floating: the base under the thumb, untilted
+                else { g_stick_x = g_c[C_STICK].cx; g_stick_y = g_c[C_STICK].cy; } }   // fixed, as on a Joy-Con: the thumb's offset from the base is the tilt
             break; }
     } else if (act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_POINTER_UP) {
         int32_t id = AMotionEvent_getPointerId(e, act == AMOTION_EVENT_ACTION_UP ? 0 : idx);
@@ -429,6 +436,7 @@ void touch_ui_setting(const char *key, const char *value) {
     if (!strcmp(key, "DM_TOUCH_OPACITY")) g_opacity = value ? clampf((float)atof(value) / 100.0f, 0.2f, 1.0f) : 1.0f;
     else if (!strcmp(key, "DM_TOUCH_FADE")) g_fade = value ? fmaxf(0.0f, (float)atof(value)) : 3.0f;
     else if (!strcmp(key, "DM_TOUCH_L3R3")) { g_l3r3 = value && !strcmp(value, "on"); g_w = g_h = 0; }   // (laid out again on the next frame)
+    else if (!strcmp(key, "DM_TOUCH_STICKS")) { g_float = value && !strcmp(value, "floating"); g_w = g_h = 0; }
 #ifdef __ANDROID__
     else { void touch_ui_haptic_setting(const char *, const char *); touch_ui_haptic_setting(key, value); }   // DM_TOUCH_HAPTIC, DM_RUMBLE
 #endif
