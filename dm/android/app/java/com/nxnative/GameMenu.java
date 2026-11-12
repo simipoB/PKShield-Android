@@ -287,10 +287,6 @@ public final class GameMenu {
         if (GameSettings.has60(a)) choice(a, "DM_FPS_TARGET", t(a, "Frame rate"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s fps", p[5]) },
             { "30", "30 fps", t(a, "30 fps, as the game is made") }, { "60", "60 fps", GameSettings.paldea(a) ? t(a, "Up to 60 fps: faster where the phone can, game speed stays right (Fl4sh's Dynamic FPS mod)")
                                                                                                : t(a, "60 fps: smoother; drops to 720p when needed to hold 60 (with Graphics on Auto or Adaptive)") } });
-        // the game's step at 60 fps (hle_nvn.c vstep_tick): steady, as the 60 FPS mod (default), or following real time when frames run late
-        if (GameSettings.has60(a) && !GameSettings.paldea(a)) choice(a, "DM_GAME_STEP", t(a, "Game speed at 60 fps"), new String[][] {
-            { "", t(a, "Steady"), t(a, "Steady: the same step every frame, as the 60 FPS mod (smooth animations; slower when the phone cannot hold the frame rate)") },
-            { "realtime", t(a, "Real time"), t(a, "Real time: the game keeps its speed when frames run late (animations can jump between steps)") } });
         if (GameActivity.sustainedSupported(a)) choice(a, "DM_SUSTAINED", t(a, "Sustained performance"), new String[][] {
             { "", t(a, "Off"), t(a, "Off: the phone's full speed, which drops when it gets hot") }, { "on", t(a, "On"), t(a, "On: a speed the phone can hold for hours, fewer slowdowns when hot") } });
         heading(a, t(a, "Memory"));
