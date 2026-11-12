@@ -316,3 +316,5 @@ Camera sensitivity	Sensibilité de la caméra
 Slower camera: the right stick and the touch camera turn less	Caméra plus lente : le stick droit et la caméra tactile tournent moins
 As on the Switch	Comme sur Switch
 Faster camera: full speed with less of the stick	Caméra plus rapide : pleine vitesse avec moins de course du stick
+Auto: on for Mali GPUs (white screens and black patches)	Auto : activé sur les GPU Mali (écrans blancs et taches noires)
+Off: plain multiplies, as before v0.74	Désactivé : multiplications ordinaires, comme avant la v0.74

@@ -316,3 +316,5 @@ Camera sensitivity	カメラ感度
 Slower camera: the right stick and the touch camera turn less	カメラが遅くなります：右スティックとタッチ操作の回転が小さくなります
 As on the Switch	Switchと同じ
 Faster camera: full speed with less of the stick	カメラが速くなります：少ない入力で最高速度に達します
+Auto: on for Mali GPUs (white screens and black patches)	自動：Mali GPUではオン（白い画面や黒い斑点の対策）
+Off: plain multiplies, as before v0.74	オフ：通常の乗算（v0.74より前と同じ）
