@@ -337,3 +337,9 @@ Output	Sortie
 Float target	Cible flottante
 Output: what each shader writes is limited. If the white goes away, tell us	Sortie : ce que chaque shader écrit est limité. Si le blanc disparaît, dites-le-nous
 Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	Cible flottante : la scène éclairée est stockée dans une image flottante 16 bits au lieu de l'image compacte. Si le blanc disparaît, dites-le-nous
+Multiplies	Multiplications
+Additions	Additions
+Multiply-adds	Multiplications-additions
+Multiplies: every multiply result is limited. If the white goes away, tell us	Multiplications : chaque résultat de multiplication est limité. Si le blanc disparaît, dites-le-nous
+Additions: every add / subtract result is limited. If the white goes away, tell us	Additions : chaque résultat d'addition / soustraction est limité. Si le blanc disparaît, dites-le-nous
+Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	Multiplications-additions : chaque résultat de multiplication-addition est limité. Si le blanc disparaît, dites-le-nous

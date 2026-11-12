@@ -492,10 +492,12 @@ void mtl_init(void) {
     { const char *e = getenv("DM_VK_FMZ"); g_fmz = e && *e ? atoi(e) > 0 : g_props.vendorID == 0x13B5 && !g_arm_rel;
       if (g_fmz) VLOG("shaders: a multiply by 0 gives 0 even for infinity and NaN, as on the Switch's GPU (FMZ, every multiply%s)", e && *e ? ": DM_VK_FMZ" : ": on by default for PanVK"); }
     // DM_VK_PROBE=samples,inputs,div (a diagnostic, #215): those values clamped in every fragment shader (spv_probe), one kind a run, to find which carries the white
-    { const char *e = getenv("DM_VK_PROBE"); if (e && *e) { g_probe = (strstr(e, "samples") ? PROBE_SAMPLES : 0) | (strstr(e, "inputs") ? PROBE_INPUTS : 0) | (strstr(e, "div") ? PROBE_DIV : 0) | (strstr(e, "output") ? PROBE_OUTPUT : 0);
+    { const char *e = getenv("DM_VK_PROBE"); if (e && *e) { g_probe = (strstr(e, "samples") ? PROBE_SAMPLES : 0) | (strstr(e, "inputs") ? PROBE_INPUTS : 0) | (strstr(e, "div") ? PROBE_DIV : 0) | (strstr(e, "output") ? PROBE_OUTPUT : 0) | (strstr(e, "mul") ? PROBE_MUL : 0) | (strstr(e, "add") ? PROBE_ADD : 0) | (strstr(e, "fma") ? PROBE_FMA : 0);
       if (strstr(e, "f16target")) { nvn_fmt_vk_r11_f16(1); VLOG("render targets: DIAGNOSTIC, R11G11B10F images stored as RGBA16F (DM_VK_PROBE=%s)", e); }
       if (g_probe) VLOG("shaders: DIAGNOSTIC, fragment shaders clamp%s%s%s%s (DM_VK_PROBE=%s)", g_probe & PROBE_SAMPLES ? " every texture sample" : "",
-                        g_probe & PROBE_INPUTS ? " every input from the vertex shader" : "", g_probe & PROBE_DIV ? " every division" : "", g_probe & PROBE_OUTPUT ? " what they write (±64)" : "", e); } }
+                        g_probe & PROBE_INPUTS ? " every input from the vertex shader" : "", g_probe & PROBE_DIV ? " every division" : "", g_probe & PROBE_OUTPUT ? " what they write (±64)" : "", e);
+      if (g_probe & (PROBE_MUL | PROBE_ADD | PROBE_FMA)) VLOG("shaders: DIAGNOSTIC, fragment shaders clamp every%s%s%s result (±16384)", g_probe & PROBE_MUL ? " multiply" : "",
+                        g_probe & PROBE_ADD ? " add / subtract" : "", g_probe & PROBE_FMA ? " fused multiply-add" : ""); } }
     { const char *e = getenv("DM_VK_NAN_MINMAX"); g_nanmm = e ? atoi(e) : g_arm_rel ? 2 : 0; if (g_nanmm < 0 || g_nanmm > 2) g_nanmm = 1;
       if (g_nanmm) VLOG("shaders: min / max / saturate give the operand that is not NaN, as on the Switch's GPU (NMin / NMax / NClamp%s%s)", g_nanmm == 2 ? " and the rule written out with isnan" : "",
                         e ? ", DM_VK_NAN_MINMAX" : ", Arm's own driver"); }

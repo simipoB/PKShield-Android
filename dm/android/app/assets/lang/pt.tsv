@@ -337,3 +337,9 @@ Output	Saída
 Float target	Destino flutuante
 Output: what each shader writes is limited. If the white goes away, tell us	Saída: o que cada shader escreve é limitado. Se o branco sumir, avise-nos
 Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	Destino flutuante: a cena iluminada é guardada numa imagem de ponto flutuante de 16 bits em vez da compactada. Se o branco sumir, avise-nos
+Multiplies	Multiplicações
+Additions	Somas
+Multiply-adds	Multiplicar-somar
+Multiplies: every multiply result is limited. If the white goes away, tell us	Multiplicações: cada resultado de multiplicação é limitado. Se o branco sumir, avise-nos
+Additions: every add / subtract result is limited. If the white goes away, tell us	Somas: cada resultado de soma / subtração é limitado. Se o branco sumir, avise-nos
+Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	Multiplicar-somar: cada resultado de multiplicação-soma é limitado. Se o branco sumir, avise-nos

@@ -337,3 +337,9 @@ Output	Salida
 Float target	Destino flotante
 Output: what each shader writes is limited. If the white goes away, tell us	Salida: lo que escribe cada sombreador se limita. Si el blanco desaparece, avísanos
 Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	Destino flotante: la escena iluminada se guarda en una imagen de 16 bits en coma flotante en lugar de la compacta. Si el blanco desaparece, avísanos
+Multiplies	Multiplicaciones
+Additions	Sumas
+Multiply-adds	Multiplicar-sumar
+Multiplies: every multiply result is limited. If the white goes away, tell us	Multiplicaciones: cada resultado de multiplicación se limita. Si el blanco desaparece, avísanos
+Additions: every add / subtract result is limited. If the white goes away, tell us	Sumas: cada resultado de suma o resta se limita. Si el blanco desaparece, avísanos
+Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	Multiplicar-sumar: cada resultado de multiplicación-suma se limita. Si el blanco desaparece, avísanos
