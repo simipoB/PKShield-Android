@@ -546,6 +546,70 @@ static void copy_file(const char *a, const char *b) {
     if (o >= 0) while ((n = read(i, buf, sizeof buf)) > 0) if (write(o, buf, (size_t)n) != n) break;
     if (i >= 0) close(i); if (o >= 0) close(o);
 }
+// ---------- Save folder (the menu's Saves -> Save folder, DM_SAVE_SHARED=1; Arceus-Native-Android#8) ----------
+// The save can live in Documents/NXNative/<title id>/save instead of the app's own folder, where a sync tool (Syncthing) or a file manager can reach it while the game is
+// closed. Which of the two holds the save now is written in <files>/save_place.txt ("app" / "shared"). A switch takes effect at the next start, before the game mounts
+// its save (a game running writes it at any moment): the save is copied to the other place, and whatever was there first is renamed to save.backup-<date>, never
+// deleted; the old place keeps its copy as it was. Shared needs "All files access" (the menu asks for it): when the folder cannot be written, the save stays in the
+// app's folder and the log says why. Only plain files and folders are copied
+static int cp_file(const char *a, const char *b) {
+    int i = open(a, O_RDONLY); if (i < 0) return 0;
+    int o = open(b, O_WRONLY | O_CREAT | O_TRUNC, 0644); if (o < 0) { close(i); return 0; }
+    char buf[65536]; ssize_t n; int ok = 1;
+    while ((n = read(i, buf, sizeof buf)) > 0) if (write(o, buf, (size_t)n) != n) { ok = 0; break; }
+    if (n < 0) ok = 0;
+    close(i); if (close(o)) ok = 0; return ok;
+}
+static int cp_tree(const char *a, const char *b, int *files) {
+    if (mkdir(b, 0770) && errno != EEXIST) return 0;
+    DIR *d = opendir(a); if (!d) return 0; struct dirent *e; int ok = 1;
+    while (ok && (e = readdir(d))) { if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+        char pa[1400], pb[1400]; struct stat st; snprintf(pa, sizeof pa, "%s/%s", a, e->d_name); snprintf(pb, sizeof pb, "%s/%s", b, e->d_name);
+        if (stat(pa, &st)) { ok = 0; break; }
+        if (S_ISDIR(st.st_mode)) ok = cp_tree(pa, pb, files); else if (S_ISREG(st.st_mode)) { ok = cp_file(pa, pb); if (ok) (*files)++; } }
+    closedir(d); return ok;
+}
+static int dir_has_files(const char *p) { DIR *d = opendir(p); if (!d) return 0; struct dirent *e; int n = 0; while ((e = readdir(d))) if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) { n = 1; break; } closedir(d); return n; }
+static void move_aside(const char *p) {   // an existing save folder becomes save.backup-<date> next to it
+    if (!dir_has_files(p)) { rmdir(p); return; }
+    char b[1400]; time_t t = time(NULL); struct tm tm; localtime_r(&t, &tm);
+    snprintf(b, sizeof b, "%s.backup-%04d%02d%02d-%02d%02d%02d", p, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    if (rename(p, b)) fprintf(stderr, "boot: [RED] save folder: could not keep %s as a backup (errno %d)\n", p, errno); else fprintf(stderr, "boot: save folder: the earlier save there kept as %s\n", b);
+}
+static int g_save_imported;   // a save archive was installed into the app's folder at this start: with the save in Documents, it is copied there
+static void save_place(void) {
+    char app[1100], shared[1100], par[1100], st[1200], cur[16] = "app"; const char *e = getenv("DM_SAVE_SHARED"); int want = e && atoi(e) == 1;
+    snprintf(app, sizeof app, "%s/save", g_files); snprintf(st, sizeof st, "%s/save_place.txt", g_files);
+    { const char *pid = getenv("DM_PROGRAM_ID"); char up[20] = ""; if (pid) for (int k = 0; pid[k] && k < 16; k++) up[k] = (char)toupper((unsigned char)pid[k]);   // (Galar: the running game, Sword or Shield)
+      if (up[0]) snprintf(par, sizeof par, "/storage/emulated/0/Documents/NXNative/%s", up); else snprintf(par, sizeof par, "/storage/emulated/0/Documents/NXNative/%016llX", (unsigned long long)DM_GAME_PROGRAM_ID); } snprintf(shared, sizeof shared, "%s/save", par);
+    { FILE *f = fopen(st, "r"); if (f) { if (fscanf(f, "%15s", cur) != 1) strcpy(cur, "app"); fclose(f); } }
+    int in_shared = !strcmp(cur, "shared");
+    if (want && !in_shared) {   // to Documents
+        mkdir("/storage/emulated/0/Documents", 0770); mkdir("/storage/emulated/0/Documents/NXNative", 0770); mkdir(par, 0770);
+        char probe[1200]; snprintf(probe, sizeof probe, "%s/.write-test", par); int fd = open(probe, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) { fprintf(stderr, "boot: [RED] save folder: %s cannot be written (errno %d: All files access not given?): the save stays in the app's folder\n", par, errno); return; }
+        close(fd); unlink(probe);
+        move_aside(shared); int n = 0;
+        if (dir_has_files(app) && !cp_tree(app, shared, &n)) { fprintf(stderr, "boot: [RED] save folder: copying the save to %s failed (errno %d): it stays in the app's folder\n", shared, errno); return; }
+        if (!dir_has_files(app)) mkdir(shared, 0770);
+        FILE *f = fopen(st, "w"); if (f) { fputs("shared\n", f); fclose(f); } in_shared = 1;
+        fprintf(stderr, "boot: save folder: the save copied to %s (%d files); the app's folder keeps its copy as it was\n", shared, n);
+    } else if (!want && in_shared) {   // back to the app's folder
+        int n = 0;
+        if (dir_has_files(shared)) { move_aside(app); if (!cp_tree(shared, app, &n)) { fprintf(stderr, "boot: [RED] save folder: copying the save back from %s failed (errno %d): it stays there\n", shared, errno); setenv("DM_SAVE", shared, 1); return; } }
+        FILE *f = fopen(st, "w"); if (f) { fputs("app\n", f); fclose(f); } in_shared = 0;
+        fprintf(stderr, "boot: save folder: the save copied back to the app's folder (%d files); %s keeps its copy\n", n, shared);
+    }
+    if (in_shared && g_save_imported && dir_has_files(app)) {   // an import landed in the app's folder: it becomes the save in Documents too
+        int n = 0; move_aside(shared);
+        if (cp_tree(app, shared, &n)) fprintf(stderr, "boot: save folder: the imported save copied to %s (%d files)\n", shared, n);
+        else fprintf(stderr, "boot: [RED] save folder: copying the imported save to %s failed (errno %d)\n", shared, errno);
+    }
+    if (in_shared) {
+        if (!dir_has_files(shared) && dir_has_files(app)) fprintf(stderr, "boot: [RED] save folder: %s is empty or gone: the app's folder is used\n", shared);
+        else { setenv("DM_SAVE", shared, 1); fprintf(stderr, "boot: save folder %s\n", shared); }
+    }
+}
 static long kb_of(const char *path, const char *key) {
     FILE *f = fopen(path, "r"); char ln[256]; long v = -1; size_t kl = strlen(key);
     while (f && fgets(ln, sizeof ln, f)) if (!strncmp(ln, key, kl)) { v = atol(ln + kl); break; }
@@ -815,13 +879,14 @@ static void host_start(void) {
               fprintf(stderr, "[RED] save import: could not inspect the current save: %s\n", strerror(errno)); can_install = 0;
           }
           if (can_install && !rename(imp, p)) {
-              fprintf(stderr, "boot: imported save archive; previous save backup: %s\n", moved_old ? old : "none");
+              fprintf(stderr, "boot: imported save archive; previous save backup: %s\n", moved_old ? old : "none"); g_save_imported = 1;
           } else {
               if (moved_old) rename(old, p);
               fprintf(stderr, "[RED] save import: could not install imported save; it remains in %s\n", imp);
           }
       } }
     snprintf(p, sizeof p, "%s/save", g_files); mkdir(p, 0755); snprintf(p, sizeof p, "%s/temp", g_files); mkdir(p, 0755);
+    save_place();   // (DM_SAVE_SHARED: the save in Documents, copied over at this start when the choice changed; after an import, which lands in the app's folder)
     snprintf(p, sizeof p, "%s/RomFS", g_game);
     if (stat(p, &st)) { fprintf(stderr, "boot: game files not found: %s (install the bundle, or copy RomFS, patched, shaders.pak, shader_map.tsv and font there)\n", p); ALOG("game files missing in %s", g_files); return; }
     chdir(g_files);
