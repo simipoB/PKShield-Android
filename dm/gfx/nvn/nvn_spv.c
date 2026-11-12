@@ -771,7 +771,8 @@ uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words) 
 // run with each kind tells which one carries the overflow (a picture that stops being white names it). The kinds (mask): PROBE_SAMPLES every texture sample and fetch
 // (clamped to [-1024, 1024]), PROBE_INPUTS every float the previous stage hands over (Input loads, [-16384, 16384]), PROBE_DIV every float division ([-16384, 16384]),
 // PROBE_OUTPUT what is stored to an output ([-64, 64]), and the arithmetic one kind at a time ([-16384, 16384]): PROBE_MUL (FMul, VectorTimesScalar), PROBE_ADD
-// (FAdd, FSub), PROBE_FMA (GLSL Fma).
+// (FAdd, FSub), PROBE_FMA (GLSL Fma). Not a probe but a fix: NAN_FIX_OUT turns a NaN stored to an output into 0 (infinities into ±65504, other values kept), NAN_FIX_TEX
+// the same on every texture sample, so a NaN written by one pass can't spread through the passes that read it (#215: NaN reaches the lit scene's target)
 // NClamp also turns a NaN into the low bound. The result keeps its id: each op is emitted under a new one and the clamp takes the old. NULL when nothing matched
 uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsigned mask) {
     enum { OpExtInstImport = 11, OpExtInst = 12, OpTypeFloat = 22, OpTypeVector = 23, OpTypePointer = 32, OpConstant = 43, OpConstantComposite = 44, OpFunction = 54,
@@ -789,7 +790,9 @@ uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsig
         ((mask & PROBE_OUTPUT) && (op) == OpStore && (n) >= 3 && (x)[1] < bound && outty[(x)[1]] && outty[(x)[1]] < bound && width[outty[(x)[1]]]) ? 4 : \
         ((mask & PROBE_MUL) && ((op) == 133 || (op) == 142) && (n) == 5 && (x)[1] < bound && width[(x)[1]]) ? 5 : \
         ((mask & PROBE_ADD) && ((op) == 129 || (op) == 131) && (n) == 5 && (x)[1] < bound && width[(x)[1]]) ? 6 : \
-        ((mask & PROBE_FMA) && (op) == OpExtInst && (n) == 8 && glsl && (x)[3] == glsl && (x)[4] == 50 && (x)[1] < bound && width[(x)[1]]) ? 7 : 0)
+        ((mask & PROBE_FMA) && (op) == OpExtInst && (n) == 8 && glsl && (x)[3] == glsl && (x)[4] == 50 && (x)[1] < bound && width[(x)[1]]) ? 7 : \
+        ((mask & NAN_FIX_OUT) && (op) == OpStore && (n) >= 3 && (x)[1] < bound && outty[(x)[1]] && outty[(x)[1]] < bound && width[outty[(x)[1]]]) ? 8 : \
+        ((mask & NAN_FIX_TEX) && (op) >= 87 && (op) <= 96 && (n) >= 5 && (x)[1] < bound && width[(x)[1]]) ? 9 : 0)
     for (int pass = 0; pass < 2; pass++)
     for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) goto none; const uint32_t *x = code + i;
         if (!pass) {
@@ -807,17 +810,33 @@ uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsig
         i += n; }
     if (!hits || !glsl || !tf32 || !first_fn) goto none;
     {   // constants: lo / hi per kind and width
-        static const uint32_t lo_bits[8] = { 0, 0xc4800000u, 0xc6800000u, 0xc6800000u, 0xc2800000u, 0xc6800000u, 0xc6800000u, 0xc6800000u },
-                              hi_bits[8] = { 0, 0x44800000u, 0x46800000u, 0x46800000u, 0x42800000u, 0x46800000u, 0x46800000u, 0x46800000u };   // ±1024, ±16384, output ±64, arithmetic ±16384
-        uint32_t *o = malloc(4 * (words + hits * 24 + 64)); if (!o) goto none;   // (each: 8 words of clamp, up to 14 of vector bounds)
-        uint32_t next = bound, cs[8][5][2]; memset(cs, 0, sizeof cs); size_t w = 0;
+        static const uint32_t lo_bits[10] = { 0, 0xc4800000u, 0xc6800000u, 0xc6800000u, 0xc2800000u, 0xc6800000u, 0xc6800000u, 0xc6800000u, 0xc77fe000u, 0xc77fe000u },
+                              hi_bits[10] = { 0, 0x44800000u, 0x46800000u, 0x46800000u, 0x42800000u, 0x46800000u, 0x46800000u, 0x46800000u, 0x477fe000u, 0x477fe000u };   // ±1024, ±16384, output ±64, arithmetic ±16384, NaN fix ±65504
+        uint32_t *o = malloc(4 * (words + hits * 56 + 64)); if (!o) goto none;   // (each: 8 words of clamp, up to 14 of vector bounds; a NaN fix up to 48)
+        uint32_t next = bound, cs[10][5][2], zero = 0; memset(cs, 0, sizeof cs); size_t w = 0;
+        // NaN fix: v -> NClamp(NMax(v, 0) + NMin(v, 0), -65504, 65504). NMax / NMin return the other operand for a NaN, so a NaN becomes 0 + 0, a finite value
+        //   v + 0, and an infinity the half-float limit (no bool types needed, so nothing to add to the globals)
+        #define SCRUB(ty, v, out, k) do { uint32_t wd_ = width[ty], z_ = zero, lo_ = cs[k][1][0], hi_ = cs[k][1][1], a_ = next++, b_ = next++, s_ = next++; \
+            if (wd_ > 1) { z_ = next++; lo_ = next++; hi_ = next++; \
+                o[w++] = (3u + wd_) << 16 | 80; o[w++] = ty; o[w++] = z_; for (uint32_t q = 0; q < wd_; q++) o[w++] = zero; \
+                o[w++] = (3u + wd_) << 16 | 80; o[w++] = ty; o[w++] = lo_; for (uint32_t q = 0; q < wd_; q++) o[w++] = cs[k][1][0]; \
+                o[w++] = (3u + wd_) << 16 | 80; o[w++] = ty; o[w++] = hi_; for (uint32_t q = 0; q < wd_; q++) o[w++] = cs[k][1][1]; } \
+            o[w++] = 7u << 16 | OpExtInst; o[w++] = ty; o[w++] = a_; o[w++] = glsl; o[w++] = 80 /* NMax */; o[w++] = (v); o[w++] = z_; \
+            o[w++] = 7u << 16 | OpExtInst; o[w++] = ty; o[w++] = b_; o[w++] = glsl; o[w++] = 79 /* NMin */; o[w++] = (v); o[w++] = z_; \
+            o[w++] = 5u << 16 | 129 /* OpFAdd */; o[w++] = ty; o[w++] = s_; o[w++] = a_; o[w++] = b_; \
+            o[w++] = 8u << 16 | OpExtInst; o[w++] = ty; o[w++] = (out); o[w++] = glsl; o[w++] = NClamp; o[w++] = s_; o[w++] = lo_; o[w++] = hi_; } while (0)
         for (size_t i = 0; i < words;) {
             size_t n = i < 5 ? 5 : code[i] >> 16; const uint32_t *x = code + i; uint32_t op = i < 5 ? 0 : x[0] & 0xffff;
-            if (i == first_fn) for (int k = 1; k <= 7; k++) {
+            if (i == first_fn) { for (int k = 1; k <= 9; k++) {
                 uint32_t sl = next++, sh = next++; o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = sl; o[w++] = lo_bits[k]; o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = sh; o[w++] = hi_bits[k];
                 cs[k][1][0] = sl; cs[k][1][1] = sh; }
+                zero = next++; o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = zero; o[w++] = 0; }
             int k = i >= 5 ? KIND(x, n, op) : 0;
-            if (k == 4) {   // the value stored to an output, clamped first; the store then takes the clamp
+            if (k == 8) {   // NaN fix on the value stored to an output; the store takes the fixed value
+                uint32_t c = next++; SCRUB(outty[x[1]], x[2], c, 8); memcpy(o + w, x, 4 * n); o[w + 2] = c; w += n;
+            } else if (k == 9) {   // NaN fix on a texture sample: the sample under a new id, the fix under the old
+                uint32_t ty = x[1], res = x[2], m = next++; memcpy(o + w, x, 4 * n); o[w + 2] = m; w += n; SCRUB(ty, m, res, 9);
+            } else if (k == 4) {   // the value stored to an output, clamped first; the store then takes the clamp
                 uint32_t ty = outty[x[1]], wd = width[ty], lo = cs[4][1][0], hi = cs[4][1][1], c = next++;
                 if (wd > 1) { uint32_t vl = next++, vh = next++;
                     o[w++] = (3u + wd) << 16 | 80; o[w++] = ty; o[w++] = vl; for (uint32_t q = 0; q < wd; q++) o[w++] = cs[4][1][0];
@@ -841,4 +860,5 @@ uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsig
 none:
     free(width); free(inptr); free(invar); free(outptr); free(outty); return NULL;
     #undef KIND
+    #undef SCRUB
 }

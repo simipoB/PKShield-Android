@@ -343,3 +343,7 @@ Multiply-adds	積和
 Multiplies: every multiply result is limited. If the white goes away, tell us	乗算：すべての乗算結果を制限します。白が消えたら教えてください
 Additions: every add / subtract result is limited. If the white goes away, tell us	加算：すべての加算・減算結果を制限します。白が消えたら教えてください
 Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	積和：すべての積和演算の結果を制限します。白が消えたら教えてください
+NaN fix	NaN修正
+NaN fix + textures	NaN修正＋テクスチャ
+NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	NaN修正：シェーダーが書き込む壊れた値を、画面を白くする代わりに0にします。見た目を教えてください
+NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	NaN修正＋テクスチャ：同じ処理に加え、テクスチャから読んだ壊れた値も0にします。見た目を教えてください

@@ -343,3 +343,7 @@ Multiply-adds	Multiplicar-sumar
 Multiplies: every multiply result is limited. If the white goes away, tell us	Multiplicaciones: cada resultado de multiplicación se limita. Si el blanco desaparece, avísanos
 Additions: every add / subtract result is limited. If the white goes away, tell us	Sumas: cada resultado de suma o resta se limita. Si el blanco desaparece, avísanos
 Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	Multiplicar-sumar: cada resultado de multiplicación-suma se limita. Si el blanco desaparece, avísanos
+NaN fix	Arreglo NaN
+NaN fix + textures	Arreglo NaN + texturas
+NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	Arreglo NaN: los valores rotos que escriben los sombreadores pasan a 0 en lugar de volver blanca la imagen. Cuéntanos cómo se ve
+NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	Arreglo NaN + texturas: lo mismo, y los valores rotos leídos de texturas también pasan a 0. Cuéntanos cómo se ve
