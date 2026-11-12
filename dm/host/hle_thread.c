@@ -188,6 +188,7 @@ static int64_t block(thr_t *t, int kind, int64_t ns) {
 }
 
 // ---------- Locks ----------
+_Atomic uint64_t dm_lock_spin_won, dm_lock_spin_lost;   // (svc 0x1A's spin: logged with the frame statistics, hle_nvn.c)
 static inline uint32_t ld32(uint64_t a) { return __atomic_load_n((uint32_t *)a, __ATOMIC_SEQ_CST); }
 static inline uint64_t ld64(uint64_t a) { return __atomic_load_n((uint64_t *)a, __ATOMIC_SEQ_CST); }
 static inline void st32(uint64_t a, uint32_t v) { __atomic_store_n((uint32_t *)a, v, __ATOMIC_SEQ_CST); }
@@ -715,6 +716,21 @@ static int svc_thread_impl(int num, uint64_t *regs) {
 
     case 0x1A: {  // ArbitrateLock(w0 owner handle, x1 address, w2 this thread's tag)
         thr_t *t = cur(); uint64_t addr = regs[1];
+        // A short spin first (DM_LOCK_SPIN=<us>, 20 by default; 0 = off): the kernel blocks only while the lock word is still the owner with the waiters bit, and when it is not
+        //   it returns 0 at once and user mode tries again. Watching the word for a few microseconds before blocking does the same when the owner lets go meanwhile: its
+        //   unlock (svc 0x1B: the waiters bit is set) finds no thread waiting in the kernel and clears the word, this thread sees it change and returns 0, and nobody
+        //   sleeps or is woken (each wake is a futex syscall: Sword / Shield's job threads hand locks over so often that pthread_cond_signal was ~10% of their CPU time
+        //   on a Galaxy S25+). Spins counted: won (the word changed), lost (blocked after all)
+        { static int spin_us = -1; if (spin_us < 0) { const char *e = getenv("DM_LOCK_SPIN"); spin_us = e ? atoi(e) : 20; if (spin_us > 0) LOG("guest locks: a %d us spin before a lock wait (DM_LOCK_SPIN=0: none)", spin_us); }
+          uint32_t want = (uint32_t)regs[0] | WAITERS_BIT;
+          if (spin_us > 0 && ld32(addr) == want) {
+              uint64_t f, t0, now; __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(f)); __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t0));
+              uint64_t lim = f / 1000000 * (uint64_t)spin_us; int changed = 0;
+              do { for (int k = 0; k < 32; k++) { __asm__ volatile("yield"); if (ld32(addr) != want) { changed = 1; break; } }
+                   if (changed) break; __asm__ volatile("mrs %0, cntvct_el0" : "=r"(now)); } while (now - t0 < lim);
+              extern _Atomic uint64_t dm_lock_spin_won, dm_lock_spin_lost;
+              if (changed) { atomic_fetch_add_explicit(&dm_lock_spin_won, 1, memory_order_relaxed); regs[0] = 0; return 1; }
+              atomic_fetch_add_explicit(&dm_lock_spin_lost, 1, memory_order_relaxed); } }
         pthread_mutex_lock(&G);
         int64_t r = 0;
         if (ld32(addr) == ((uint32_t)regs[0] | WAITERS_BIT)) { t->waddr = addr; t->wtag = (uint32_t)regs[2];

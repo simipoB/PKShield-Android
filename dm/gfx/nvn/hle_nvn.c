@@ -1399,6 +1399,7 @@ static void tsummary(uint64_t frame) {
       g_presn = 0; }
     power_line(frame);
     { static uint64_t pi, pc, pd, pf; uint64_t ci = atomic_load(&g_cum_sub_instr), cc = atomic_load(&g_cum_sub_cpu_ns), ps_, dr_; mtl_stats(&ps_, &dr_);   // translation layer
+      { extern _Atomic uint64_t dm_lock_spin_won __attribute__((weak)), dm_lock_spin_lost __attribute__((weak)); if (&dm_lock_spin_won) LOG("[nvn] guest lock spins so far: %llu won (no sleep, no wake), %llu then waited", (unsigned long long)atomic_load(&dm_lock_spin_won), (unsigned long long)atomic_load(&dm_lock_spin_lost)); }
       if (pf && frame > pf && dr_ > pd) LOG("[nvn] translation up to frame %llu: %.0f instructions per draw, submit per frame %.2f M instructions / CPU %.3f ms, %.0f draws per frame", frame,
           (double)(ci - pi) / (double)(dr_ - pd), (ci - pi) / 1e6 / (double)(frame - pf), (cc - pc) / 1e6 / (double)(frame - pf), (double)(dr_ - pd) / (double)(frame - pf));
       { static uint64_t py, pk, pw; uint64_t cy = atomic_load(&g_cum_sub_cyc), ck = atomic_load(&g_cum_sub_sys_ns), cw = atomic_load(&g_cum_sub_wall_ns);
