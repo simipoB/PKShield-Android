@@ -324,3 +324,7 @@ Divisions	除算
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	テクスチャ：テクスチャの読み取り値をすべて妥当な範囲に制限します。白が消えたら教えてください（テクスチャの読み取りが誤っています）
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	入力：頂点シェーダーから渡される値をすべて制限します。白が消えたら教えてください
 Divisions: every division is limited. If the white goes away, tell us	除算：すべての除算結果を制限します。白が消えたら教えてください
+Output	出力
+Float target	浮動小数の描画先
+Output: what each shader writes is limited. If the white goes away, tell us	出力：各シェーダーが書き込む値を制限します。白が消えたら教えてください
+Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	浮動小数の描画先：ライティング後のシーンを圧縮形式ではなく16ビット浮動小数の画像に保存します。白が消えたら教えてください

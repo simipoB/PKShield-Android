@@ -773,16 +773,18 @@ uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words) 
 // NClamp also turns a NaN into the low bound. The result keeps its id: each op is emitted under a new one and the clamp takes the old. NULL when nothing matched
 uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsigned mask) {
     enum { OpExtInstImport = 11, OpExtInst = 12, OpTypeFloat = 22, OpTypeVector = 23, OpTypePointer = 32, OpConstant = 43, OpConstantComposite = 44, OpFunction = 54,
-           OpVariable = 59, OpLoad = 61, OpFDiv = 136, NClamp = 81, Input = 1 };
+           OpVariable = 59, OpLoad = 61, OpStore = 62, OpFDiv = 136, NClamp = 81, Input = 1, Output = 3 };
     if (words < 5 || code[0] != 0x07230203u || !mask) return NULL;
     uint32_t bound = code[3], glsl = 0, tf32 = 0; size_t first_fn = 0, hits = 0;
     if (!bound || bound > (1u << 22)) return NULL;
     uint8_t *width = calloc(bound, 1), *inptr = calloc(bound, 1), *invar = calloc(bound, 1);   // float types by id (1 scalar, 2-4 vectors); Input pointers; Input variables
-    if (!width || !inptr || !invar) { free(width); free(inptr); free(invar); return NULL; }
+    uint32_t *outptr = calloc(bound, 4), *outty = calloc(bound, 4);   // Output pointer types → their pointee; Output variables / chains into them → the type stored
+    if (!width || !inptr || !invar || !outptr || !outty) { free(width); free(inptr); free(invar); free(outptr); free(outty); return NULL; }
     #define KIND(x, n, op) ( \
         ((mask & PROBE_SAMPLES) && (op) >= 87 && (op) <= 96 && (n) >= 5 && (x)[1] < bound && width[(x)[1]]) ? 1 : \
         ((mask & PROBE_INPUTS) && (op) == OpLoad && (n) >= 4 && (x)[1] < bound && width[(x)[1]] && (x)[3] < bound && invar[(x)[3]]) ? 2 : \
-        ((mask & PROBE_DIV) && (op) == OpFDiv && (n) == 5 && (x)[1] < bound && width[(x)[1]]) ? 3 : 0)
+        ((mask & PROBE_DIV) && (op) == OpFDiv && (n) == 5 && (x)[1] < bound && width[(x)[1]]) ? 3 : \
+        ((mask & PROBE_OUTPUT) && (op) == OpStore && (n) >= 3 && (x)[1] < bound && outty[(x)[1]] && outty[(x)[1]] < bound && width[outty[(x)[1]]]) ? 4 : 0)
     for (int pass = 0; pass < 2; pass++)
     for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) goto none; const uint32_t *x = code + i;
         if (!pass) {
@@ -792,21 +794,32 @@ uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsig
             else if (op == OpTypePointer && n == 4 && x[1] < bound && x[2] == Input) inptr[x[1]] = 1;
             else if (op == OpVariable && n >= 4 && x[2] < bound && x[1] < bound && inptr[x[1]]) invar[x[2]] = 1;
             else if ((op == 65 || op == 66) && n >= 4 && x[2] < bound && x[3] < bound && invar[x[3]]) invar[x[2]] = 1;   // OpAccessChain / OpInBoundsAccessChain into an input
+            if (op == OpTypePointer && n == 4 && x[1] < bound && x[2] == Output) outptr[x[1]] = x[3];
+            if (op == OpVariable && n >= 4 && x[2] < bound && x[1] < bound && outptr[x[1]]) outty[x[2]] = outptr[x[1]];
+            if ((op == 65 || op == 66) && n >= 4 && x[2] < bound && x[3] < bound && outty[x[3]] && x[1] < bound && outptr[x[1]]) outty[x[2]] = outptr[x[1]];
             else if (op == OpFunction && !first_fn) first_fn = i;
         } else if (KIND(x, n, op)) hits++;
         i += n; }
     if (!hits || !glsl || !tf32 || !first_fn) goto none;
     {   // constants: lo / hi per kind and width
-        static const uint32_t lo_bits[4] = { 0, 0xc4800000u, 0xc6800000u, 0xc6800000u }, hi_bits[4] = { 0, 0x44800000u, 0x46800000u, 0x46800000u };   // ±1024, ±16384
+        static const uint32_t lo_bits[5] = { 0, 0xc4800000u, 0xc6800000u, 0xc6800000u, 0xc2800000u }, hi_bits[5] = { 0, 0x44800000u, 0x46800000u, 0x46800000u, 0x42800000u };   // ±1024, ±16384, output ±64
         uint32_t *o = malloc(4 * (words + hits * 24 + 64)); if (!o) goto none;   // (each: 8 words of clamp, up to 14 of vector bounds)
-        uint32_t next = bound, cs[4][5][2]; memset(cs, 0, sizeof cs); size_t w = 0;
+        uint32_t next = bound, cs[5][5][2]; memset(cs, 0, sizeof cs); size_t w = 0;
         for (size_t i = 0; i < words;) {
             size_t n = i < 5 ? 5 : code[i] >> 16; const uint32_t *x = code + i; uint32_t op = i < 5 ? 0 : x[0] & 0xffff;
-            if (i == first_fn) for (int k = 1; k <= 3; k++) {
+            if (i == first_fn) for (int k = 1; k <= 4; k++) {
                 uint32_t sl = next++, sh = next++; o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = sl; o[w++] = lo_bits[k]; o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = sh; o[w++] = hi_bits[k];
                 cs[k][1][0] = sl; cs[k][1][1] = sh; }
             int k = i >= 5 ? KIND(x, n, op) : 0;
-            if (k) {
+            if (k == 4) {   // the value stored to an output, clamped first; the store then takes the clamp
+                uint32_t ty = outty[x[1]], wd = width[ty], lo = cs[4][1][0], hi = cs[4][1][1], c = next++;
+                if (wd > 1) { uint32_t vl = next++, vh = next++;
+                    o[w++] = (3u + wd) << 16 | 80; o[w++] = ty; o[w++] = vl; for (uint32_t q = 0; q < wd; q++) o[w++] = cs[4][1][0];
+                    o[w++] = (3u + wd) << 16 | 80; o[w++] = ty; o[w++] = vh; for (uint32_t q = 0; q < wd; q++) o[w++] = cs[4][1][1];
+                    lo = vl; hi = vh; }
+                o[w++] = 8u << 16 | OpExtInst; o[w++] = ty; o[w++] = c; o[w++] = glsl; o[w++] = NClamp; o[w++] = x[2]; o[w++] = lo; o[w++] = hi;
+                memcpy(o + w, x, 4 * n); o[w + 2] = c; w += n;
+            } else if (k) {
                 uint32_t ty = x[1], res = x[2], m = next++, wd = width[ty]; memcpy(o + w, x, 4 * n); o[w + 2] = m; w += n;
                 uint32_t lo = cs[k][1][0], hi = cs[k][1][1];
                 if (wd > 1) {   // vector bounds: composites built where the result is (after the type exists), once per type and kind would need the globals section; built in place
@@ -817,9 +830,9 @@ uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsig
                 o[w++] = 8u << 16 | OpExtInst; o[w++] = ty; o[w++] = res; o[w++] = glsl; o[w++] = NClamp; o[w++] = m; o[w++] = lo; o[w++] = hi;
             } else { memcpy(o + w, x, 4 * n); w += n; }
             i += n; }
-        free(width); free(inptr); free(invar); o[3] = next; *out_words = w; return o;
+        free(width); free(inptr); free(invar); free(outptr); free(outty); o[3] = next; *out_words = w; return o;
     }
 none:
-    free(width); free(inptr); free(invar); return NULL;
+    free(width); free(inptr); free(invar); free(outptr); free(outty); return NULL;
     #undef KIND
 }
