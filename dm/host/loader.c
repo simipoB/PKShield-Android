@@ -487,8 +487,8 @@ static int pchtxt_dir(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     if (files) LOG("%s: mods folder %s: %d .pchtxt file(s), %d patch(es) applied to this module", m->name, d, files, total);
     return total;
 }
-// Built-in patches. (No built-in 20:9 camera: the 16:9 that PR #48 patched, MOVK X9, #0x8e39 / #0x3fe3 at +0x607de8, is a camera object's default aspect, which
-// the game replaces for the gameplay camera; patched, the picture was unchanged. DM_ASPECT=20:9 is the presentation alone, for a 20:9 .pchtxt mod.)
+// Built-in patches. (The 16:9 that PR #48 patched alone, MOVK X9, #0x8e39 / #0x3fe3 at +0x607de8, is a camera object's default aspect, which the game replaces
+// for the gameplay camera: patched alone, the picture was unchanged. wide_patch below also patches where the gameplay camera takes it, and the culling.)
 int dm_step_hz; uint8_t *dm_step_word;   // the high frame rate below: its rate and the game's step word, which hle_nvn.c vstep_tick rewrites every frame
 uint8_t *dm_step_table;   // the game's whole frame-time table (5 u64 ns, intervals 1-5), when it holds the game's own values: vstep_tick writes the real step into all of it
 static int fps_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1);
@@ -518,10 +518,48 @@ static int bmod_apply(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
     }
     return total;
 }
+// Widescreen (DM_ASPECT=wide, the menu's Picture → Widescreen): the game's camera made as wide as the screen, for Sword and Shield 1.3.2, after Fl4sh's Ultrawide
+//   mods (16:10 / 21:9 / 32:9 .pchtxt), with this screen's own aspect (DM_WIDE_RATIO, its long side over its short, written by the app) instead of a fixed one.
+//   The frame stays 1280x720 (the picture fills the screen: nvn_ovl.h); what the camera sees is widened, so nothing is stretched. Three places:
+//   - the gameplay camera copies its parameters from the scene's (Shield / Sword +0x607670): the aspect, LDR W9, [X1, #0xd4] at +0x6076c4, becomes a branch into
+//     the three free words after the function before (+0x607664: MOV W9, #lo; MOVK W9, #hi, LSL #16; B back);
+//   - a camera object's default aspect, MOVK X9 #0x8e39 / #0x3fe3 (16:9) at +0x607de8 / +0x607dec;
+//   - culling (Shield +0xd93444, Sword +0xd93414): LDP X12, X13, [X0, #0xd0] takes the frustum's aspect into the copy on the stack, of which only the low word (the
+//     aspect) is ever read. Fl4sh's mod sets the top half of whatever X12 held (MOVK): here MOVZ W12, the aspect rounded up to its top 16 bits (culls a hair
+//     wider than it sees, never narrower), the same every frame.
+//   Every word is checked first (the three free words zero, the rest the game's own); a build or code that differs is left alone. The HUD is drawn in the same
+//   16:9 frame and is stretched with it: a widescreen mod's UI fix would be a separate patch
+static const struct { const char *build, *game; uint64_t cull; } WIDE_SITES[] = {
+    { "a16802625e7826bf83b6f9708e475b91", "Shield 1.3.2", 0xd93444 },
+    { "a3b75bcd3311385aeed67fbeeb79cbb7", "Sword 1.3.2", 0xd93414 },
+};
+static int wide_patch(module_t *m, uint64_t lim, int64_t p0, int64_t p1) {
+    const char *e = getenv("DM_ASPECT"); if (!e || strcmp(e, "wide")) return 0;
+    const char *r = getenv("DM_WIDE_RATIO"); double ratio = r ? atof(r) : 0;
+    int si = -1; for (unsigned i = 0; i < sizeof WIDE_SITES / sizeof *WIDE_SITES; i++) if (!strncasecmp(m->build_id, WIDE_SITES[i].build, 32)) si = (int)i;
+    if (si < 0) { LOG("[RED] %s: widescreen not applied (not Pokémon Sword / Shield 1.3.2's main)", m->name); return 0; }
+    if (ratio < 1.0 || ratio > 4.0) { LOG("[RED] %s: widescreen not applied (no screen aspect: DM_WIDE_RATIO %s)", m->name, r ? r : "not set"); return 0; }
+    if (ratio > 16.0 / 9.0 - 0.01 && ratio < 16.0 / 9.0 + 0.01) { LOG("%s: widescreen: this screen is 16:9 already", m->name); return 0; }
+    const uint64_t cave = 0x607664, ld = 0x6076c4, def = 0x607de8, cull = WIDE_SITES[si].cull;
+    static const uint32_t orig_ld = 0xb940d429u, orig_def[2] = { 0xf2d1c729u, 0xf2e7fc69u }, orig_cull = 0xa94d340cu, zero[3] = { 0, 0, 0 };
+    if (cull + 4 > m->text_end || memcmp(m->base + cave, zero, 12) || memcmp(m->base + ld, &orig_ld, 4) || memcmp(m->base + def, orig_def, 8) || memcmp(m->base + cull, &orig_cull, 4) ||
+        overlaps_rewrite(m, cave, 12, p0, p1) || overlaps_rewrite(m, ld, 4, p0, p1) || overlaps_rewrite(m, def, 8, p0, p1) || overlaps_rewrite(m, cull, 4, p0, p1)) {
+        LOG("[RED] %s: widescreen not applied (%s: the camera or culling code differs, or was rewritten)", m->name, WIDE_SITES[si].game); return 0; }
+    float f = (float)ratio; uint32_t b; memcpy(&b, &f, 4); uint32_t lo = b & 0xffff, hi = b >> 16, hc = (b + 0xffffu) >> 16;
+    uint32_t w[3] = { 0x52800000u | lo << 5 | 9, 0x72a00000u | hi << 5 | 9, 0x14000000u | (uint32_t)(((int64_t)(ld + 4) - (int64_t)(cave + 8)) >> 2 & 0x3ffffff) };   // MOV W9 / MOVK W9 / B back
+    uint32_t br = 0x14000000u | (uint32_t)(((int64_t)cave - (int64_t)ld) >> 2 & 0x3ffffff);
+    uint32_t dw[2] = { 0xf2c00000u | lo << 5 | 9, 0xf2e00000u | hi << 5 | 9 };   // MOVK X9, #lo, LSL #32 / MOVK X9, #hi, LSL #48
+    uint32_t cw = 0x52a00000u | hc << 5 | 12;   // MOVZ W12, #hc, LSL #16
+    memcpy(m->base + cave, w, 12); memcpy(m->base + ld, &br, 4); memcpy(m->base + def, dw, 8); memcpy(m->base + cull, &cw, 4);
+    LOG("%s: widescreen camera for %s: aspect %.4f (%08x), culling %.4f, at +%#llx / +%#llx / +%#llx", m->name, WIDE_SITES[si].game, ratio, b,
+        (double)({ uint32_t c = hc << 16; float g; memcpy(&g, &c, 4); g; }), (unsigned long long)ld, (unsigned long long)def, (unsigned long long)cull);
+    return 4;
+}
 static int builtin_patches(module_t *m, uint64_t lim, int64_t p0, int64_t p1, int modded) {
     (void)modded;
     if (strcmp(m->name, "main")) return 0;
     int n = bmod_apply(m, lim, p0, p1);
+    n += wide_patch(m, lim, p0, p1);
     return n + (g_bmod_fps ? 0 : fps_patch(m, lim, p0, p1));
 }
 // Built-in: DM_FPS_TARGET=60..120 (opt-in, the in-game menu; experimental) for Pokémon Shield and Sword 1.3.2's main: the present interval the game asks NVN for, 2 (30 fps),

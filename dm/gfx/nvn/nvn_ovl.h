@@ -24,7 +24,7 @@ enum { DM_ASPECT_FIT, DM_ASPECT_20_9, DM_ASPECT_FILL };
 __attribute__((weak)) int dm_aspect_mode = -1;   // -1: not read yet (one definition kept by the linker)
 static inline int dm_aspect(void) {
     int m = __atomic_load_n(&dm_aspect_mode, __ATOMIC_RELAXED);
-    if (m < 0) { const char *e = getenv("DM_ASPECT"); m = !e ? DM_ASPECT_FIT : !strcmp(e, "20:9") ? DM_ASPECT_20_9 : !strcmp(e, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT;
+    if (m < 0) { const char *e = getenv("DM_ASPECT"); m = !e ? DM_ASPECT_FIT : !strcmp(e, "20:9") ? DM_ASPECT_20_9 : !strcmp(e, "fill") || !strcmp(e, "wide") ? DM_ASPECT_FILL : DM_ASPECT_FIT;
                  __atomic_store_n(&dm_aspect_mode, m, __ATOMIC_RELAXED); }
     return m;
 }

@@ -234,6 +234,13 @@ public final class GameMenu {
             try { nativeSetting(key, value); } catch (UnsatisfiedLinkError e) { }   // (the touch buttons' click follows Rumble unless set apart: touch_ui.c)
         }
         else { try { now = nativeSetting(key, value); } catch (UnsatisfiedLinkError e) { now = false; } }
+        // Widescreen (loader.c wide_patch): the camera is widened as the game loads, to this screen's own aspect (its long side over its short), so from the next
+        //   start; to or from it, the picture's box changes at once but the camera only then
+        if (key.equals("DM_ASPECT")) {
+            if (value.equals("wide")) { android.util.DisplayMetrics dm = new android.util.DisplayMetrics(); a.getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+                int l = Math.max(dm.widthPixels, dm.heightPixels), s = Math.min(dm.widthPixels, dm.heightPixels);
+                if (s > 0) GameSettings.set(a, "DM_WIDE_RATIO", String.format(java.util.Locale.ROOT, "%.4f", (double) l / s)); }
+            if (value.equals("wide") || was.equals("wide")) now = false; }
         if (!now) RESTART.add(key);
     }
 
@@ -241,7 +248,8 @@ public final class GameMenu {
     private static void display(Activity a) {
         heading(a, t(a, "Screen"));
         choice(a, "DM_ASPECT", t(a, "Picture"), new String[][] { { "", "16:9", t(a, "16:9, as the game is made") }, { "fill", t(a, "Fill"), t(a, "Fill the screen (stretched)") },
-                                                                    { "20:9", "20:9", t(a, "20:9, for a widescreen mod") } });
+                                                                    { "20:9", "20:9", t(a, "20:9, for a widescreen mod") },
+            { "wide", t(a, "Widescreen"), t(a, "Widescreen: the game's camera made as wide as your screen, nothing stretched (Sword / Shield 1.3.2; the HUD is stretched)") } });
         String rec = GameSettings.profile(a)[6].equals("sgsr") ? "SGSR" : t(a, "Sharp");
         choice(a, "DM_SCALER", t(a, "Upscaling"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", rec) },
             { "sharp", t(a, "Sharp"), t(a, "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)") },
