@@ -529,6 +529,18 @@ static void *host_thread(void *a) {
 // run's log (the one that ended in a crash, if one did) goes to Download/<game>-log-previous.txt (PokemonShield-…); while playing, Download/<game>-log.txt is refreshed every
 // 5 seconds, with a memory line (a run the system ends for memory leaves no crash report, only memory that kept rising)
 #define DL "/storage/emulated/0/Download"
+// A name in Download this install may write. Android lets an app overwrite only files it created itself: after the game was uninstalled and installed again (or a file
+//   came from another app), opening the old <game>-log.txt for writing fails, and the logs players attach stayed days old (#155). The first of <game>-<what>.txt,
+//   <game>-<what>-2.txt … -9.txt that opens for writing: this install's own file, or a new one
+static char g_dl_note[160];
+static void dl_name(char *out, size_t n, const char *what) {
+    for (int k = 1; k <= 9; k++) {
+        if (k == 1) snprintf(out, n, DL "/%s-%s.txt", g_stem, what); else snprintf(out, n, DL "/%s-%s-%d.txt", g_stem, what, k);
+        int f = open(out, O_WRONLY | O_CREAT, 0644);
+        if (f >= 0) { close(f); if (k > 1) snprintf(g_dl_note, sizeof g_dl_note, "log: Download's %s-%s.txt belongs to an earlier install: written as %s", g_stem, what, out); return; }
+    }
+    snprintf(out, n, DL "/%s-%s.txt", g_stem, what);
+}
 static void copy_file(const char *a, const char *b) {
     int i = open(a, O_RDONLY), o = i < 0 ? -1 : open(b, O_WRONLY | O_CREAT | O_TRUNC, 0644); char buf[65536]; ssize_t n;
     if (o >= 0) while ((n = read(i, buf, sizeof buf)) > 0) if (write(o, buf, (size_t)n) != n) break;
@@ -655,7 +667,7 @@ static void *log_mirror(void *p) {
         graphics_auto(); pin_update();
         if (n % 6 == 0) fprintf(stderr, "[mem] app %ld MB resident (%ld MB swapped), phone %ld MB available of %ld MB; heat %s\n", kb_of("/proc/self/status", "VmRSS:") / 1024,
                                 kb_of("/proc/self/status", "VmSwap:") / 1024, kb_of("/proc/meminfo", "MemAvailable:") / 1024, kb_of("/proc/meminfo", "MemTotal:") / 1024, thermal_text(th, sizeof th));
-        { char d[256]; snprintf(d, sizeof d, DL "/%s-log.txt", g_stem); copy_file(src, d); }
+        { static char d[256]; if (!d[0]) dl_name(d, sizeof d, "log"); copy_file(src, d); }
     }
     return NULL;
 }
@@ -724,8 +736,9 @@ static void host_start(void) {
     { const char *v = getenv("DM_APP_VERSION");
       fprintf(stderr, "boot: app version code %s. Copyright (c) 2026 jhaizhou (d2r-mobile, nxnative) and the Galar Native (formerly PKShield Android) contributors. "
                       "GPL-3.0-or-later, older parts also MIT (menu, About). Source and official downloads: github.com/simipoB/Galar-Native-Android/releases\n", v && *v ? v : "?"); }
-    { char d[256]; snprintf(d, sizeof d, DL "/%s-log-previous.txt", g_stem); copy_file(q, d); }
-    snprintf(g_crash_src, sizeof g_crash_src, "%s/log.txt", g_files); snprintf(g_crash_dl, sizeof g_crash_dl, DL "/%s-log.txt", g_stem);
+    { char d[256]; dl_name(d, sizeof d, "log-previous"); copy_file(q, d); if (g_dl_note[0]) fprintf(stderr, "%s\n", g_dl_note); }
+    snprintf(g_crash_src, sizeof g_crash_src, "%s/log.txt", g_files); dl_name(g_crash_dl, sizeof g_crash_dl, "log");
+    if (g_dl_note[0]) fprintf(stderr, "%s\n", g_dl_note);
     { pthread_t lt; if (!pthread_create(&lt, NULL, log_mirror, NULL)) pthread_detach(lt); }
     { pthread_t it; if (!pthread_create(&it, NULL, inspector_main, NULL)) pthread_detach(it); }   // the memory inspector (scan.req / peek.req)
     snprintf(p, sizeof p, "%s/env.txt", g_files); env_file(p);
