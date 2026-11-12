@@ -4822,10 +4822,7 @@ static uint64_t fg_period(uint64_t t_arr) {
 static int lsfg_mult(void) {
     int m = dm_lsfg_mult;
     if (m < 0) { const char *e = getenv("DM_LSFG_MULT"); m = e ? atoi(e) : 0; if (m < 2 || m > 4) m = 0; dm_lsfg_mult = m; }
-    if (!m) {   // auto: the most of 4, 3, 2 that divides the game's frame time in refreshes (4 refreshes: 4x, each picture one refresh; 3: 3x; 6: 3x, two each)
-        uint64_t p = g_fg_period ? g_fg_period : game_period_ns(), r = g_refresh_ns ? g_refresh_ns : 16666667ull, n = (p + r / 2) / r; m = 2;
-        for (int k = 4; k >= 3; k--) if (n >= (uint64_t)k && n % (uint64_t)k == 0) { m = k; break; }
-        if (m == 2 && n % 2) m = n >= 4 ? 4 : n == 3 ? 3 : 2; }   // (5 refreshes, a game at 24 fps on 120 Hz: 4x, pictures 1, 1, 1, 2 refreshes apart beat 2x's 2, 3)
+    if (!m) m = 2;   // auto: 2x, light (the game at a locked 60 shown at 120; frame generation runs only then, see the floor in present_window_locked)
     if (m > FGE.mult_cap) m = FGE.mult_cap;
     return m < 2 ? 2 : m;
 }
@@ -4896,7 +4893,7 @@ static int fg_ready(vtex *x, int32_t cx, int32_t cy, int32_t cw, int32_t ch) {
         if (!FGE.ls_tried) { FGE.ls_tried = 1; const char *d = getenv("DM_LSFG_DIR");
             if (g_api < VK_API_VERSION_1_3) { fg_off("Lossless Scaling frame generation needs a Vulkan 1.3 driver"); return 0; }
             if (!d || !*d || !ls_load(ls, d)) { fg_off(d && *d ? ls->why : "the Lossless Scaling shaders are not imported"); return 0; } }
-        { const char *e = getenv("DM_LSFG_FLOW"); int pc = e && atoi(e) > 0 ? atoi(e) : ch >= 1000 ? 50 : 75;
+        { const char *e = getenv("DM_LSFG_FLOW"); int pc = e && atoi(e) > 0 ? atoi(e) : 50;   // (light: half the frame's size, any height)
           pc -= 25 * FGE.flow_cut; flow = (pc < 25 ? 25 : pc > 100 ? 100 : pc) / 100.0f; }   // (S25+, 1080p: 100% took 6 ms a picture, 50% 2.9-4.4 ms)
         if (ls->w == (uint32_t)cw && ls->h == (uint32_t)ch && ls->fmt == x->fmt && ls->flow == flow) return 1; }
     else if (g->w == (uint32_t)cw && g->h == (uint32_t)ch && g->fmt == x->fmt) return 1;
@@ -4974,21 +4971,27 @@ static void present_window_locked(vtex *x, const int crop[4]) {
         if (fgm && FGE.up) FGE.mult_cap = 4;
         FGE.flow_cut = 0; FGE.ok_win = 0; FGE.since_up = 99; FGE.up_wait = 20; FGE.base_fps = 0; FGE.aw_t = 0; FGE.aw_skip = 0; memset(&FGE.plan, 0, sizeof FGE.plan);
         FGE.mode_seen = fgm; FGE.held = 1; FGE.rate_n = 0; FGE.rate_ivl = 0; FGE.rate_last = 0; }
-    if (fgm) {   // the game's own frame rate (pauses over a second left out): frame generation needs DM_FRAMEGEN_MIN_FPS (default 25) or more; paused below it, back from 27
-        //   (#189, Adreno 613: the game at 14-22 fps, 4x of it moved worse and took GPU time from the game's own frames). Decided after 16 frames; until then held
-        if (!FGE.min_fps) { const char *e = getenv("DM_FRAMEGEN_MIN_FPS"); int f = e ? atoi(e) : 0; FGE.min_fps = f >= 1 && f <= 120 ? f : 25; }
+    if (fgm) {   // Frame generation runs only on a game at a locked 60 (the frame rate setting at 60 and the game holding it), and lightly: 2x, the motion search at half
+        //   size. The game's own frame rate (pauses over a second left out) must stay at DM_FRAMEGEN_MIN_FPS (default 58) or more: paused under 57, back from 59.
+        //   Under 60 the in-between pictures cost the game frames it could not spare (#189, Adreno 613: the game at 14-22 fps, 4x of it moved worse). Decided after
+        //   16 frames; until then held. At the 30 fps setting it stays off (the note says why)
+        if (!FGE.min_fps) { const char *e = getenv("DM_FRAMEGEN_MIN_FPS"); int f = e ? atoi(e) : 0; FGE.min_fps = f >= 1 && f <= 120 ? f : 58; }
+        if (game_fps() < 60 && FGE.min_fps >= 30) { if (strcmp(FGE.note, "need60")) VLOG("frame generation off at the %d fps setting: it needs the game at a locked 60", game_fps());
+            FGE.held = 1; FGE.rate_n = 0; FGE.rate_ivl = 0; FGE.rate_last = 0; FGE.base_fps = 0; FGE.aw_t = 0;   // (the game's own rate is measured again at 60)
+            if (!FGE.off) snprintf(FGE.note, sizeof FGE.note, "need60"); }
+        else {
         uint64_t d = FGE.rate_last ? t_arr - FGE.rate_last : 0; FGE.rate_last = t_arr;
         if (d && d < 1000000000ull) { FGE.rate_ivl = FGE.rate_ivl ? (FGE.rate_ivl * 15 + d) / 16 : d; FGE.rate_n++; }
         if (FGE.rate_n >= 16) {
-            uint64_t lo = 1000000000ull / (uint64_t)FGE.min_fps, hi = lo * (uint64_t)FGE.min_fps / (uint64_t)(FGE.min_fps + 2);   // (under 25 fps: paused; 27 or more: on)
+            uint64_t lo = 1000000000ull / (uint64_t)(FGE.min_fps - 1), hi = 1000000000ull / (uint64_t)(FGE.min_fps + 1);   // (under 57 fps: paused; 59 or more: on)
             int was = FGE.held, now = FGE.rate_ivl > lo ? 1 : FGE.rate_ivl < hi ? 0 : was; double fps = 1e9 / (double)FGE.rate_ivl;
             if (now != was) {
                 FGE.held = now;
                 if (now && !FGE.off && FGE.last_gen_t && t_arr - FGE.last_gen_t < 1000000000ull) {   // (it was making pictures: its cost took the game under the floor)
                     char w[96], n[24]; snprintf(w, sizeof w, "the game fell to %.1f fps with it", fps); snprintf(n, sizeof n, "cost:%.0f", fps); fg_step_down(w, n); }
-                if (now) VLOG("[RED] frame generation paused: the game itself runs at %.1f fps, under the %d fps it needs (DM_FRAMEGEN_MIN_FPS): normal presentation until it holds %d", fps, FGE.min_fps, FGE.min_fps + 2);
+                if (now) VLOG("[RED] frame generation paused: the game itself runs at %.1f fps, under the %d fps it needs (DM_FRAMEGEN_MIN_FPS): normal presentation until it holds %d", fps, FGE.min_fps - 1, FGE.min_fps + 1);
                 else if (FGE.n_gen + FGE.n_plain || FGE.last_log) VLOG("frame generation back on: the game runs at %.1f fps", fps); }
-            if (!FGE.off) { if (FGE.held) snprintf(FGE.note, sizeof FGE.note, "paused:%.0f", fps); else FGE.note[0] = 0; } } }
+            if (!FGE.off) { if (FGE.held) snprintf(FGE.note, sizeof FGE.note, "paused:%.0f", fps); else FGE.note[0] = 0; } } } }
     int fg = fgm && !FGE.off && !FGE.held && FGE.base_fps > 0 && fg_ready(x, cx, cy, cw, ch), gen = 0;   // (the first 3 s: the game's own rate measured, fg_adapt)
     if (!fg) { FGE.have_prev = 0; FGE.ls.n = 0; }   // (the copy of the frame before goes stale the moment a frame is not copied; Lossless Scaling's history starts again)
     else { FGE.g.debug = fgm == 2; gen = fg_plan_frame(&FGE.plan, t_arr, period) && FGE.have_prev && (fgm != 3 || FGE.ls.n >= 2); }   // (lsfg: three frames of history first)
