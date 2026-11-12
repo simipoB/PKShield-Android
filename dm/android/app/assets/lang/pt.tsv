@@ -328,4 +328,4 @@ Save folder	Pasta do save
 App folder	Pasta do app
 App folder: Android/data, as before	Pasta do app: Android/data, como antes
 Documents	Documentos
-Documents/NXNative/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/NXNative/%s/save, para ferramentas de sincronização como o Syncthing. Seu save é copiado para lá no próximo início; o que já estiver lá é mantido como backup. Requer acesso a todos os arquivos
+Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save, para ferramentas de sincronização como o Syncthing. Seu save é copiado para lá no próximo início; o que já estiver lá é mantido como backup. Requer acesso a todos os arquivos

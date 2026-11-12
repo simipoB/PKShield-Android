@@ -547,7 +547,7 @@ static void copy_file(const char *a, const char *b) {
     if (i >= 0) close(i); if (o >= 0) close(o);
 }
 // ---------- Save folder (the menu's Saves -> Save folder, DM_SAVE_SHARED=1; Arceus-Native-Android#8) ----------
-// The save can live in Documents/NXNative/<title id>/save instead of the app's own folder, where a sync tool (Syncthing) or a file manager can reach it while the game is
+// The save can live in Documents/Galar Native/<title id>/save instead of the app's own folder, where a sync tool (Syncthing) or a file manager can reach it while the game is
 // closed. Which of the two holds the save now is written in <files>/save_place.txt ("app" / "shared"). A switch takes effect at the next start, before the game mounts
 // its save (a game running writes it at any moment): the save is copied to the other place, and whatever was there first is renamed to save.backup-<date>, never
 // deleted; the old place keeps its copy as it was. Shared needs "All files access" (the menu asks for it): when the folder cannot be written, the save stays in the
@@ -581,11 +581,11 @@ static void save_place(void) {
     char app[1100], shared[1100], par[1100], st[1200], cur[16] = "app"; const char *e = getenv("DM_SAVE_SHARED"); int want = e && atoi(e) == 1;
     snprintf(app, sizeof app, "%s/save", g_files); snprintf(st, sizeof st, "%s/save_place.txt", g_files);
     { const char *pid = getenv("DM_PROGRAM_ID"); char up[20] = ""; if (pid) for (int k = 0; pid[k] && k < 16; k++) up[k] = (char)toupper((unsigned char)pid[k]);   // (Galar: the running game, Sword or Shield)
-      if (up[0]) snprintf(par, sizeof par, "/storage/emulated/0/Documents/NXNative/%s", up); else snprintf(par, sizeof par, "/storage/emulated/0/Documents/NXNative/%016llX", (unsigned long long)DM_GAME_PROGRAM_ID); } snprintf(shared, sizeof shared, "%s/save", par);
+      if (up[0]) snprintf(par, sizeof par, "/storage/emulated/0/Documents/Galar Native/%s", up); else snprintf(par, sizeof par, "/storage/emulated/0/Documents/Galar Native/%016llX", (unsigned long long)DM_GAME_PROGRAM_ID); } snprintf(shared, sizeof shared, "%s/save", par);
     { FILE *f = fopen(st, "r"); if (f) { if (fscanf(f, "%15s", cur) != 1) strcpy(cur, "app"); fclose(f); } }
     int in_shared = !strcmp(cur, "shared");
     if (want && !in_shared) {   // to Documents
-        mkdir("/storage/emulated/0/Documents", 0770); mkdir("/storage/emulated/0/Documents/NXNative", 0770); mkdir(par, 0770);
+        mkdir("/storage/emulated/0/Documents", 0770); mkdir("/storage/emulated/0/Documents/Galar Native", 0770); mkdir(par, 0770);
         char probe[1200]; snprintf(probe, sizeof probe, "%s/.write-test", par); int fd = open(probe, O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (fd < 0) { fprintf(stderr, "boot: [RED] save folder: %s cannot be written (errno %d: All files access not given?): the save stays in the app's folder\n", par, errno); return; }
         close(fd); unlink(probe);
