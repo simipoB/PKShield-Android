@@ -4775,7 +4775,10 @@ static struct { fgen g; lsfg ls; int ls_tried, mult_cap; uint64_t ivl, ivl_last;
                 uint64_t n_gen, n_plain, gpu_sum, gpu_n, gpu_max, cpu_sum, lag_sum, lag_n, last_log;
                 // slow: off by the GPU-time cut-off (tried again when the menu switches frame generation on or to the other kind); mode_seen: the mode the last frame had;
                 // held: paused while the game itself runs under DM_FRAMEGEN_MIN_FPS (rate_ivl: its frame interval, a slow running mean of rate_n intervals); note: for the menu
-                int slow, mode_seen, held, min_fps; uint64_t rate_ivl, rate_last, rate_n; char note[48]; } FGE;
+                int slow, mode_seen, held, min_fps; uint64_t rate_ivl, rate_last, rate_n; char note[48];
+                // fg_adapt: 3 s windows of the game's own frames (aw_*), its rate without pictures (base_fps), the lighter settings taken (flow_cut: the motion search a
+                // quarter smaller each; mult_cap above), windows in a row that kept the game's rate (ok_win), windows since the last step up (since_up), the wait before one
+                uint64_t aw_t, aw_max, aw_prev, last_gen_t; int aw_n, aw_gen, aw_skip, flow_cut, ok_win, since_up, up_wait; double base_fps; } FGE;
 // The real frame that waits behind its in-between picture goes to the display: at its time (fg_thread), or at once when the next frame, a new swapchain or the
 // window's end comes first. Called with the window lock held
 static void fg_flush_one_locked(void) {   // the oldest waiting picture
@@ -4831,7 +4834,42 @@ static void fg_off(const char *why) {
     FGE.n_gen = FGE.n_plain = FGE.gpu_sum = FGE.gpu_n = FGE.gpu_max = FGE.cpu_sum = FGE.lag_sum = FGE.lag_n = 0; FGE.last_log = 0;
     VLOG("[RED] frame generation off until the next start (%s): normal presentation", why);
 }
-// The menu's line under Frame generation (GameMenu.nativeFramegenNote): "" running or off, "paused:<fps>" under the minimum frame rate, "slow:<ms>" cut off for the GPU's
+// One step lighter: Lossless Scaling's pictures a frame one fewer (4x, 3x, 2x), then its motion search a quarter smaller (75 %, 50 %, 25 % of the frame), then off
+// (tried again when the menu switches it on). The window after a step is left to settle; a step down soon after a step up doubles the wait before the next one up
+static void fg_step_down(const char *why, const char *note) {
+    int m = framegen_mode(), cur = m == 3 ? lsfg_mult() : 2;
+    if (m == 3 && cur > 2) { FGE.mult_cap = cur - 1; VLOG("[RED] frame generation lighter (%s): %dx from now on", why, cur - 1); }
+    else if (m == 3 && FGE.flow_cut < 2) { FGE.flow_cut++; VLOG("[RED] frame generation lighter (%s): the motion search a quarter smaller (%d %% less)", why, 25 * FGE.flow_cut); }
+    else { char w[192]; snprintf(w, sizeof w, "%s, at its lightest; switching it on again in the menu tries again", why); fg_off(w); FGE.slow = 1; snprintf(FGE.note, sizeof FGE.note, "%s", note); }
+    memset(&FGE.plan, 0, sizeof FGE.plan); FGE.aw_skip = 1; FGE.ok_win = 0;
+    if (FGE.since_up < 10 && FGE.up_wait < 160) FGE.up_wait *= 2;   // (a step up that did not hold: wait longer before the next, 1 min .. 8 min)
+}
+// Frame generation that knows what it costs this phone: every 3 s of the game's own frames, the rate they came at. Windows without pictures (paused, or the first
+// 3 s) give the game's own rate; windows with pictures throughout must keep it (92 %, or of the game's target when it runs at its cap), else one step lighter. After
+// up_wait windows (20 = 1 min) that kept it, a step back up (the motion search first, then a picture more). Windows with a pause over 0.5 s (a load) are left out
+static void fg_adapt(uint64_t now, int gen) {
+    if (!FGE.up_wait) FGE.up_wait = 20;
+    if (gen) FGE.last_gen_t = now;
+    uint64_t d = FGE.aw_prev ? now - FGE.aw_prev : 0; FGE.aw_prev = now;
+    if (!FGE.aw_t) { FGE.aw_t = now; FGE.aw_n = FGE.aw_gen = 0; FGE.aw_max = 0; return; }
+    if (d > FGE.aw_max) FGE.aw_max = d;
+    FGE.aw_n++; FGE.aw_gen += gen != 0;
+    if (now - FGE.aw_t < 3000000000ull) return;
+    double fps = FGE.aw_n * 1e9 / (double)(now - FGE.aw_t); int all = FGE.aw_gen * 10 >= FGE.aw_n * 9, none = !FGE.aw_gen; uint64_t mx = FGE.aw_max;
+    FGE.aw_t = now; FGE.aw_n = FGE.aw_gen = 0; FGE.aw_max = 0;
+    if (mx > 500000000ull || FGE.off) return;
+    if (FGE.aw_skip) { FGE.aw_skip--; return; }
+    if (none) { FGE.base_fps = fps; return; }
+    if (!all || FGE.base_fps <= 0) return;
+    double tgt = game_fps(), ref = FGE.base_fps < tgt * 0.97 ? FGE.base_fps : tgt; FGE.since_up++;
+    if (fps < ref * 0.92) { char w[96], n[24]; snprintf(w, sizeof w, "the game's own frames %.1f fps with it, %.1f without", fps, FGE.base_fps); snprintf(n, sizeof n, "cost:%.0f", fps);
+        fg_step_down(w, n); return; }
+    if (++FGE.ok_win >= FGE.up_wait && (FGE.flow_cut || FGE.mult_cap < 4)) {
+        FGE.ok_win = 0; FGE.since_up = 0; FGE.aw_skip = 1; memset(&FGE.plan, 0, sizeof FGE.plan);
+        if (FGE.flow_cut) { FGE.flow_cut--; VLOG("frame generation heavier again: the motion search back to %d %% less (the game kept %.1f fps for %d s)", 25 * FGE.flow_cut, fps, FGE.up_wait * 3); }
+        else { FGE.mult_cap++; VLOG("frame generation heavier again: up to %dx (the game kept %.1f fps for %d s)", FGE.mult_cap, fps, FGE.up_wait * 3); } }
+}
+// The menu's line under Frame generation (GameMenu.nativeFramegenNote): "" running or off, "paused:<fps>" under the minimum frame rate, "cost:<fps>" lightest setting still cost the game its frames, "slow:<ms>" cut off for the GPU's
 // time (until switched on again), "off" off for another reason until the next start
 void nvn_vk_framegen_note(char *buf, size_t n) { if (!n) return; pthread_mutex_lock(&g_wmu); snprintf(buf, n, "%s", framegen_mode() ? FGE.note : ""); pthread_mutex_unlock(&g_wmu); }
 // Frame generation can take this frame (the crop cx cy cw ch of x): its semaphores, thread and GPU timer once, its images for this size and format
@@ -4859,7 +4897,7 @@ static int fg_ready(vtex *x, int32_t cx, int32_t cy, int32_t cw, int32_t ch) {
             if (g_api < VK_API_VERSION_1_3) { fg_off("Lossless Scaling frame generation needs a Vulkan 1.3 driver"); return 0; }
             if (!d || !*d || !ls_load(ls, d)) { fg_off(d && *d ? ls->why : "the Lossless Scaling shaders are not imported"); return 0; } }
         { const char *e = getenv("DM_LSFG_FLOW"); int pc = e && atoi(e) > 0 ? atoi(e) : ch >= 1000 ? 50 : 75;
-          flow = (pc < 25 ? 25 : pc > 100 ? 100 : pc) / 100.0f; }   // (S25+, 1080p: 100% took 6 ms a picture, 50% 2.9-4.4 ms)
+          pc -= 25 * FGE.flow_cut; flow = (pc < 25 ? 25 : pc > 100 ? 100 : pc) / 100.0f; }   // (S25+, 1080p: 100% took 6 ms a picture, 50% 2.9-4.4 ms)
         if (ls->w == (uint32_t)cw && ls->h == (uint32_t)ch && ls->fmt == x->fmt && ls->flow == flow) return 1; }
     else if (g->w == (uint32_t)cw && g->h == (uint32_t)ch && g->fmt == x->fmt) return 1;
     uint64_t now = mono_ns();   // a game that changes its frame size all the time (dynamic resolution) would rebuild the images each time: not for it
@@ -4927,14 +4965,14 @@ static void present_window_locked(vtex *x, const int crop[4]) {
             uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * FGE.tsper); FGE.gpu_sum += ns; FGE.gpu_n++; if (ns > FGE.gpu_max) FGE.gpu_max = ns;
             int np = FGE.q_pics[sl] > 0 ? FGE.q_pics[sl] : 1; uint64_t lim = FGE.budget + (uint64_t)(np - 1) * FGE.budget / 2;   // (each picture after the first: half the budget more)
             if (!FGE.off && fg_plan_cost(&FGE.plan, ns, t_arr, lim)) {
-                if (framegen_mode() == 3 && np > 1) { FGE.mult_cap = np; memset(&FGE.plan, 0, sizeof FGE.plan);
-                    VLOG("[RED] Lossless Scaling frame generation: the GPU needs over %.1f ms for %dx (%.1f ms the last frame): %dx from now on", lim / 1e6, np + 1, ns / 1e6, np); }
-                else { char why[128]; snprintf(why, sizeof why, "the GPU needs over %.1f ms for a picture, %.1f ms the last one; switching it on again in the menu tries again", lim / 1e6, ns / 1e6);
-                    fg_off(why); FGE.slow = 1; snprintf(FGE.note, sizeof FGE.note, "slow:%.1f", ns / 1e6); } } } }
+                char why[96], n[24]; snprintf(why, sizeof why, "the GPU needs over %.1f ms for %d picture%s, %.1f ms the last frame", lim / 1e6, np, np > 1 ? "s" : "", ns / 1e6);
+                snprintf(n, sizeof n, "slow:%.1f", ns / 1e6); fg_step_down(why, n); } } }
     int fgm = framegen_mode();
     if (fgm != FGE.mode_seen) {   // switched in the menu (off and on again, or the other kind): a GPU-time cut-off gets a fresh try, measured and cut off again the same way
-        if (fgm && FGE.off && FGE.slow) { FGE.off = FGE.slow = 0; FGE.mult_cap = 4; FGE.note[0] = 0; memset(&FGE.plan, 0, sizeof FGE.plan); memset(FGE.q_live, 0, sizeof FGE.q_live);
-            VLOG("frame generation switched on again in the menu: tried again, and off again if the GPU still needs over %.1f ms a picture", FGE.budget / 1e6); }
+        if (fgm && FGE.off && FGE.slow) { FGE.off = FGE.slow = 0; FGE.note[0] = 0; memset(FGE.q_live, 0, sizeof FGE.q_live);
+            VLOG("frame generation switched on again in the menu: tried again from its full setting, made lighter again step by step if it costs too much"); }
+        if (fgm && FGE.up) FGE.mult_cap = 4;
+        FGE.flow_cut = 0; FGE.ok_win = 0; FGE.since_up = 99; FGE.up_wait = 20; FGE.base_fps = 0; FGE.aw_t = 0; FGE.aw_skip = 0; memset(&FGE.plan, 0, sizeof FGE.plan);
         FGE.mode_seen = fgm; FGE.held = 1; FGE.rate_n = 0; FGE.rate_ivl = 0; FGE.rate_last = 0; }
     if (fgm) {   // the game's own frame rate (pauses over a second left out): frame generation needs DM_FRAMEGEN_MIN_FPS (default 25) or more; paused below it, back from 27
         //   (#189, Adreno 613: the game at 14-22 fps, 4x of it moved worse and took GPU time from the game's own frames). Decided after 16 frames; until then held
@@ -4946,10 +4984,12 @@ static void present_window_locked(vtex *x, const int crop[4]) {
             int was = FGE.held, now = FGE.rate_ivl > lo ? 1 : FGE.rate_ivl < hi ? 0 : was; double fps = 1e9 / (double)FGE.rate_ivl;
             if (now != was) {
                 FGE.held = now;
+                if (now && !FGE.off && FGE.last_gen_t && t_arr - FGE.last_gen_t < 1000000000ull) {   // (it was making pictures: its cost took the game under the floor)
+                    char w[96], n[24]; snprintf(w, sizeof w, "the game fell to %.1f fps with it", fps); snprintf(n, sizeof n, "cost:%.0f", fps); fg_step_down(w, n); }
                 if (now) VLOG("[RED] frame generation paused: the game itself runs at %.1f fps, under the %d fps it needs (DM_FRAMEGEN_MIN_FPS): normal presentation until it holds %d", fps, FGE.min_fps, FGE.min_fps + 2);
                 else if (FGE.n_gen + FGE.n_plain || FGE.last_log) VLOG("frame generation back on: the game runs at %.1f fps", fps); }
             if (!FGE.off) { if (FGE.held) snprintf(FGE.note, sizeof FGE.note, "paused:%.0f", fps); else FGE.note[0] = 0; } } }
-    int fg = fgm && !FGE.off && !FGE.held && fg_ready(x, cx, cy, cw, ch), gen = 0;
+    int fg = fgm && !FGE.off && !FGE.held && FGE.base_fps > 0 && fg_ready(x, cx, cy, cw, ch), gen = 0;   // (the first 3 s: the game's own rate measured, fg_adapt)
     if (!fg) { FGE.have_prev = 0; FGE.ls.n = 0; }   // (the copy of the frame before goes stale the moment a frame is not copied; Lossless Scaling's history starts again)
     else { FGE.g.debug = fgm == 2; gen = fg_plan_frame(&FGE.plan, t_arr, period) && FGE.have_prev && (fgm != 3 || FGE.ls.n >= 2); }   // (lsfg: three frames of history first)
     uint32_t ii, imgs[LS_MAXGEN + 1]; int npic = 0; VkResult r = vkAcquireNextImageKHR(g_dev, W.sc, UINT64_MAX, W.acq[sl], VK_NULL_HANDLE, &ii);
@@ -5016,6 +5056,7 @@ static void present_window_locked(vtex *x, const int crop[4]) {
             FGE.pdue[k - 1] = want && rf ? (at > now + ea ? at - ea : now) : now + (uint64_t)k * sp; }
         FGE.n_gen += (uint64_t)npic; sem_post(&FGE.wake); }
     else if (fg) FGE.n_plain++;
+    if (fgm) fg_adapt(t_arr, gen && !rs);
     if (fgm && t_arr - FGE.last_log >= 10000000000ull) {
         if (FGE.last_log && FGE.n_gen + FGE.n_plain)
             VLOG("frame generation: %llu in-between pictures in the last 10 s, %llu frames without one; GPU %.2f ms a picture (longest %.2f), recorded in %.2f ms; "

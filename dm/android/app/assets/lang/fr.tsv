@@ -321,3 +321,4 @@ On: a picture is made between each two of the game's frames, so 30 fps moves lik
 Paused: the game runs at %s fps here, and frame generation needs 25 fps or more. It comes back on by itself above 27.	En pause : le jeu tourne ici à %s fps, et la génération d'images demande 25 fps ou plus. Elle se réactive seule au-dessus de 27.
 Off: this GPU needs %s ms for each picture, more than the game can spare. Switch it off and on to try again.	Désactivée : ce GPU met %s ms par image, plus que le jeu ne peut en céder. Désactivez-la puis réactivez-la pour réessayer.
 Off until the next start (see the log for why).	Désactivée jusqu'au prochain démarrage (la raison est dans le journal).
+Off: even at its lightest it cost the game its own frames here (down to %s fps). Switch it off and on to try again.	Désactivée : même au plus léger, elle coûtait au jeu ses propres images ici (jusqu'à %s fps). Désactivez-la puis réactivez-la pour réessayer.

@@ -321,3 +321,4 @@ On: a picture is made between each two of the game's frames, so 30 fps moves lik
 Paused: the game runs at %s fps here, and frame generation needs 25 fps or more. It comes back on by itself above 27.	一時停止中：ここではゲームが%s fpsで動いており、フレーム生成には25 fps以上が必要です。27を超えると自動で再開します。
 Off: this GPU needs %s ms for each picture, more than the game can spare. Switch it off and on to try again.	オフ：このGPUは1枚の画像に%s msかかり、ゲームが割ける時間を超えています。オフにしてからオンにすると再試行します。
 Off until the next start (see the log for why).	次回の起動までオフ（理由はログにあります）。
+Off: even at its lightest it cost the game its own frames here (down to %s fps). Switch it off and on to try again.	オフ：最も軽い設定でも、ここではゲーム自身のフレームを奪っていました（%s fpsまで低下）。オフにしてからオンにすると再試行します。

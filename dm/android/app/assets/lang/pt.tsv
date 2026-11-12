@@ -321,3 +321,4 @@ On: a picture is made between each two of the game's frames, so 30 fps moves lik
 Paused: the game runs at %s fps here, and frame generation needs 25 fps or more. It comes back on by itself above 27.	Pausada: o jogo roda a %s fps aqui, e a geração de quadros precisa de 25 fps ou mais. Ela volta sozinha acima de 27.
 Off: this GPU needs %s ms for each picture, more than the game can spare. Switch it off and on to try again.	Desligada: esta GPU precisa de %s ms para cada imagem, mais do que o jogo pode ceder. Desligue e ligue para tentar de novo.
 Off until the next start (see the log for why).	Desligada até o próximo início (o motivo está no log).
+Off: even at its lightest it cost the game its own frames here (down to %s fps). Switch it off and on to try again.	Desligada: mesmo no modo mais leve ela tirava quadros do próprio jogo aqui (até %s fps). Desligue e ligue para tentar de novo.
