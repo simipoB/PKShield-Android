@@ -318,3 +318,5 @@ As on the Switch	Switchと同じ
 Faster camera: full speed with less of the stick	カメラが速くなります：少ない入力で最高速度に達します
 Auto: on for Mali GPUs (white screens and black patches)	自動：Mali GPUではオン（白い画面や黒い斑点の対策）
 Off: plain multiplies, as before v0.74	オフ：通常の乗算（v0.74より前と同じ）
+Low: 3D at about 600p, lighter	低：3Dを約600pで描画、軽め
+Lowest: 3D at 960x540, coolest	最低：3Dを960x540で描画、最も発熱が少ない
