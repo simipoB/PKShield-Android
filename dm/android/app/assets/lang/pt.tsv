@@ -324,3 +324,5 @@ Divisions	Divisões
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Texturas: cada leitura de textura é limitada a um intervalo razoável. Se o branco sumir, avise-nos: uma textura é lida errado
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entradas: cada valor passado pelo shader de vértices é limitado. Se o branco sumir, avise-nos
 Divisions: every division is limited. If the white goes away, tell us	Divisões: cada divisão é limitada. Se o branco sumir, avise-nos
+Low: 3D at about 600p, lighter	Baixo: 3D em cerca de 600p, mais leve
+Lowest: 3D at 960x540, coolest	Mínimo: 3D em 960x540, o mais fresco
