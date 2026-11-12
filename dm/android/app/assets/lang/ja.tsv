@@ -298,14 +298,12 @@ L3 / R3 buttons	L3 / R3 ボタン
 Off: no L3 / R3 on screen (a controller's stick buttons still work)	オフ：画面に L3 / R3 を表示しない（コントローラーのスティック押し込みは使えます）
 On: L3 and R3 above the sticks (move them with Move the touch controls)	オン：スティックの上に L3 と R3（「タッチ操作の配置を変更」で動かせます）
 Frame generation (experimental)	フレーム生成（試験的）
-On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later	オン：ゲームの2つのフレームの間に画像を1枚作り、30 fpsを60のように動かします。高速なGPUが必要です。操作の反映が約17ミリ秒遅れます
 Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)	Lossless Scaling：中間の画像を、お持ちのLossless Scalingのフレーム生成で作ります（動きがより鮮明、より高速なGPUが必要）
 Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here.	Lossless Scalingをお持ちですか？そのLossless.dll（プログラムのフォルダー内）を取り込むと、ここでそのフレーム生成を使えます。
 Import Lossless.dll	Lossless.dllを取り込む
 Lossless Scaling imported. Choose it under Frame generation.	Lossless Scalingを取り込みました。フレーム生成で選んでください。
 Could not import Lossless Scaling: %s	Lossless Scalingを取り込めませんでした：%s
 Lossless Scaling pictures	Lossless Scalingの生成枚数
-Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)	自動：120 Hzの画面では4x、90 Hzでは3x、それ以外は2x（30 fps時）
 2x: one picture between each two of the game's frames (30 fps moves like 60)	2x：ゲームの2つのフレームの間に1枚（30 fpsが60のように動きます）
 3x: two pictures between each two frames (like 90 fps; even on a 90 Hz screen only)	3x：2つのフレームの間に2枚（90 fps相当。均一になるのは90 Hzの画面のみ）
 4x: three pictures between each two frames (like 120 fps; needs a 120 Hz screen and a fast GPU)	4x：2つのフレームの間に3枚（120 fps相当。120 Hzの画面と高速なGPUが必要）
@@ -318,3 +316,10 @@ As on the Switch	Switchと同じ
 Faster camera: full speed with less of the stick	カメラが速くなります：少ない入力で最高速度に達します
 Auto: on for Mali GPUs (white screens and black patches)	自動：Mali GPUではオン（白い画面や黒い斑点の対策）
 Off: plain multiplies, as before v0.74	オフ：通常の乗算（v0.74より前と同じ）
+Off: this GPU needs %s ms for each picture, more than the game can spare. Switch it off and on to try again.	オフ：このGPUは1枚の画像に%s msかかり、ゲームが割ける時間を超えています。オフにしてからオンにすると再試行します。
+Off until the next start (see the log for why).	次回の起動までオフ（理由はログにあります）。
+Off: even at its lightest it cost the game its own frames here (down to %s fps). Switch it off and on to try again.	オフ：最も軽い設定でも、ここではゲーム自身のフレームを奪っていました（%s fpsまで低下）。オフにしてからオンにすると再試行します。
+Off at 30 fps: frame generation needs the game at a locked 60 fps (Performance → Frame rate: 60).	30 fpsではオフ：フレーム生成にはゲームが60 fpsで安定している必要があります（パフォーマンス → フレームレート：60）。
+Paused: the game runs at %s fps here, and frame generation needs a locked 60. It comes back on by itself once the game holds 60.	一時停止中：ここではゲームが%s fpsで動いており、フレーム生成には安定した60が必要です。ゲームが60を保つと自動で再開します。
+On: a picture is made between each two of the game's frames, so 60 fps moves like 120. Only while the game holds a locked 60 fps; your input shows about 8 ms later	オン：ゲームの2フレームごとに中間の画像を作り、60 fpsを120のように動かします。ゲームが60 fpsで安定しているときだけ。操作は約8 ms遅れて表示されます
+Auto: 2x, light (the game at a locked 60 shown at 120)	自動：2x、軽め（60で安定したゲームを120で表示）

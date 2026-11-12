@@ -298,14 +298,12 @@ L3 / R3 buttons	Botões L3 / R3
 Off: no L3 / R3 on screen (a controller's stick buttons still work)	Desligado: sem L3 / R3 na tela (os botões dos analógicos de um controle continuam funcionando)
 On: L3 and R3 above the sticks (move them with Move the touch controls)	Ligado: L3 e R3 acima dos analógicos (mova-os com Mover os controles de toque)
 Frame generation (experimental)	Geração de quadros (experimental)
-On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later	Ativada: uma imagem é criada entre cada dois quadros do jogo, então 30 fps se movem como 60. Precisa de uma GPU rápida; seus comandos aparecem cerca de 17 ms depois
 Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)	Lossless Scaling: a imagem intermediária é criada pela sua própria cópia da geração de quadros do Lossless Scaling (movimento mais nítido, precisa de uma GPU mais rápida)
 Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here.	Tem o Lossless Scaling? Importe o Lossless.dll dele (na pasta do programa) para usar a geração de quadros dele aqui.
 Import Lossless.dll	Importar Lossless.dll
 Lossless Scaling imported. Choose it under Frame generation.	Lossless Scaling importado. Escolha-o em Geração de quadros.
 Could not import Lossless Scaling: %s	Não foi possível importar o Lossless Scaling: %s
 Lossless Scaling pictures	Imagens do Lossless Scaling
-Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)	Auto: 4x numa tela de 120 Hz, 3x em 90 Hz, senão 2x (a 30 fps)
 2x: one picture between each two of the game's frames (30 fps moves like 60)	2x: uma imagem entre cada dois quadros do jogo (30 fps se movem como 60)
 3x: two pictures between each two frames (like 90 fps; even on a 90 Hz screen only)	3x: duas imagens entre cada dois quadros (como 90 fps; uniforme só numa tela de 90 Hz)
 4x: three pictures between each two frames (like 120 fps; needs a 120 Hz screen and a fast GPU)	4x: três imagens entre cada dois quadros (como 120 fps; precisa de uma tela de 120 Hz e uma GPU rápida)
@@ -318,3 +316,10 @@ As on the Switch	Como no Switch
 Faster camera: full speed with less of the stick	Câmera mais rápida: velocidade máxima com menos curso do analógico
 Auto: on for Mali GPUs (white screens and black patches)	Auto: ligado em GPUs Mali (telas brancas e manchas pretas)
 Off: plain multiplies, as before v0.74	Desligado: multiplicações normais, como antes da v0.74
+Off: this GPU needs %s ms for each picture, more than the game can spare. Switch it off and on to try again.	Desligada: esta GPU precisa de %s ms para cada imagem, mais do que o jogo pode ceder. Desligue e ligue para tentar de novo.
+Off until the next start (see the log for why).	Desligada até o próximo início (o motivo está no log).
+Off: even at its lightest it cost the game its own frames here (down to %s fps). Switch it off and on to try again.	Desligada: mesmo no modo mais leve ela tirava quadros do próprio jogo aqui (até %s fps). Desligue e ligue para tentar de novo.
+Off at 30 fps: frame generation needs the game at a locked 60 fps (Performance → Frame rate: 60).	Desligada a 30 fps: a geração de quadros precisa do jogo a 60 fps estáveis (Desempenho → Taxa de quadros: 60).
+Paused: the game runs at %s fps here, and frame generation needs a locked 60. It comes back on by itself once the game holds 60.	Pausada: o jogo roda a %s fps aqui, e a geração de quadros precisa de 60 estáveis. Ela volta sozinha quando o jogo mantém 60.
+On: a picture is made between each two of the game's frames, so 60 fps moves like 120. Only while the game holds a locked 60 fps; your input shows about 8 ms later	Ligado: uma imagem é criada entre cada dois quadros do jogo, então 60 fps se movem como 120. Só enquanto o jogo mantém 60 fps estáveis; seus comandos aparecem cerca de 8 ms depois
+Auto: 2x, light (the game at a locked 60 shown at 120)	Auto: 2x, leve (o jogo a 60 estáveis mostrado a 120)

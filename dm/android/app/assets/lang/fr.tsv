@@ -298,14 +298,12 @@ L3 / R3 buttons	Boutons L3 / R3
 Off: no L3 / R3 on screen (a controller's stick buttons still work)	Désactivé : pas de L3 / R3 à l'écran (les boutons des sticks d'une manette fonctionnent toujours)
 On: L3 and R3 above the sticks (move them with Move the touch controls)	Activé : L3 et R3 au-dessus des sticks (déplacez-les avec Déplacer les commandes tactiles)
 Frame generation (experimental)	Génération d'images (expérimental)
-On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later	Activée : une image est créée entre deux images du jeu, donc 30 ips bougent comme 60. Nécessite un GPU rapide ; vos commandes s'affichent environ 17 ms plus tard
 Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)	Lossless Scaling : l'image intermédiaire est créée par votre propre copie de la génération d'images de Lossless Scaling (mouvement plus net, nécessite un GPU plus rapide)
 Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here.	Vous avez Lossless Scaling ? Importez son Lossless.dll (dans le dossier du programme) pour utiliser ici sa génération d'images.
 Import Lossless.dll	Importer Lossless.dll
 Lossless Scaling imported. Choose it under Frame generation.	Lossless Scaling importé. Choisissez-le dans Génération d'images.
 Could not import Lossless Scaling: %s	Impossible d'importer Lossless Scaling : %s
 Lossless Scaling pictures	Images de Lossless Scaling
-Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)	Auto : 4x sur un écran 120 Hz, 3x sur 90 Hz, sinon 2x (à 30 ips)
 2x: one picture between each two of the game's frames (30 fps moves like 60)	2x : une image entre deux images du jeu (30 ips bougent comme 60)
 3x: two pictures between each two frames (like 90 fps; even on a 90 Hz screen only)	3x : deux images entre deux images (comme 90 ips ; régulier seulement sur un écran 90 Hz)
 4x: three pictures between each two frames (like 120 fps; needs a 120 Hz screen and a fast GPU)	4x : trois images entre deux images (comme 120 ips ; nécessite un écran 120 Hz et un GPU rapide)
@@ -318,3 +316,10 @@ As on the Switch	Comme sur Switch
 Faster camera: full speed with less of the stick	Caméra plus rapide : pleine vitesse avec moins de course du stick
 Auto: on for Mali GPUs (white screens and black patches)	Auto : activé sur les GPU Mali (écrans blancs et taches noires)
 Off: plain multiplies, as before v0.74	Désactivé : multiplications ordinaires, comme avant la v0.74
+Off: this GPU needs %s ms for each picture, more than the game can spare. Switch it off and on to try again.	Désactivée : ce GPU met %s ms par image, plus que le jeu ne peut en céder. Désactivez-la puis réactivez-la pour réessayer.
+Off until the next start (see the log for why).	Désactivée jusqu'au prochain démarrage (la raison est dans le journal).
+Off: even at its lightest it cost the game its own frames here (down to %s fps). Switch it off and on to try again.	Désactivée : même au plus léger, elle coûtait au jeu ses propres images ici (jusqu'à %s fps). Désactivez-la puis réactivez-la pour réessayer.
+Off at 30 fps: frame generation needs the game at a locked 60 fps (Performance → Frame rate: 60).	Désactivée à 30 fps : la génération d'images demande le jeu à 60 fps stables (Performances → Images par seconde : 60).
+Paused: the game runs at %s fps here, and frame generation needs a locked 60. It comes back on by itself once the game holds 60.	En pause : le jeu tourne ici à %s fps, et la génération d'images demande 60 stables. Elle se réactive seule quand le jeu tient 60.
+On: a picture is made between each two of the game's frames, so 60 fps moves like 120. Only while the game holds a locked 60 fps; your input shows about 8 ms later	Activé : une image est créée entre chaque paire d'images du jeu, 60 fps paraissent donc 120. Seulement quand le jeu tient 60 fps stables ; vos commandes s'affichent environ 8 ms plus tard
+Auto: 2x, light (the game at a locked 60 shown at 120)	Auto : 2x, léger (le jeu à 60 stables affiché à 120)

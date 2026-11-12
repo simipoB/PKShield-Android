@@ -48,7 +48,18 @@ public final class GameMenu {
     private GameMenu() { }
     private static native boolean nativeSetting(String key, String value);
     private static native void nativeEditTouch();
-    private static native String nativeLsfgImport(byte[] dll, String dir);   // lsfg_import.cpp: null when done, else why not
+    private static native String nativeLsfgImport(byte[] dll, String dir);
+    private static native String nativeFramegenNote();   // android_main.c: "" making pictures (or off), "paused:<fps>", "slow:<ms>", "cost:<fps>", "off"
+    // why frame generation makes no pictures right now, for the player; null when it does (or the engine is not running)
+    private static String framegenNote(Activity a) {
+        String n; try { n = nativeFramegenNote(); } catch (UnsatisfiedLinkError e) { return null; }
+        if (n == null || n.isEmpty()) return null;
+        if (n.equals("need60")) return t(a, "Off at 30 fps: frame generation needs the game at a locked 60 fps (Performance → Frame rate: 60).");
+        if (n.startsWith("paused:")) return t(a, "Paused: the game runs at %s fps here, and frame generation needs a locked 60. It comes back on by itself once the game holds 60.", n.substring(7));
+        if (n.startsWith("cost:")) return t(a, "Off: even at its lightest it cost the game its own frames here (down to %s fps). Switch it off and on to try again.", n.substring(5));
+        if (n.startsWith("slow:")) return t(a, "Off: this GPU needs %s ms for each picture, more than the game can spare. Switch it off and on to try again.", n.substring(5));
+        return t(a, "Off until the next start (see the log for why).");
+    }   // lsfg_import.cpp: null when done, else why not
 
     // ---------- look ----------
     private static final int BG = 0xF0121419, CARD = 0xFF1C1F26, CARD_LINE = 0xFF2A2E37, TEXT = 0xFFF2F3F5, SUB = 0xFF9AA0AB, CHIP = 0xFF262A33, WARN = 0xFFFFB74D;
@@ -249,12 +260,13 @@ public final class GameMenu {
         // Frame generation (nvn_vk.c, nvn_fgen.h): off unless the player turns it on, on any GPU; takes effect at once
         //   Lossless Scaling's (nvn_lsfg.h): offered once the player has imported their own Lossless.dll (its shaders, converted, in files/lsfg)
         String[][] fgc = { { "", t(a, "Off"), "" },
-            { "on", t(a, "On"), t(a, "On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later") },
+            { "on", t(a, "On"), t(a, "On: a picture is made between each two of the game's frames, so 60 fps moves like 120. Only while the game holds a locked 60 fps; your input shows about 8 ms later") },
             { "lsfg", "Lossless Scaling", t(a, "Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)") } };
         choice(a, "DM_FRAMEGEN", t(a, "Frame generation (experimental)"), GameSettings.hasLsfg(a) ? fgc : java.util.Arrays.copyOf(fgc, 2));
+        { String fn = framegenNote(a); if (fn != null) note(a, fn); }   // (paused under 25 fps, or cut off for the GPU's time: said here, not only in the log)
         if (GameSettings.hasLsfg(a))   // Lossless Scaling's pictures a game frame (nvn_vk.c lsfg_mult); Auto: as many as the display's rate divides evenly
             choice(a, "DM_LSFG_MULT", t(a, "Lossless Scaling pictures"), new String[][] {
-                { "", t(a, "Auto"), t(a, "Auto: 4x on a 120 Hz screen, 3x on 90 Hz, else 2x (at 30 fps)") },
+                { "", t(a, "Auto"), t(a, "Auto: 2x, light (the game at a locked 60 shown at 120)") },
                 { "2", "2x", t(a, "2x: one picture between each two of the game's frames (30 fps moves like 60)") },
                 { "3", "3x", t(a, "3x: two pictures between each two frames (like 90 fps; even on a 90 Hz screen only)") },
                 { "4", "4x", t(a, "4x: three pictures between each two frames (like 120 fps; needs a 120 Hz screen and a fast GPU)") } });
