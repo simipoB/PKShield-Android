@@ -482,10 +482,12 @@ void mtl_init(void) {
     //   v0.59 with this on was still white on Arm's r49p1 (#111 G925, #128 G720): nothing shows that Arm's compiler gives the N forms their NaN rule, so its driver gets
     //   the rule written out as well (spv_nan_select: OpIsNan + OpSelect after each op, 2); DM_VK_NAN_MINMAX=1 is the N forms alone
     // FMZ (spv_fmz): Maxwell's multiplies give 0 when an operand is 0, infinity and NaN included, and SPIR-V's give NaN, which a white or glowing surface can come from
-    //   (a light at the eye's position: 0 x inf). Every multiply gets the rule written out: a test of the theory on the white screen of Arm's own driver (#156), off
-    //   unless DM_VK_FMZ=1 (the in-game menu's Mali tests); the translator would then get it per instruction (a new shader chain)
-    { const char *e = getenv("DM_VK_FMZ"); g_fmz = e && atoi(e) > 0;
-      if (g_fmz) VLOG("shaders: a multiply by 0 gives 0 even for infinity and NaN, as on the Switch's GPU (FMZ, every multiply: DM_VK_FMZ)"); }
+    //   (a light at the eye's position: 0 x inf). Every multiply gets the rule written out. A NaN that reaches the B10G11R11 lit scene comes out as the format's maximum
+    //   on Arm's own driver (the white screen: #47 #110 #111 #172) and as black on PanVK (black patches on the brightest areas): the same 0 x inf on both. On Mali GPUs
+    //   (Arm's driver and PanVK alike) it is on by default since PanVK on a Mali-G615 MC6 drew everything right with it (Arceus Native v0.21, the same engine);
+    //   DM_VK_FMZ=0 / 1 (the in-game menu's Mali tests) decides on any GPU
+    { const char *e = getenv("DM_VK_FMZ"); g_fmz = e && *e ? atoi(e) > 0 : g_props.vendorID == 0x13B5;
+      if (g_fmz) VLOG("shaders: a multiply by 0 gives 0 even for infinity and NaN, as on the Switch's GPU (FMZ, every multiply%s)", e && *e ? ": DM_VK_FMZ" : ": on by default for Mali"); }
     { const char *e = getenv("DM_VK_NAN_MINMAX"); g_nanmm = e ? atoi(e) : g_arm_rel ? 2 : 0; if (g_nanmm < 0 || g_nanmm > 2) g_nanmm = 1;
       if (g_nanmm) VLOG("shaders: min / max / saturate give the operand that is not NaN, as on the Switch's GPU (NMin / NMax / NClamp%s%s)", g_nanmm == 2 ? " and the rule written out with isnan" : "",
                         e ? ", DM_VK_NAN_MINMAX" : ", Arm's own driver"); }
