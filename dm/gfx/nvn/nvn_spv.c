@@ -634,7 +634,9 @@ uint32_t *spv_fmz(const uint32_t *code, size_t words, size_t *out_words) {
     if (!bound || bound > (1u << 22)) return NULL;
     uint8_t *nc = calloc(bound, 1), *used = calloc(bound, 1); uint32_t *comp = calloc(bound, 4), *zid = calloc(bound, 4);   // per type id: 1 a 32-bit float, 2..4 a vector of them
     if (!nc || !used || !comp || !zid) { free(nc); free(used); free(comp); free(zid); return NULL; }
-    #define FMZ_OP(x, op, n) ((x)[1] < bound && nc[(x)[1]] && (((op) == OpFMul && (n) == 5) || ((op) == OpExtInst && (n) == 8 && glsl && (x)[3] == glsl && (x)[4] == Fma)))
+    // (the length first: x[1] of a one-word instruction is the next instruction's, or past the module for its last, OpFunctionEnd. Android's allocator puts a large
+    //   block right before a guard page, so a big shader's read past its end crashed the game at load with FMZ on: Galar #172 #181, spv_fmz+0x1d8 on a page start)
+    #define FMZ_OP(x, op, n) ((n) >= 5 && (x)[1] < bound && nc[(x)[1]] && (((op) == OpFMul && (n) == 5) || ((op) == OpExtInst && (n) == 8 && glsl && (x)[3] == glsl && (x)[4] == Fma)))
     for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) goto none; const uint32_t *x = code + i;
         if (op == OpExtInstImport && n >= 3 && !strncmp((const char *)(x + 2), "GLSL.std.450", 4 * (n - 2))) glsl = x[1];
         else if (op == OpTypeBool && n == 2) tbool = x[1];
