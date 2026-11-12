@@ -324,3 +324,17 @@ Divisions	Divisões
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Texturas: cada leitura de textura é limitada a um intervalo razoável. Se o branco sumir, avise-nos: uma textura é lida errado
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entradas: cada valor passado pelo shader de vértices é limitado. Se o branco sumir, avise-nos
 Divisions: every division is limited. If the white goes away, tell us	Divisões: cada divisão é limitada. Se o branco sumir, avise-nos
+Output	Saída
+Float target	Destino flutuante
+Output: what each shader writes is limited. If the white goes away, tell us	Saída: o que cada shader escreve é limitado. Se o branco sumir, avise-nos
+Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	Destino flutuante: a cena iluminada é guardada numa imagem de ponto flutuante de 16 bits em vez da compactada. Se o branco sumir, avise-nos
+Multiplies	Multiplicações
+Additions	Somas
+Multiply-adds	Multiplicar-somar
+Multiplies: every multiply result is limited. If the white goes away, tell us	Multiplicações: cada resultado de multiplicação é limitado. Se o branco sumir, avise-nos
+Additions: every add / subtract result is limited. If the white goes away, tell us	Somas: cada resultado de soma / subtração é limitado. Se o branco sumir, avise-nos
+Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	Multiplicar-somar: cada resultado de multiplicação-soma é limitado. Se o branco sumir, avise-nos
+NaN fix	Correção NaN
+NaN fix + textures	Correção NaN + texturas
+NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	Correção NaN: os valores quebrados que os shaders escrevem viram 0 em vez de deixar a imagem branca. Conte-nos como ficou
+NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	Correção NaN + texturas: o mesmo, e os valores quebrados lidos de texturas também viram 0. Conte-nos como ficou

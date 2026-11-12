@@ -324,3 +324,17 @@ Divisions	Divisions
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Textures : chaque lecture de texture est limitée à une plage raisonnable. Si le blanc disparaît, dites-le-nous : une texture est mal lue
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entrées : chaque valeur transmise par le shader de sommets est limitée. Si le blanc disparaît, dites-le-nous
 Divisions: every division is limited. If the white goes away, tell us	Divisions : chaque division est limitée. Si le blanc disparaît, dites-le-nous
+Output	Sortie
+Float target	Cible flottante
+Output: what each shader writes is limited. If the white goes away, tell us	Sortie : ce que chaque shader écrit est limité. Si le blanc disparaît, dites-le-nous
+Float target: the lit scene stored in a 16-bit float picture instead of the packed one. If the white goes away, tell us	Cible flottante : la scène éclairée est stockée dans une image flottante 16 bits au lieu de l'image compacte. Si le blanc disparaît, dites-le-nous
+Multiplies	Multiplications
+Additions	Additions
+Multiply-adds	Multiplications-additions
+Multiplies: every multiply result is limited. If the white goes away, tell us	Multiplications : chaque résultat de multiplication est limité. Si le blanc disparaît, dites-le-nous
+Additions: every add / subtract result is limited. If the white goes away, tell us	Additions : chaque résultat d'addition / soustraction est limité. Si le blanc disparaît, dites-le-nous
+Multiply-adds: every fused multiply-add result is limited. If the white goes away, tell us	Multiplications-additions : chaque résultat de multiplication-addition est limité. Si le blanc disparaît, dites-le-nous
+NaN fix	Correctif NaN
+NaN fix + textures	Correctif NaN + textures
+NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	Correctif NaN : les valeurs cassées écrites par les shaders deviennent 0 au lieu de rendre l'image blanche. Dites-nous ce que ça donne
+NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	Correctif NaN + textures : pareil, et les valeurs cassées lues dans les textures deviennent 0 aussi. Dites-nous ce que ça donne

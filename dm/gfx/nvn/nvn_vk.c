@@ -492,9 +492,15 @@ void mtl_init(void) {
     { const char *e = getenv("DM_VK_FMZ"); g_fmz = e && *e ? atoi(e) > 0 : g_props.vendorID == 0x13B5 && !g_arm_rel;
       if (g_fmz) VLOG("shaders: a multiply by 0 gives 0 even for infinity and NaN, as on the Switch's GPU (FMZ, every multiply%s)", e && *e ? ": DM_VK_FMZ" : ": on by default for PanVK"); }
     // DM_VK_PROBE=samples,inputs,div (a diagnostic, #215): those values clamped in every fragment shader (spv_probe), one kind a run, to find which carries the white
-    { const char *e = getenv("DM_VK_PROBE"); if (e && *e) { g_probe = (strstr(e, "samples") ? PROBE_SAMPLES : 0) | (strstr(e, "inputs") ? PROBE_INPUTS : 0) | (strstr(e, "div") ? PROBE_DIV : 0);
-      if (g_probe) VLOG("shaders: DIAGNOSTIC, fragment shaders clamp%s%s%s (DM_VK_PROBE=%s)", g_probe & PROBE_SAMPLES ? " every texture sample" : "",
-                        g_probe & PROBE_INPUTS ? " every input from the vertex shader" : "", g_probe & PROBE_DIV ? " every division" : "", e); } }
+    { const char *e = getenv("DM_VK_PROBE"); if (e && *e) { g_probe = (strstr(e, "samples") ? PROBE_SAMPLES : 0) | (strstr(e, "inputs") ? PROBE_INPUTS : 0) | (strstr(e, "div") ? PROBE_DIV : 0) | (strstr(e, "output") ? PROBE_OUTPUT : 0) | (strstr(e, "mul") ? PROBE_MUL : 0) | (strstr(e, "add") ? PROBE_ADD : 0) | (strstr(e, "fma") ? PROBE_FMA : 0)
+                                                    | (strstr(e, "nanfix") ? NAN_FIX_OUT : 0) | (strstr(e, "nantex") ? NAN_FIX_TEX : 0);
+      if (g_probe & (NAN_FIX_OUT | NAN_FIX_TEX)) VLOG("shaders: NaN fix, fragment shaders turn NaN into 0%s%s (DM_VK_PROBE=%s)", g_probe & NAN_FIX_OUT ? " in what they write" : "",
+                        g_probe & NAN_FIX_TEX ? " in every texture sample" : "", e);
+      if (strstr(e, "f16target")) { nvn_fmt_vk_r11_f16(1); VLOG("render targets: DIAGNOSTIC, R11G11B10F images stored as RGBA16F (DM_VK_PROBE=%s)", e); }
+      if (g_probe) VLOG("shaders: DIAGNOSTIC, fragment shaders clamp%s%s%s%s (DM_VK_PROBE=%s)", g_probe & PROBE_SAMPLES ? " every texture sample" : "",
+                        g_probe & PROBE_INPUTS ? " every input from the vertex shader" : "", g_probe & PROBE_DIV ? " every division" : "", g_probe & PROBE_OUTPUT ? " what they write (±64)" : "", e);
+      if (g_probe & (PROBE_MUL | PROBE_ADD | PROBE_FMA)) VLOG("shaders: DIAGNOSTIC, fragment shaders clamp every%s%s%s result (±16384)", g_probe & PROBE_MUL ? " multiply" : "",
+                        g_probe & PROBE_ADD ? " add / subtract" : "", g_probe & PROBE_FMA ? " fused multiply-add" : ""); } }
     { const char *e = getenv("DM_VK_NAN_MINMAX"); g_nanmm = e ? atoi(e) : g_arm_rel ? 2 : 0; if (g_nanmm < 0 || g_nanmm > 2) g_nanmm = 1;
       if (g_nanmm) VLOG("shaders: min / max / saturate give the operand that is not NaN, as on the Switch's GPU (NMin / NMax / NClamp%s%s)", g_nanmm == 2 ? " and the rule written out with isnan" : "",
                         e ? ", DM_VK_NAN_MINMAX" : ", Arm's own driver"); }
@@ -2127,11 +2133,21 @@ static VkImageView dummy_view(const spv_res *r, int storage) {
 }
 // Texture ID → view of the kind the shader declares (nvn_mtl.m tex_by_id + tex_fit): the registered view's format / levels / layers, its channel mapping (else the builder's) on top of
 // the format's own; a depth-stencil texture reads depth unless the view asks for stencil. VK_NULL_HANDLE: no fitting view (the slot reads 0)
-static int tex_is_int(int tid) {   // the texture ID's view format is an integer one
+// A format the GPU cannot filter (VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT missing): Arm's Mali has no linear filtering of 32-bit floats (no OES_texture_float_linear
+//   either), Adreno has. A linear sampler on such a texture is undefined and on Mali reads 0, which would leave e.g. an exposure value at 0 (the white scenes, #215)
+static int fmt_no_linear(VkFormat f) {
+    static uint8_t known[256];   // 0 unknown, 1 filterable, 2 not
+    if ((unsigned)f < 256 && known[f]) return known[f] == 2;
+    VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(g_pd, f, &fp);
+    int no = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) && !(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT);
+    if ((unsigned)f < 256) { known[f] = no ? 2 : 1; if (no) VLOG("textures: vk format %d cannot be filtered on this GPU: sampled without filtering", (int)f); }
+    return no;
+}
+static int tex_is_int(int tid) {   // the texture ID's view format is an integer one, or one the GPU cannot filter: sampled through the unfiltered sampler
     treg_t rg; if (!treg_get(tid, &rg)) return 0;
     vtex *x = tex_res(&rg.t); if (!x) return 0;
     VkFormat f = x->fmt; if (rg.has_v && rg.v.set_format) { uint32_t vf = 0; uint8_t s2[4]; if (nvn_fmt_to_vk(rg.v.format, &vf, s2) && vf) f = (VkFormat)vf; }
-    return fmt_int_class(f) != 0;
+    return fmt_int_class(f) != 0 || fmt_no_linear(f);
 }
 static VkImageView tex_view_for(int tid, const spv_res *r, int storage) {
     if (g_tpool_n && tid >= g_tpool_n) return VK_NULL_HANDLE;

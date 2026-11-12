@@ -19,6 +19,8 @@ enum {   // VkFormat values (vulkan_core.h)
 static int g_x8d24, g_d24s8;   // the device's 24-bit depth formats work as depth targets (nvn_fmt_vk_depth24)
 void nvn_fmt_vk_depth24(int has_x8d24, int has_d24s8) { g_x8d24 = has_x8d24; g_d24s8 = has_d24s8; }
 static int g_bc = 1, g_etc, g_astc;
+static int g_r11f16;   // DM_VK_PROBE=f16target (a diagnostic, #215): R11G11B10F images made RGBA16F, their alpha read as 1 as the packed format's
+void nvn_fmt_vk_r11_f16(int on) { g_r11f16 = on; }
 void nvn_fmt_vk_bc(int has_bc) { g_bc = has_bc; }
 void nvn_fmt_vk_etc(int on, int astc) { g_etc = on; g_astc = astc; }
 // BC Vulkan format (131–146) → decode kind (bc_decode.h) and the format it decodes into
@@ -85,6 +87,7 @@ int nvn_fmt_to_vk(int f, uint32_t *vk, uint8_t swz[4]) {
     else if (f > 0 && f < (int)(sizeof T / sizeof *T)) e = T[f];
     if (f == 0x33 && g_x8d24) e = (ent){X8D24, 1, 0, 0};
     if (f == 0x35 && g_d24s8) e = (ent){D24S8, 1, 0, 0};
+    if (f == 0x3F && g_r11f16) e = (ent){RGBA16F, 2, 0, 1};
     if (vk) *vk = e.kind ? (!g_bc && bc_kind(e.vk) ? bc_plain(e.vk) : e.vk) : 0;
     if (swz) { swz[0] = e.rb ? NVN_SWZ_B : NVN_SWZ_R; swz[1] = NVN_SWZ_G; swz[2] = e.rb ? NVN_SWZ_R : NVN_SWZ_B; swz[3] = e.noalpha ? NVN_SWZ_ONE : NVN_SWZ_A; }
     return e.kind;
