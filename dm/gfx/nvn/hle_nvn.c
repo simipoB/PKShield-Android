@@ -1604,10 +1604,17 @@ static void vstep_tick(const win_t *o) {
     // The game's step follows real time (loader.c fps_patch, dm_step_table): the time since the last frame's start, in whole slots, up to 83.3 ms (the longest
     //   step the game's own table has), the part of a slot left over carried into the next frame and anything over 83.3 ms of a stall dropped; every entry
     //   of the table gets it, so whichever the game picks from its own measures, game time = real time. Presentation still holds frames k slots (above).
-    //   DM_GAME_STEP=fixed: only the interval-2 entry, with the hold's step, as before
-    { extern uint8_t *dm_step_table __attribute__((weak)); static int fixed = -1; static double acc, game_sum, real_sum;
-      if (fixed < 0) { const char *e = getenv("DM_GAME_STEP"); fixed = e && !strcmp(e, "fixed"); if (!fixed && &dm_step_table && dm_step_table) LOG("[nvn] game step: real time, whole slots up to 83.3 ms (DM_GAME_STEP=fixed: the hold's step)"); }
-      if (!fixed && &dm_step_table && dm_step_table) {
+    //   DM_GAME_STEP=realtime (the menu's Game speed → Real time). DM_GAME_STEP=fixed: only the interval-2 entry, with the hold's step.
+    //   Default, steady (the 60 FPS mod's own patch, Fl4sh's pchtxt for Sword / Shield 1.3.2): the interval-2 entry one constant step, 1 / fps (33.3 ms at the live 30),
+    //   the rest of the table the game's own. The world and its animations move by the same step every frame: the real-time step's 1-2-3 slot steps swung the
+    //   player's run between two poses (#190) and let fast objects skip collisions (#187). A phone that cannot hold the rate plays slower instead (as the mod does)
+    static int mode = -1;   // 0 steady, 1 fixed (the hold's step), 2 real time
+    if (mode < 0) { const char *e = getenv("DM_GAME_STEP"); mode = e && !strcmp(e, "fixed") ? 1 : e && !strcmp(e, "realtime") ? 2 : 0;
+        LOG("[nvn] game step: %s", mode == 2 ? "real time, whole slots up to 83.3 ms (DM_GAME_STEP=realtime)" : mode == 1 ? "the hold's step (DM_GAME_STEP=fixed)"
+                                                                                     : "steady, one step a frame as the 60 FPS mod (DM_GAME_STEP=realtime: real time)"); }
+    if (!mode) ns = (uint32_t)((1000000000ull * (live_fps() == 30 && dm_step_hz == 60 ? 2 : 1) + (uint64_t)dm_step_hz - 1) / (uint64_t)dm_step_hz);
+    { extern uint8_t *dm_step_table __attribute__((weak)); static double acc, game_sum, real_sum;
+      if (mode == 2 && &dm_step_table && dm_step_table) {
           int maxs = (int)(83333334.0 / v); if (maxs < 1) maxs = 1;
           acc += shown > 0 ? shown : (double)n;
           int g = (int)floor(acc + 0.5); if (g < 1) g = 1; if (g > maxs) g = maxs;
@@ -1618,7 +1625,7 @@ static void vstep_tick(const win_t *o) {
           for (int i = 0; i < 5; i++) __atomic_store_n((uint64_t *)(dm_step_table + 8 * i), gn, __ATOMIC_RELAXED);
           if (o->presents % 1800 == 0 && real_sum > 0) { LOG("[nvn] game step: game time %.3f of real time over the last %.0f slots", game_sum / real_sum, real_sum); game_sum = real_sum = 0; }
       } }
-    dm_guest_write_prepare(dm_step_word, 4); __atomic_store_n((uint32_t *)dm_step_word, ns, __ATOMIC_RELAXED);
+    { static uint32_t last; if (mode || ns != last) { dm_guest_write_prepare(dm_step_word, 4); __atomic_store_n((uint32_t *)dm_step_word, ns, __ATOMIC_RELAXED); last = ns; } }
     atomic_store(&g_fs_k, g_vs.k); held[g_vs.k]++;
     if (k0 && g_vs.k != k0 && nlog < 40) LOG("[nvn] frame step: hold %d → %d slots of %.2f ms at present %llu (cost %.2f slots, GPU %.2f)%s", k0, g_vs.k, v / 1e6,
                                              (unsigned long long)o->presents, cost, gpu, ++nlog == 40 ? "; further changes not logged" : "");

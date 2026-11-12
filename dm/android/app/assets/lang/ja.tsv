@@ -318,3 +318,8 @@ As on the Switch	Switchと同じ
 Faster camera: full speed with less of the stick	カメラが速くなります：少ない入力で最高速度に達します
 Auto: on for Mali GPUs (white screens and black patches)	自動：Mali GPUではオン（白い画面や黒い斑点の対策）
 Off: plain multiplies, as before v0.74	オフ：通常の乗算（v0.74より前と同じ）
+Game speed at 60 fps	60 fpsでのゲーム速度
+Steady	一定
+Steady: the same step every frame, as the 60 FPS mod (smooth animations; slower when the phone cannot hold the frame rate)	一定：毎フレーム同じ歩幅で進みます（60 FPS modと同じ。アニメーションが滑らか。フレームレートを保てないときは遅くなります）
+Real time	リアルタイム
+Real time: the game keeps its speed when frames run late (animations can jump between steps)	リアルタイム：フレームが遅れてもゲームの速度を保ちます（アニメーションが段階的に飛ぶことがあります）

@@ -318,3 +318,8 @@ As on the Switch	Como no Switch
 Faster camera: full speed with less of the stick	Câmera mais rápida: velocidade máxima com menos curso do analógico
 Auto: on for Mali GPUs (white screens and black patches)	Auto: ligado em GPUs Mali (telas brancas e manchas pretas)
 Off: plain multiplies, as before v0.74	Desligado: multiplicações normais, como antes da v0.74
+Game speed at 60 fps	Velocidade do jogo a 60 fps
+Steady	Constante
+Steady: the same step every frame, as the 60 FPS mod (smooth animations; slower when the phone cannot hold the frame rate)	Constante: o mesmo passo a cada quadro, como o mod de 60 FPS (animações suaves; mais lento quando o celular não mantém a taxa de quadros)
+Real time	Tempo real
+Real time: the game keeps its speed when frames run late (animations can jump between steps)	Tempo real: o jogo mantém a velocidade quando os quadros atrasam (as animações podem pular entre passos)
