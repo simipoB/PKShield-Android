@@ -733,7 +733,18 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     void *p = NULL; int reused = 0;
 #ifdef __linux__
     static int shadow_forced = -1; if (shadow_forced < 0) shadow_forced = getenv("DM_VK_POOL_SHADOW") && atoi(getenv("DM_VK_POOL_SHADOW"));
-    if (!g_host_import && !shadow_forced && !g_fdmap && !g_heapmap && pool_mem_take(n, &e.buf, &e.mem, &p)) { reused = 1; goto reuse; }
+    // A freed pool's memory waiting for reuse is checked as a new allocation is (below): its mapping must still be readable and writable over the whole pool. Turnip
+    //   (Adreno 660, #240) took such ranges back after 80 minutes of play, and the copy into one crashed (SIGSEGV in memcpy at a page-aligned address); one that is not
+    //   usable is kept aside, never freed, and a new allocation made
+    if (!g_host_import && !shadow_forced && !g_fdmap && !g_heapmap && pool_mem_take(n, &e.buf, &e.mem, &p)) {
+        int rw = 0; FILE *mf = fopen("/proc/self/maps", "r"); char ln[512];
+        while (mf && fgets(ln, sizeof ln, mf)) { unsigned long s0, e0; char pr[8] = "";
+            if (sscanf(ln, "%lx-%lx %7s", &s0, &e0, pr) == 3 && (uintptr_t)p >= s0 && (uintptr_t)p < e0) { rw = pr[0] == 'r' && pr[1] == 'w' && e0 >= (uintptr_t)p + n; break; } }
+        if (mf) fclose(mf);
+        if (rw) { reused = 1; goto reuse; }
+        RED_ONCE(20, "memory pool %p+%#llx: the freed GPU memory waiting for reuse at %p is no longer mapped writable: kept aside, a new allocation instead", mem, (unsigned long long)size, p);
+        e.buf = VK_NULL_HANDLE; e.mem = VK_NULL_HANDLE; p = NULL;
+    }
 #endif
     VkExternalMemoryBufferCreateInfo eb = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT };
     VkExternalMemoryBufferCreateInfo ebfd = { .sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, .handleTypes = g_fdtype };
