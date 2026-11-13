@@ -19,6 +19,7 @@ struct mavc {
     uint8_t sps[512], pps[512]; int nsps, npps, dirty;
     AMediaCodec *mc; int eos_sent, eos_seen;
     int ow, oh, ostride, oslice, ofmt, cl, ct, cr, cb;   // the output format: size, stride, slice height, colour format, crop
+    int qcom, qslice;   // a Qualcomm decoder (OMX.qcom / c2.qti), and the luma rows its semi-planar layout really has (read_format)
     pic q[QMAX]; int nq;
     uint8_t *au; size_t aucap;
     int red, rgba;
@@ -74,6 +75,11 @@ static int open_codec(mavc *a) {
     if (!a->nsps || !a->npps) { LOGR("AVC has no SPS / PPS, the movie shows black\n"); return 0; }
     a->mc = AMediaCodec_createDecoderByType("video/avc");
     if (!a->mc) { LOGR("the phone has no H.264 decoder, the movie shows black\n"); return 0; }
+    char *nm = NULL; a->qcom = 0;
+    if (AMediaCodec_getName(a->mc, &nm) == AMEDIA_OK && nm) {
+        a->qcom = !strncmp(nm, "OMX.qcom.", 9) || !strncmp(nm, "c2.qti.", 7);
+        fprintf(stderr, "[dm] [movie] AVC decoder %s\n", nm); AMediaCodec_releaseName(a->mc, nm);
+    }
     AMediaFormat *f = AMediaFormat_new(); uint8_t csd[2][516];
     for (int k = 0; k < 2; k++) { const uint8_t *s = k ? a->pps : a->sps; int n = k ? a->npps : a->nsps; csd[k][0] = csd[k][1] = csd[k][2] = 0; csd[k][3] = 1; memcpy(csd[k] + 4, s, (size_t)n);
         AMediaFormat_setBuffer(f, k ? "csd-1" : "csd-0", csd[k], (size_t)n + 4); }
@@ -94,13 +100,19 @@ static void read_format(mavc *a) {
     if (!AMediaFormat_getRect(f, "crop", &a->cl, &a->ct, &a->cr, &a->cb)) { a->cl = a->ct = 0; a->cr = a->ow - 1; a->cb = a->oh - 1; }
     if (a->ostride < a->ow) a->ostride = a->ow; if (a->oslice < a->oh) a->oslice = a->oh;
     AMediaFormat_delete(f);
-    fprintf(stderr, "[dm] [movie] AVC output %dx%d (crop %d,%d-%d,%d), stride %d, slice height %d, colour format %#x\n", a->ow, a->oh, a->cl, a->ct, a->cr, a->cb, a->ostride, a->oslice, a->ofmt);
+    // Qualcomm's decoders (Venus NV12) pad the luma plane to a multiple of 32 rows whatever the stride is, but often report the picture height (1080) as the slice
+    //   height, or none: the chroma plane, read 8 rows too early, showed as green and distorted lines. Their semi-planar output takes the 32-row alignment (keep_pic
+    //   checks that it fits the buffer; otherwise the reported slice height stays)
+    a->qslice = a->qcom && a->ofmt != 19 ? (a->oslice + 31) & ~31 : a->oslice;
+    fprintf(stderr, "[dm] [movie] AVC output %dx%d (crop %d,%d-%d,%d), stride %d, slice height %d%s, colour format %#x\n", a->ow, a->oh, a->cl, a->ct, a->cr, a->cb,
+            a->ostride, a->oslice, a->qslice != a->oslice ? " (Qualcomm: chroma after the luma rows aligned to 32)" : "", a->ofmt);
 }
 // one decoded buffer → an NV12 picture at the crop's size, into the queue
 static void keep_pic(mavc *a, const uint8_t *buf, size_t size, int64_t pts) {
     if (a->ofmt != 21 && a->ofmt != 19 && a->ofmt != 0x7F420888) { LOGR("AVC output colour format %#x not handled, the movie shows black\n", a->ofmt); return; }
     int w = a->cr - a->cl + 1, h = a->cb - a->ct + 1; if (w <= 0 || h <= 0) return;
-    size_t ysz = (size_t)a->ostride * a->oslice;
+    size_t ysz = (size_t)a->ostride * a->oslice, qsz = (size_t)a->ostride * a->qslice;
+    if (qsz != ysz && size >= qsz + qsz / 2 - (size_t)a->ostride / 2) ysz = qsz;   // (Qualcomm: read_format)
     if (size < ysz + ysz / 2 - (size_t)a->ostride / 2) { LOGR("AVC output buffer too small (%zu for %dx%d stride %d)\n", size, a->ow, a->oh, a->ostride); return; }
     if (a->nq == QMAX) { LOGR("AVC picture queue full, dropping the oldest\n"); free(a->q[0].nv12); memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]); }
     uint8_t *o = malloc((size_t)w * h * 3 / 2 + w); if (!o) return;
