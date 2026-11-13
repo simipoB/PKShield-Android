@@ -188,11 +188,19 @@ static uint64_t key_bit(int32_t kc) {
     static int init; if (!init || atomic_exchange(&g_padset_dirty, 0)) { init = 1; pad_map_init(); }   // (the input thread only)
     return kc > 0 && kc < KC_MAX ? g_kc_map[kc] : 0;
 }
-static int32_t axis(float v) { if (fabsf(v) < 0.12f) return 0; float s = (fabsf(v) - 0.12f) / 0.88f; if (s > 1) s = 1; return (int32_t)(copysignf(s, v) * DM_STICK_MAX); }
+// A controller stick: the dead zone on its tilt, not on each axis. Each axis on its own (as before) shortened every diagonal: a full push at 45 degrees came out at
+//   0.94 of full on a perfect stick and about 0.85 on a round-gate one, whose axes stop near 0.65 there (Arceus-Native-Android#16: no running on diagonals with a
+//   GameSir X5 Lite). Under 12 % of the tilt nothing; from 92 % full (few sticks reach their rim at every angle); the direction kept
+static void stick(float x, float y, int32_t *ox, int32_t *oy) {
+    float m = sqrtf(x * x + y * y); if (!(m >= 0.12f)) { *ox = *oy = 0; return; }
+    float s = (m - 0.12f) / (0.92f - 0.12f); if (s > 1) s = 1;
+    *ox = (int32_t)(x / m * s * DM_STICK_MAX); *oy = (int32_t)(y / m * s * DM_STICK_MAX);
+}
 // Touch: the on-screen controls (touch_ui.c)
 void touch_ui_init(ANativeActivity *a);
 void touch_ui_event(const AInputEvent *e, float w, float h, uint64_t *btn, int32_t s[4]);
 void touch_ui_hide(void);
+void touch_ui_release(void);   // every finger let go (focus lost: a lift Android may never send)
 void touch_ui_pad(int connected);
 #include <jni.h>
 JNIEXPORT void JNICALL Java_com_nxnative_GameActivity_nativePadConnected(JNIEnv *env, jclass c, jboolean on) { (void)env; (void)c; touch_ui_pad(on); }   // GameActivity.java
@@ -281,8 +289,8 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
         int k = pad_slot(AInputEvent_getDeviceId(e));
         float rx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Z, 0), ry = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RZ, 0);
         if (rx == 0 && ry == 0) { rx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RX, 0); ry = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RY, 0); }   // right stick as RX / RY on some drivers
-        g_pads[k].lx = axis(AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0)); g_pads[k].ly = axis(-AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0));
-        g_pads[k].rx = axis(rx); g_pads[k].ry = axis(-ry);
+        stick(AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0), -AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0), &g_pads[k].lx, &g_pads[k].ly);
+        stick(rx, -ry, &g_pads[k].rx, &g_pads[k].ry);
         float hx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0), hy = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0);
         float lt = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0), rt = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0);
         if (lt == 0) lt = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0); if (rt == 0) rt = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0);
@@ -968,8 +976,8 @@ static void on_cmd(struct android_app *app, int32_t cmd) {
         case APP_CMD_GAINED_FOCUS: immersive(); if (g_started) { dm_focus_set(1); dm_audio_suspend(0); } break;
         // In the background (recents, home, another app) the game keeps running with its sound, as a Switch game does under the HOME menu with a suspend-free
         //   setting: it is not told it lost focus (it would pause itself), and frames are simply not shown while there is no window. DM_BACKGROUND=off pauses it as before
-        case APP_CMD_LOST_FOCUS: if (g_started && !bg_play()) { dm_focus_set(2); } break;
-        case APP_CMD_PAUSE: if (g_started && nvn_vk_heap_alive) nvn_vk_heap_alive(); if (g_started) { if (!bg_play()) { dm_focus_set(3); dm_audio_suspend(1); } if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;
+        case APP_CMD_LOST_FOCUS: touch_ui_release(); if (g_started && !bg_play()) { dm_focus_set(2); } break;
+        case APP_CMD_PAUSE: touch_ui_release(); if (g_started && nvn_vk_heap_alive) nvn_vk_heap_alive(); if (g_started) { if (!bg_play()) { dm_focus_set(3); dm_audio_suspend(1); } if (nvn_vk_cache_save) nvn_vk_cache_save(); } break;
         case APP_CMD_RESUME: if (g_started) { dm_focus_set(1); dm_audio_suspend(0); swapin_start(); } break;
     }
 }
