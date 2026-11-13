@@ -94,11 +94,24 @@ public final class SetupActivity extends Activity {
     // a game set up (its folder has the ready file and the shader pack): the dual launcher's list
     private boolean isReady(String id) {
         File d = id.equalsIgnoreCase(GameSettings.games(this).get(0)[0]) ? GameSettings.root(this) : new File(GameSettings.root(this), id);
-        return new File(d, "ready").exists() && new File(d, "shaders.pak").exists();
+        return new File(d, "ready").exists() && new File(d, "shaders.pak").exists() && packComplete(d);
+    }
+    // A shader pack that holds the game's shaders, not only the first part of them: v0.69-v0.76's fast setup made a pack of the ~2,400 shaders that reach the overworld
+    //   and translated the rest in the background, which on many phones never reached the pack (Galar-Native-Android #173 #181 #195 #209 #214 #224 #225: 2,349-2,410
+    //   of ~38,500, the ground, buildings and whole areas undrawn, crashes on the first outdoor load). Such a pack counts as not set up, so Set up runs the full
+    //   translation again (the shaders already translated are kept). The count is the pack's header (NXSP, u32 at offset 8) against the setup's shader_map.tsv lines
+    static boolean packComplete(File d) {
+        File pak = new File(d, "shaders.pak"), map = new File(d, "shader_map.tsv");
+        int have = -1, want = 0;
+        try (java.io.RandomAccessFile f = new java.io.RandomAccessFile(pak, "r")) { byte[] h = new byte[12]; f.readFully(h);
+            if (h[0] == 'N' && h[1] == 'X' && h[2] == 'S' && h[3] == 'P') have = (h[8] & 0xff) | (h[9] & 0xff) << 8 | (h[10] & 0xff) << 16 | (h[11] & 0xff) << 24; } catch (IOException e) { return true; }
+        if (have < 0) return true;   // (not a pack this check knows: left to the engine)
+        try (BufferedReader r = new BufferedReader(new FileReader(map))) { String l; while ((l = r.readLine()) != null) if (!l.isEmpty() && l.charAt(0) != '#') want++; } catch (IOException e) { return have >= 10000; }
+        return want == 0 || have >= want * 9L / 10;
     }
     private List<String> readyGames() { List<String> r = new ArrayList<>(); for (String[] g : GameSettings.games(this)) if (isReady(g[0])) r.add(g[0]); return r; }
     private File keysDir() { File d = new File(getFilesDir(), "keys"); d.mkdirs(); return d; }
-    private boolean setUp() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists(); }
+    private boolean setUp() { return new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists() && packComplete(gameDir()); }
     // set up for this app version: the shader pack's translation chain (the ready file) is the one the engine was built for (assets/shader_chain, build_apk.py);
     // an update that changes the chain otherwise starts the game with a pack the engine refuses (every 3D shader "SPIR-V missing")
     private boolean ready() { return setUp() && chainCurrent(); }
@@ -129,6 +142,8 @@ public final class SetupActivity extends Activity {
         else if (!running && !asked && GameSettings.games(this).size() > 1 && !readyGames().isEmpty()) { launcher(official); return; }
         else if (!running && !asked) { List<String> ready = readyGames(); if (ready.size() == 1) GameSettings.choose(this, ready.get(0)); else if (ready.size() > 1) asked = true; }
         cleanLeftovers();   // (before the game may start straight away: a stopped setup's leftovers, in the background)
+        if (new File(gameDir(), "ready").exists() && new File(gameDir(), "shaders.pak").exists() && !packComplete(gameDir()))   // (a fast setup's pack: packComplete)
+            Toast.makeText(this, T.t(this, "The last setup translated only part of the game's shaders, so parts of the game were not drawn. Tap Set up once more: it finishes them (the ones already done are kept)."), Toast.LENGTH_LONG).show();
         if (ready()) setupShortcut();
         if (ready() && !asked && !running && notices()) asked = true;   // the last run crashed starting its graphics: this screen offers a driver instead of starting the game
         if (ready() && !asked && !running) { gameIcon(); if (!pendingWork(gameDir())) { startGame(); return; } }
@@ -373,6 +388,8 @@ public final class SetupActivity extends Activity {
                     boolean drop = n.equals("extract") || n.equals("shader_pkg") || n.equals("cas") || n.equals("aoc") || n.startsWith("dmsh_")
                         || (!keepXlate && (n.equals("vk") || n.equals("shader_cache")));
                     if (drop && !running) { freed += treeSize(f); deleteTree(f); } }
+                // what v0.69-v0.76's fast setup left for its background part (rest.json, rest/): nothing reads it any more, and a full Set up translates those shaders
+                for (String n : new String[] { "rest.json", "rest", "game_running" }) { File f = new File(game, n); if (f.exists() && !running) { freed += treeSize(f); deleteTree(f); } }
                 File vk = new File(game, "vk");
                 if (vk.isDirectory() && new File(game, "shaders.pak").isFile() && new File(game, "ready").isFile() && !running) { freed += treeSize(vk); deleteTree(vk); }
             }
