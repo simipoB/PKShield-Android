@@ -165,6 +165,7 @@ static int g_bcgpu;   // the BC layer is on (mtl_init): a mask of the paths that
 static int g_fctl_ext, g_drvprops_ext;   // a Vulkan 1.1 driver with VK_KHR_shader_float_controls / VK_KHR_driver_properties (enabled at device creation)
 static int g_fctl;    // every shader asks for SignedZeroInfNanPreserve (spv_float_controls; mtl_init decides)
 static int g_probe;   // DM_VK_PROBE (spv_probe's mask), 0 off
+static int g_msan;    // Arm's own Mali driver: spv_mali_sanitize on fragment shaders and storage-usage render targets (no AFBC); DM_VK_MALI_SANITIZE=0 off, =1 on anywhere
 static int g_arm_rel, g_arm_p;   // Arm's own Mali driver: its release, r<rel>p<p> (driverVersion is VK_MAKE_VERSION(rel, p, 0): 0xb001000 = r44p1); 0 for any other driver
 static int g_arm_beta;           // ... a beta build of it (driverInfo "v1.r49p1-03bet0": the G925's)
 static int g_clampzero; static _Atomic int g_clampzero_n;   // shaders get spv_clamp_zero (Arm erratum 3779215: mtl_init decides); how many it changed
@@ -492,6 +493,10 @@ void mtl_init(void) {
     { const char *e = getenv("DM_VK_FMZ"); g_fmz = e && *e ? atoi(e) > 0 : g_props.vendorID == 0x13B5 && !g_arm_rel;
       if (g_fmz) VLOG("shaders: a multiply by 0 gives 0 even for infinity and NaN, as on the Switch's GPU (FMZ, every multiply%s)", e && *e ? ": DM_VK_FMZ" : ": on by default for PanVK"); }
     // DM_VK_PROBE=samples,inputs,div (a diagnostic, #215): those values clamped in every fragment shader (spv_probe), one kind a run, to find which carries the white
+    // Arm's own driver (#215): fragment outputs sanitised before the store (NaN, infinities, values outside [-65504, 65024] to 0, then capped at 65024), RelaxedPrecision
+    //   dropped, and colour render targets made with storage usage where the format allows it (the driver then keeps them out of AFBC). DM_VK_MALI_SANITIZE=0 / 1
+    { const char *e = getenv("DM_VK_MALI_SANITIZE"); g_msan = e && *e ? atoi(e) > 0 : g_props.vendorID == 0x13B5 && g_arm_rel;
+      if (g_msan) VLOG("shaders: Mali output sanitising, fragment shaders zero NaN / infinity / out-of-range values and cap at 65024 before the store; RelaxedPrecision dropped; render targets with storage usage (no AFBC)%s", e && *e ? " (DM_VK_MALI_SANITIZE)" : " (Arm's driver default)"); }
     { const char *e = getenv("DM_VK_PROBE"); if (e && *e) { g_probe = (strstr(e, "samples") ? PROBE_SAMPLES : 0) | (strstr(e, "inputs") ? PROBE_INPUTS : 0) | (strstr(e, "div") ? PROBE_DIV : 0) | (strstr(e, "output") ? PROBE_OUTPUT : 0) | (strstr(e, "mul") ? PROBE_MUL : 0) | (strstr(e, "add") ? PROBE_ADD : 0) | (strstr(e, "fma") ? PROBE_FMA : 0)
                                                     | (strstr(e, "nanfix") ? NAN_FIX_OUT : 0) | (strstr(e, "nantex") ? NAN_FIX_TEX : 0)
                                                     | (strstr(e, "clampout") ? CLAMP_OUT : 0) | (strstr(e, "clampevery") ? PROBE_MUL | PROBE_ADD | PROBE_FMA : 0);
@@ -1686,6 +1691,7 @@ static vtex *tex_new(const tex_t *t, int pkg) {
         if (ff & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) ci.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     }
     if ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (g_msan && (ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && ci.samples == VK_SAMPLE_COUNT_1_BIT) ci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;   // (no AFBC on Mali)
     if (fmt_compressed(t->d.format) && !nvn_fmt_vk_decode(t->d.format)) ci.flags |= VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT;
     // Mutable formats switch off Adreno's framebuffer compression (UBWC) unless the formats are listed: depth / stencil images are not mutable at all (their views keep
     // the format), colour images that can be render targets list their format and its sRGB / linear twin (the reinterpretations NVN views make of render targets)
@@ -2446,6 +2452,7 @@ static vshader *shader_load(const uint8_t key[8], int st) {
     if (g_clampzero) { size_t nw; uint32_t *c2 = spv_clamp_zero(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; atomic_fetch_add(&g_clampzero_n, 1); } }   // (Arm erratum 3779215)
     if (g_nanmm == 2) { size_t nw; uint32_t *c2 = spv_nan_select(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // (after spv_clamp_zero: its zero is the operand selected)
     if (g_fmz) { size_t nw; uint32_t *c2 = spv_fmz(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; atomic_fetch_add(&g_fmz_n, 1); } }
+    if (g_msan && spst == 4) { size_t nw; uint32_t *c2 = spv_mali_sanitize(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // (Arm's Mali driver)
     if (g_probe && spst == 4) { size_t nw; uint32_t *c2 = spv_probe(code, ns / 4, &nw, (unsigned)g_probe); if (c2) { free(code); code = c2; ns = nw * 4; } }   // (DM_VK_PROBE, fragment shaders)
     if (spst == 0 || spst == 2) { size_t nw; uint32_t *c2 = spv_init_outputs(code, ns / 4, &nw); if (c2) { free(code); code = c2; ns = nw * 4; } }   // outputs start at (0, 0, 0, 1) as on the hardware
     if (st == 0 && glcode) {

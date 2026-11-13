@@ -29,7 +29,8 @@ uint32_t *spv_drop_inputs(const uint32_t *code, size_t words, uint64_t drop, siz
 // shaders that write only some components (or none) of an output the next stage reads (dmsh_build.py vs_init / vs_pad on the Metal side). NULL if nothing to do
 uint32_t *spv_init_outputs(const uint32_t *code, size_t words, size_t *out_words);
 enum { PROBE_SAMPLES = 1, PROBE_INPUTS = 2, PROBE_DIV = 4, PROBE_OUTPUT = 8, PROBE_MUL = 16, PROBE_ADD = 32, PROBE_FMA = 64, NAN_FIX_OUT = 128, NAN_FIX_TEX = 256, CLAMP_OUT = 512 };
-uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsigned mask);   // diagnostic clamps in fragment shaders (DM_VK_PROBE)
+uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsigned mask);
+uint32_t *spv_mali_sanitize(const uint32_t *code, size_t words, size_t *out_words);   // Arm's Mali driver: fragment outputs sanitised before the store, RelaxedPrecision dropped   // diagnostic clamps in fragment shaders (DM_VK_PROBE)
 uint32_t *spv_swap_out01(const uint32_t *code, size_t words, size_t *out_words);   // fragment outputs at locations 0 and 1 swapped (dual-source blending emulated)
 // Drops capabilities / extensions / execution modes a shader declares but never uses (Float64, fragment shader interlock), in place; returns the new length in words
 size_t spv_strip_unused(uint32_t *code, size_t words);

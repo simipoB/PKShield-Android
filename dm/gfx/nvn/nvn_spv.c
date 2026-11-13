@@ -865,3 +865,72 @@ none:
     #undef KIND
     #undef SCRUB
 }
+
+// Arm's own Mali driver (#215, on by default there; DM_VK_MALI_SANITIZE=0 off): in a fragment shader, every float value stored to an output is sanitised before the
+// store, and RelaxedPrecision decorations are dropped. The sanitising, per component: ok = (v >= -65504) && (v <= 65024) with ordered compares (false for NaN and
+// for +-infinity), v = ok ? v : 0, then FMin(v, 65024): R11G11B10F's largest finite value. The lower bound keeps negative values (normals in signed targets).
+// NULL when nothing changed
+uint32_t *spv_mali_sanitize(const uint32_t *code, size_t words, size_t *out_words) {
+    enum { OpExtInstImport = 11, OpExtInst = 12, OpTypeBool = 20, OpTypeFloat = 22, OpTypeVector = 23, OpTypePointer = 32, OpConstant = 43, OpFunction = 54,
+           OpVariable = 59, OpStore = 62, OpDecorate = 71, OpMemberDecorate = 72, OpLogicalAnd = 167, OpSelect = 169, OpFOrdLessThanEqual = 188,
+           OpFOrdGreaterThanEqual = 190, FMin = 37, Output = 3, RelaxedPrecision = 0 };
+    if (words < 5 || code[0] != 0x07230203u) return NULL;
+    uint32_t bound = code[3], glsl = 0, tf32 = 0, tbool = 0, bvec[5] = {0}; size_t first_fn = 0, hits = 0, relaxed = 0;
+    if (!bound || bound > (1u << 22)) return NULL;
+    uint8_t *width = calloc(bound, 1); uint32_t *outptr = calloc(bound, 4), *outty = calloc(bound, 4);
+    if (!width || !outptr || !outty) { free(width); free(outptr); free(outty); return NULL; }
+    #define ISSTORE(x, n, op) ((op) == OpStore && (n) >= 3 && (x)[1] < bound && outty[(x)[1]] && outty[(x)[1]] < bound && width[outty[(x)[1]]])
+    #define ISRELAXED(x, n, op) (((op) == OpDecorate && (n) == 3 && (x)[2] == RelaxedPrecision) || ((op) == OpMemberDecorate && (n) == 4 && (x)[3] == RelaxedPrecision))
+    for (int pass = 0; pass < 2; pass++)
+    for (size_t i = 5; i < words;) { uint32_t n = code[i] >> 16, op = code[i] & 0xffff; if (!n || i + n > words) goto none; const uint32_t *x = code + i;
+        if (!pass) {
+            if (op == OpExtInstImport && n >= 3 && !strncmp((const char *)(x + 2), "GLSL.std.450", 4 * (n - 2))) glsl = x[1];
+            else if (op == OpTypeFloat && n >= 3 && x[2] == 32 && x[1] < bound) { if (!tf32) tf32 = x[1]; if (x[1] == tf32) width[x[1]] = 1; }
+            else if (op == OpTypeBool && n == 2) tbool = x[1];
+            else if (op == OpTypeVector && n == 4 && x[1] < bound && tf32 && x[2] == tf32 && x[3] >= 2 && x[3] <= 4) width[x[1]] = (uint8_t)x[3];
+            else if (op == OpTypeVector && n == 4 && tbool && x[2] == tbool && x[3] >= 2 && x[3] <= 4) bvec[x[3]] = x[1];
+            else if (op == OpFunction && !first_fn) first_fn = i;
+            if (op == OpTypePointer && n == 4 && x[1] < bound && x[2] == Output) outptr[x[1]] = x[3];
+            if (op == OpVariable && n >= 4 && x[2] < bound && x[1] < bound && outptr[x[1]]) outty[x[2]] = outptr[x[1]];
+            if ((op == 65 || op == 66) && n >= 4 && x[2] < bound && x[3] < bound && outty[x[3]] && x[1] < bound && outptr[x[1]]) outty[x[2]] = outptr[x[1]];
+        } else if (ISSTORE(x, n, op)) hits++;
+        else if (ISRELAXED(x, n, op)) relaxed++;
+        i += n; }
+    if ((!hits || !glsl || !tf32 || !first_fn) && !relaxed) goto none;
+    if (hits && (!glsl || !tf32 || !first_fn)) hits = 0;
+    {
+        uint32_t *o = malloc(4 * (words + hits * 64 + 64)); if (!o) goto none;
+        uint32_t next = bound, zero = 0, lo = 0, hi = 0; size_t w = 0;
+        for (size_t i = 0; i < words;) {
+            size_t n = i < 5 ? 5 : code[i] >> 16; const uint32_t *x = code + i; uint32_t op = i < 5 ? 0 : x[0] & 0xffff;
+            if (i == first_fn && hits) {   // the bool types the compares need (only those the module lacks: a type may be declared once), the three constants
+                if (!tbool) { tbool = next++; o[w++] = 2u << 16 | OpTypeBool; o[w++] = tbool; }
+                for (int k = 2; k <= 4; k++) if (!bvec[k]) { bvec[k] = next++; o[w++] = 4u << 16 | OpTypeVector; o[w++] = bvec[k]; o[w++] = tbool; o[w++] = (uint32_t)k; }
+                zero = next++; lo = next++; hi = next++;
+                o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = zero; o[w++] = 0;
+                o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = lo; o[w++] = 0xc77fe000u;   // -65504
+                o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = hi; o[w++] = 0x477e0000u;   // 65024
+            }
+            if (i >= 5 && ISRELAXED(x, n, op)) { i += n; continue; }   // dropped
+            if (i >= 5 && hits && ISSTORE(x, n, op)) {
+                uint32_t ty = outty[x[1]], wd = width[ty], bt = wd > 1 ? bvec[wd] : tbool, z = zero, l = lo, h = hi, v = x[2];
+                if (wd > 1) { z = next++; l = next++; h = next++;
+                    o[w++] = (3u + wd) << 16 | 80; o[w++] = ty; o[w++] = z; for (uint32_t q = 0; q < wd; q++) o[w++] = zero;
+                    o[w++] = (3u + wd) << 16 | 80; o[w++] = ty; o[w++] = l; for (uint32_t q = 0; q < wd; q++) o[w++] = lo;
+                    o[w++] = (3u + wd) << 16 | 80; o[w++] = ty; o[w++] = h; for (uint32_t q = 0; q < wd; q++) o[w++] = hi; }
+                uint32_t g = next++, le = next++, ok = next++, sel = next++, m = next++;
+                o[w++] = 5u << 16 | OpFOrdGreaterThanEqual; o[w++] = bt; o[w++] = g; o[w++] = v; o[w++] = l;
+                o[w++] = 5u << 16 | OpFOrdLessThanEqual; o[w++] = bt; o[w++] = le; o[w++] = v; o[w++] = h;
+                o[w++] = 5u << 16 | OpLogicalAnd; o[w++] = bt; o[w++] = ok; o[w++] = g; o[w++] = le;
+                o[w++] = 6u << 16 | OpSelect; o[w++] = ty; o[w++] = sel; o[w++] = ok; o[w++] = v; o[w++] = z;
+                o[w++] = 7u << 16 | OpExtInst; o[w++] = ty; o[w++] = m; o[w++] = glsl; o[w++] = FMin; o[w++] = sel; o[w++] = h;
+                memcpy(o + w, x, 4 * n); o[w + 2] = m; w += n;
+            } else { memcpy(o + w, x, 4 * n); w += n; }
+            i += n; }
+        free(width); free(outptr); free(outty); o[3] = next; *out_words = w; return o;
+    }
+none:
+    free(width); free(outptr); free(outty); return NULL;
+    #undef ISSTORE
+    #undef ISRELAXED
+}
