@@ -324,3 +324,12 @@ Divisions	Divisions
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Textures : chaque lecture de texture est limitée à une plage raisonnable. Si le blanc disparaît, dites-le-nous : une texture est mal lue
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entrées : chaque valeur transmise par le shader de sommets est limitée. Si le blanc disparaît, dites-le-nous
 Divisions: every division is limited. If the white goes away, tell us	Divisions : chaque division est limitée. Si le blanc disparaît, dites-le-nous
+Low: 3D at about 600p, lighter	Faible : 3D à environ 600p, plus léger
+Lowest: 3D at 960x540, coolest	Minimum : 3D en 960x540, le plus frais
+Locked for now	Verrouillé pour l'instant
+Off for every phone until the game holds a solid frame rate without it. It comes back after that.	Désactivé sur tous les téléphones jusqu'à ce que le jeu tienne une fréquence d'images stable sans cela. Il reviendra ensuite.
+Save folder	Dossier de sauvegarde
+App folder	Dossier de l'app
+App folder: Android/data, as before	Dossier de l'app : Android/data, comme avant
+Documents	Documents
+Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save, pour les outils de synchronisation comme Syncthing. Votre sauvegarde y est copiée au prochain démarrage ; ce qui s'y trouvait déjà est gardé en copie de secours. Nécessite l'accès à tous les fichiers

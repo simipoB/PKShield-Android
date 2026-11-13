@@ -209,6 +209,11 @@ public final class GameMenu {
         });
         c.addView(sb);
     }
+    // a feature locked off for now (android_main.c): its title and why, in place of its choices
+    private static void lockedNote(Activity a, String title) {
+        LinearLayout c = card(a); titleRow(a, c, title, t(a, "Locked for now"));
+        c.addView(text(a, t(a, "Off for every phone until the game holds a solid frame rate without it. It comes back after that."), 13, SUB, false));
+    }
     private static void note(Activity a, String s) { TextView n = text(a, s, 13, SUB, false); n.setPadding(dp(a, 6), dp(a, 2), dp(a, 6), dp(a, 10)); body.addView(n); }
     private static TextView button(Activity a, LinearLayout parent, String label, boolean primary, Runnable r) {
         TextView b = text(a, label, 14, primary ? Color.WHITE : TEXT, true); b.setGravity(Gravity.CENTER); b.setPadding(dp(a, 16), dp(a, 9), dp(a, 16), dp(a, 9));
@@ -226,6 +231,8 @@ public final class GameMenu {
         GameSettings.set(a, key, value);
         boolean now;
         if (a instanceof GameActivity && (key.equals("DM_FRAMEGEN") || key.equals("DM_FPS_TARGET"))) ((GameActivity) a).displayMode();   // (the screen's rate follows the pictures shown)
+        if (key.equals("DM_SAVE_SHARED") && value.equals("1") && android.os.Build.VERSION.SDK_INT >= 30 && !android.os.Environment.isExternalStorageManager())   // (save_place needs it)
+            try { a.startActivity(new Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, android.net.Uri.parse("package:" + a.getPackageName()))); } catch (Exception e) { }
         if (key.equals("DM_PERF_OVERLAY")) { if (a instanceof GameActivity) ((GameActivity) a).perfOverlay(value.equals("on")); now = true; }
         else if (key.equals("DM_SUSTAINED")) { if (a instanceof GameActivity) ((GameActivity) a).sustained(); now = true; }
         else if (key.equals("DM_LANG")) now = true;
@@ -251,6 +258,7 @@ public final class GameMenu {
         String[][] fgc = { { "", t(a, "Off"), "" },
             { "on", t(a, "On"), t(a, "On: a picture is made between each two of the game's frames, so 30 fps moves like 60. Needs a fast GPU; your input shows about 17 ms later") },
             { "lsfg", "Lossless Scaling", t(a, "Lossless Scaling: the in-between picture made by your own copy of Lossless Scaling's frame generation (sharper motion, needs a faster GPU)") } };
+        if (!GameSettings.experimentsUnlocked(a)) { lockedNote(a, t(a, "Frame generation (experimental)")); } else {   // (locked off for now: android_main.c)
         choice(a, "DM_FRAMEGEN", t(a, "Frame generation (experimental)"), GameSettings.hasLsfg(a) ? fgc : java.util.Arrays.copyOf(fgc, 2));
         if (GameSettings.hasLsfg(a))   // Lossless Scaling's pictures a game frame (nvn_vk.c lsfg_mult); Auto: as many as the display's rate divides evenly
             choice(a, "DM_LSFG_MULT", t(a, "Lossless Scaling pictures"), new String[][] {
@@ -261,7 +269,7 @@ public final class GameMenu {
         if (!GameSettings.hasLsfg(a)) {   // (the player's own copy: Lossless Scaling is a paid app, nothing of it comes with this one)
             note(a, t(a, "Own Lossless Scaling? Import its Lossless.dll (in the program's folder) to use its frame generation here."));
             LinearLayout lr = new LinearLayout(a); body.addView(lr);
-            button(a, lr, t(a, "Import Lossless.dll"), false, () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_LSFG)); }
+            button(a, lr, t(a, "Import Lossless.dll"), false, () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_LSFG)); } }
         // HD textures: the player's own retexture mods (Mods), on Auto only on phones with the memory for them (GameSettings.profile, android_main.c mod_root);
         //   offered once such a mod is in the mods folder
         if (GameSettings.hasTexturePack(a)) {
@@ -280,9 +288,9 @@ public final class GameMenu {
         heading(a, t(a, "Speed"));
         String g = t(a, p[2].equals("high") ? "High" : p[2].equals("auto") ? "Adaptive" : "Low");
         String[][] gfx = { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", g) }, { "high", t(a, "High"), t(a, "High: TV mode, 1080p, full effects") },
-            { "low", t(a, "Low"), t(a, "Low: handheld mode, 720p, lighter") }, { "auto", t(a, "Adaptive"), t(a, "Adaptive: High, a lighter picture while the phone is hot or slow") },
+            { "low", t(a, "Low"), t(a, GameSettings.paldea(a) ? "Low: handheld mode, 720p, lighter" : "Low: 3D at about 600p, lighter") }, { "auto", t(a, "Adaptive"), t(a, "Adaptive: High, a lighter picture while the phone is hot or slow") },
             // Lowest: handheld mode with the game's 3D render scale capped (Pokémon Sword / Shield: the engine's hle_resscale.c; Scarlet / Violet have no such scale)
-            { "lowest", t(a, "Lowest"), t(a, "Lowest: handheld mode, 3D at 960x540, coolest") } };
+            { "lowest", t(a, "Lowest"), t(a, GameSettings.paldea(a) ? "Lowest: handheld mode, 3D at 960x540, coolest" : "Lowest: 3D at 960x540, coolest") } };
         choice(a, "DM_GRAPHICS", t(a, "Graphics"), GameSettings.paldea(a) ? java.util.Arrays.copyOf(gfx, 4) : gfx);
         if (GameSettings.has60(a)) choice(a, "DM_FPS_TARGET", t(a, "Frame rate"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s fps", p[5]) },
             { "30", "30 fps", t(a, "30 fps, as the game is made") }, { "60", "60 fps", GameSettings.paldea(a) ? t(a, "Up to 60 fps: faster where the phone can, game speed stays right (Fl4sh's Dynamic FPS mod)")
@@ -439,11 +447,22 @@ public final class GameMenu {
     }
 
     // ---------- saves, online, system ----------
+    // the folder the save is in now (android_main.c save_place: save_place.txt says "shared" while it is in Documents/Galar Native/<title id>/save)
+    static File activeSave(Activity a, File files) {
+        try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(new File(files, "save_place.txt")))) {
+            String l = r.readLine();
+            if (l != null && l.trim().equals("shared")) return new File("/storage/emulated/0/Documents/Galar Native/" + GameSettings.game(a)[0].toUpperCase(java.util.Locale.ROOT) + "/save");
+        } catch (java.io.IOException e) { }
+        return new File(files, "save");
+    }
     private static void saves(Activity a) {
         heading(a, t(a, "Saves"));
         action(a, t(a, "Export save data"), t(a, "Save in the game first: the export is the last save the game wrote."),
                () -> pick(a, Intent.ACTION_CREATE_DOCUMENT, GameSettings.game(a)[2] + "-save.zip", REQ_EXPORT));
         action(a, t(a, "Import save data"), t(a, "Your current save is kept as a backup."), () -> pick(a, Intent.ACTION_OPEN_DOCUMENT, null, REQ_IMPORT));
+        // where the save lives (android_main.c save_place, Arceus-Native-Android#8): Documents for a sync tool; copied over at the next start, the earlier save there kept as a backup
+        choice(a, "DM_SAVE_SHARED", t(a, "Save folder"), new String[][] { { "", t(a, "App folder"), t(a, "App folder: Android/data, as before") },
+            { "1", t(a, "Documents"), t(a, "Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access", GameSettings.game(a)[0].toUpperCase(java.util.Locale.ROOT)) } });
     }
     // Online room (hle_relay.c, dm/server): local play with players elsewhere through a room server someone hosts (their own Railway service, or any PC); everyone enters the
     // same server address and room code. Applies from the next start; mods stay off for local play, as on Wi-Fi
@@ -513,6 +532,7 @@ public final class GameMenu {
         // the replay on its own thread (hle_nvn.c DM_NVN_ASYNC): the game's thread hands each frame's graphics work over instead of translating it itself (about a quarter
         //   of a frame on a slow CPU, #99). Off by default until players have run it on many phones
         heading(a, t(a, "Performance"));
+        if (!GameSettings.experimentsUnlocked(a)) lockedNote(a, t(a, "Faster rendering (experimental)")); else
         choice(a, "DM_NVN_ASYNC", t(a, "Faster rendering (experimental)"), new String[][] { { "", t(a, "Off"), "" },
             { "1", t(a, "On"), t(a, "On: the graphics work runs on its own thread, next to the game's. Not tested on every phone yet: if the game misbehaves, turn it off and tell us on GitHub") } });
         // a frame capture for a bug report (nvn_vk.c, Frame capture): the engine reads capture.req (frames to wait, so the menu can be closed first) and writes the ZIP
@@ -596,7 +616,7 @@ public final class GameMenu {
                     msg = why == null ? t(a, "Lossless Scaling imported. Choose it under Frame generation.") : t(a, "Could not import Lossless Scaling: %s", why); }
                 else if (req == REQ_EXPORT) {
                     try (OutputStream o = a.getContentResolver().openOutputStream(u, "wt"); ZipOutputStream z = new ZipOutputStream(o)) {
-                        File save = new File(files, "save").getCanonicalFile(); int n = zipTree(save, save, z); msg = t(a, "Exported %d save file(s).", n); }
+                        File save = activeSave(a, files).getCanonicalFile(); int n = zipTree(save, save, z); msg = t(a, "Exported %d save file(s).", n); }
                 } else if (req == REQ_IMPORT) {
                     try (InputStream in = a.getContentResolver().openInputStream(u)) {
                         int n = SaveImport.install(in, new File(files, "save_import"), displayName(a, u));

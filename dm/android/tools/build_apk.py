@@ -116,7 +116,7 @@ def main():
                   android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|smallestScreenSize|density">
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
-        <activity android:name="com.nxnative.GameActivity" android:exported="false" android:screenOrientation="sensorLandscape" android:launchMode="singleTask"
+        <activity android:name="com.nxnative.GameActivity" android:exported="false" android:screenOrientation="sensorLandscape" android:launchMode="singleTask" android:hardwareAccelerated="false"
                   android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
                   android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|smallestScreenSize|density">
             <meta-data android:name="android.app.lib_name" android:value="nxnative" />

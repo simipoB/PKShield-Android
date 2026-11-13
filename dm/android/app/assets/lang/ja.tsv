@@ -324,3 +324,12 @@ Divisions	除算
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	テクスチャ：テクスチャの読み取り値をすべて妥当な範囲に制限します。白が消えたら教えてください（テクスチャの読み取りが誤っています）
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	入力：頂点シェーダーから渡される値をすべて制限します。白が消えたら教えてください
 Divisions: every division is limited. If the white goes away, tell us	除算：すべての除算結果を制限します。白が消えたら教えてください
+Low: 3D at about 600p, lighter	低：3Dを約600pで描画、軽め
+Lowest: 3D at 960x540, coolest	最低：3Dを960x540で描画、最も発熱が少ない
+Locked for now	現在はロック中
+Off for every phone until the game holds a solid frame rate without it. It comes back after that.	ゲームがこれなしで安定したフレームレートを保てるようになるまで、すべての端末でオフです。その後で戻ってきます。
+Save folder	セーブの保存先
+App folder	アプリのフォルダー
+App folder: Android/data, as before	アプリのフォルダー：これまでどおり Android/data
+Documents	ドキュメント
+Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save（Syncthingなどの同期ツール用）。次回の起動時にセーブがそこへコピーされ、既にあったものはバックアップとして残ります。すべてのファイルへのアクセスが必要です
