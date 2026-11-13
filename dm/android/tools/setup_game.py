@@ -401,12 +401,6 @@ def main():
 
         step(5)
         reflect(vk, built)
-        if first:   # a shader of the first batch that did not translate (a translator killed for memory: a Galaxy A55's pack had 2,349 of 2,395) is tried again first in
-            #   the background; it used to be left out of both, so it never came and what it draws stayed missing (the Wild Area's ground, #173)
-            failed = sorted(k for k in first if not (os.path.isfile(os.path.join(vk, k + '.spv')) and os.path.isfile(os.path.join(vk, k + '.vkr'))))
-            if failed:
-                log.write(f'fast setup: {len(failed)} of the first {len(first)} shaders did not translate: first in the background\n')
-                fs = set(failed); later = failed + [k for k in later if k not in fs]
         # the pack compressed (zlib per shader, the engine inflates each as it loads it: nvn_vk.c pak_blob): about 3.4 times smaller on the phone (Violet 2.9 GB → 0.85 GB, Sword 2.3 → 0.7)
         raw = os.path.join(a.work, 'shaders.raw.pak')
         run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, raw])
@@ -618,14 +612,6 @@ def rest(a):
     built = os.path.join(cache, 'b-' + chain)
     dst = os.path.join(a.out, 'rest', 'b-' + chain); os.makedirs(dst, exist_ok=True)
     keys, total = list(st['keys']), max(1, int(st.get('total', len(st['keys']))))
-    # a setup made before this check (v0.69, v0.70) left out the first-batch shaders that did not translate: the ones in neither the pack, the background's
-    #   folder nor its list go first now (#173); and the list follows shader_next.tsv's order, so an earlier setup gets the Wild Area first too
-    try:
-        have = {k.hex() for k in pak_keys(pak)[0]} | {f[:-4] for f in os.listdir(dst) if f.endswith('.spv')} | set(keys)
-        lost = sorted(k for k in rows if k not in have)
-        if lost: log.write(f'rest: {len(lost)} shaders in neither the pack nor the list (the first batch\'s failures): added first\n'); total += len(lost)
-        keys = lost + next_first(keys)
-    except (OSError, RuntimeError, struct.error) as e: log.write(f'rest: the pack could not be checked ({e}): the list as it was\n')
     log.write(f'== {time.strftime("%H:%M:%S")} fast setup, the rest: {len(keys)} of {total} shaders to go{" (beside the game)" if a.yield_ else ""}\n')
     print(f'STEP 1/2 translate {len(keys)} shaders', flush=True); print(f'PROGRESS {total - len(keys)}/{total}', flush=True)
     gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
