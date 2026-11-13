@@ -716,27 +716,8 @@ public final class SetupActivity extends Activity {
                 importedGames.clear();
                 importDir().delete(); games.clear();
                 if (gameIcon() != null) pinShortcut();
-                startRest();
             }
         });
-    }
-    // Fast setup (setup_game.py --rest): the shaders the setup left for later are translated from here in the background at full speed; Play works meanwhile (the run
-    //   then makes way for the game by itself: game_running) and GameActivity carries on with whatever is left beside the game
-    private void startRest() {
-        if (!new File(gameDir(), "rest.json").exists()) return;
-        new Thread(() -> {
-            try {
-                Process p = startTool(this, Arrays.asList("--rest"), workers()); if (p == null) return;
-                BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream())); String l;
-                while ((l = r.readLine()) != null) {
-                    if (!l.startsWith("PROGRESS ")) continue;
-                    String[] f = l.substring(9).trim().split("/"); long done = Long.parseLong(f[0]), all = Math.max(1, Long.parseLong(f[1])); int pct = (int) Math.min(100, done * 100 / all);
-                    runOnUiThread(() -> { if (!running) status.setText(T.t(this, "Ready: tap Play.") + "\n" + T.t(this, "The rest of the shaders are being translated in the background (%s%%): until they are done, a few things may not show the first time they appear.", pct)); });
-                }
-                p.waitFor();
-                runOnUiThread(() -> { if (!running && !new File(gameDir(), "rest.json").exists()) status.setText(T.t(this, "Ready: tap Play.")); });
-            } catch (Exception e) { }
-        }, "rest of the shaders").start();
     }
     private int workers() { return workerCap > 0 ? workerCap : setupWorkers(); }
     // shaders the game saved on an earlier run (nvn_capture/<key>.code) and no setup has translated yet (captures_done lists those already done)

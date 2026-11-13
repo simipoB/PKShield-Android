@@ -2330,29 +2330,18 @@ void mtl_shader_seen(const uint8_t key[8], const void *control, const void *code
 // looks at gen, reads the new rows, and the programs that lacked a shader are built again, so the effect draws a few seconds after it first appears, not next start
 static nvn_hmap g_livemap = {.klen = 8};   // key → stage + 1, under g_shmu
 static volatile int g_live_gen;
-static char g_live_dir[1024], g_rest_dir[1024];
-// The fast setup's rest (setup_game.py --rest): the shaders the setup left for later, translated in batches into DM_REST_SPV/b-<chain>, read the same way (a gen file,
-// map.tsv rows, <key>.spv / .vkr), from the start on: the folder outlives a restart until every shader is in the pack
-static int live_dir_check(const char *dir, char seen[64]) {   // under g_shmu: the folder's new rows into g_livemap; 1 when there were new ones
-    char p[1200], g[64] = ""; snprintf(p, sizeof p, "%s/gen", dir); FILE *f = fopen(p, "r"); if (!f) return 0;
-    if (!fgets(g, sizeof g, f)) g[0] = 0; fclose(f);
-    if (!g[0] || !strcmp(g, seen)) return 0;
-    snprintf(seen, 64, "%s", g);
-    snprintf(p, sizeof p, "%s/map.tsv", dir); if (!(f = fopen(p, "r"))) return 0;
-    int n = shmap_parse(f, &g_livemap); fclose(f);
-    VLOG("%s: %d translated so far (%s)", dir == g_rest_dir ? "shaders translated after the setup" : "live shaders", n, dir);
-    return 1;
-}
+static char g_live_dir[1024];
 static void live_check(void) {   // under g_shmu
-    static double next; static char seen[64], rseen[64];
-    if (!*g_live_dir) { const char *d = getenv("DM_LIVE_SPV"); if (d && *d) snprintf(g_live_dir, sizeof g_live_dir, "%s", d); }
-    if (!*g_rest_dir) { const char *d = getenv("DM_REST_SPV"); if (d && *d) snprintf(g_rest_dir, sizeof g_rest_dir, "%s/b-%s", d, DMSH_CHAIN); }
-    if (!*g_live_dir && !*g_rest_dir) return;
+    static double next; static char seen[64];
+    if (!*g_live_dir) { const char *d = getenv("DM_LIVE_SPV"); if (!d || !*d) return; snprintf(g_live_dir, sizeof g_live_dir, "%s", d); }
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); double t = ts.tv_sec + ts.tv_nsec / 1e9; if (t < next) return; next = t + 2;
-    int changed = 0;
-    if (*g_live_dir) changed |= live_dir_check(g_live_dir, seen);
-    if (*g_rest_dir) changed |= live_dir_check(g_rest_dir, rseen);
-    if (changed) g_live_gen++;
+    char p[1200], g[64] = ""; snprintf(p, sizeof p, "%s/gen", g_live_dir); FILE *f = fopen(p, "r"); if (!f) return;
+    if (!fgets(g, sizeof g, f)) g[0] = 0; fclose(f);
+    if (!g[0] || !strcmp(g, seen)) return;
+    snprintf(seen, sizeof seen, "%s", g);
+    snprintf(p, sizeof p, "%s/map.tsv", g_live_dir); if (!(f = fopen(p, "r"))) return;
+    int n = shmap_parse(f, &g_livemap); fclose(f); g_live_gen++;
+    VLOG("live shaders: %d translated while the game runs (%s)", n, g_live_dir);
 }
 static vshader *shader_load(const uint8_t key[8], int st) {
     char hex[17]; for (int i = 0; i < 8; i++) sprintf(hex + 2 * i, "%02x", key[i]);
@@ -2362,17 +2351,13 @@ static vshader *shader_load(const uint8_t key[8], int st) {
         snprintf(p, sizeof p, "%s/%s.spv", g_spv_dir, hex); code = file_read(p, &ns);
         snprintf(p, sizeof p, "%s/%s.vkr", g_spv_dir, hex); meta = file_read(p, &nr);
         if (st == 0) { snprintf(p, sizeof p, "%s/%s.gl.spv", g_spv_dir, hex); glcode = file_read(p, &ngl); }
-        for (int d = 0; d < 2 && !code; d++) {   // (translated while the game runs, or after a fast setup: live_check)
-            const char *dir = d ? g_rest_dir : g_live_dir; if (!*dir) continue;
-            snprintf(p, sizeof p, "%s/%s.spv", dir, hex); code = file_read(p, &ns); if (!code) continue;
-            free(meta); snprintf(p, sizeof p, "%s/%s.vkr", dir, hex); meta = file_read(p, &nr);
-            if (st == 0) { free(glcode); glcode = NULL; snprintf(p, sizeof p, "%s/%s.gl.spv", dir, hex); glcode = file_read(p, &ngl); }
+        if (!code && *g_live_dir) {   // (translated while the game runs: live_check)
+            snprintf(p, sizeof p, "%s/%s.spv", g_live_dir, hex); code = file_read(p, &ns); free(meta); meta = NULL;
+            snprintf(p, sizeof p, "%s/%s.vkr", g_live_dir, hex); meta = file_read(p, &nr);
+            if (st == 0) { free(glcode); glcode = NULL; snprintf(p, sizeof p, "%s/%s.gl.spv", g_live_dir, hex); glcode = file_read(p, &ngl); }
         }
     }
-    if (!code || !meta) {   // (once a shader: after a fast setup many wait for their batch, and each new batch tries the programs that lack one again)
-        static nvn_hmap said = {.klen = 8};
-        if (!nvn_hm_get(&said, key)) { nvn_hm_put(&said, key, (void *)1); VLOG("[RED] shader %s: %s missing%s", hex, !code ? "SPIR-V" : "reflection (.vkr)", *g_rest_dir ? " (or still being translated after the setup)" : ""); }
-        free(code); free(meta); free(glcode); return NULL; }
+    if (!code || !meta) { VLOG("[RED] shader %s: %s missing", hex, !code ? "SPIR-V" : "reflection (.vkr)"); free(code); free(meta); free(glcode); return NULL; }
     meta = realloc(meta, nr + 1); meta[nr] = 0;
     vshader *s = calloc(1, sizeof *s); strcpy(s->key, hex); s->stage = st; s->shift = stage_shift(st);
     int spst; uint32_t ls[3];

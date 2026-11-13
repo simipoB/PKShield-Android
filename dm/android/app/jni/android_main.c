@@ -769,13 +769,6 @@ static void host_start(void) {
     { const char *r = g_app->activity->externalDataPath; snprintf(p, sizeof p, "%s/lsfg", r ? r : g_files); setenv("DM_LSFG_DIR", p, 0); }
     // (the player's Lossless Scaling shaders, converted from their Lossless.dll by the app's import, one folder for every game: DM_FRAMEGEN=lsfg, nvn_lsfg.h)
     // shaders translated while the game last ran (nvn_vk.c live_check): the pack has them now (setup_game.py merged them first), so the folder starts empty
-    // the fast setup's shaders translated after it (setup_game.py --rest): kept across starts while rest.json says some are still to come, cleared once they are all in the pack
-    SETP("DM_REST_SPV", "rest");
-    { char rj[1200]; struct stat rs; snprintf(rj, sizeof rj, "%s/rest.json", g_files);
-      if (stat(rj, &rs)) { char rd[1200]; snprintf(rd, sizeof rd, "%s/rest", g_files); DIR *d1 = opendir(rd); struct dirent *e1;
-          if (d1) { while ((e1 = readdir(d1))) if (e1->d_name[0] != '.') { char sd[1500]; snprintf(sd, sizeof sd, "%s/%s", rd, e1->d_name); DIR *d2 = opendir(sd); struct dirent *e2;
-                        if (d2) { while ((e2 = readdir(d2))) if (e2->d_name[0] != '.') { char f2[1800]; snprintf(f2, sizeof f2, "%s/%s", sd, e2->d_name); unlink(f2); } closedir(d2); } rmdir(sd); }
-                    closedir(d1); rmdir(rd); } } }
     SETP("DM_LIVE_SPV", "live");
     { DIR *ld = opendir(getenv("DM_LIVE_SPV")); struct dirent *e; char f[1200];
       if (ld) { while ((e = readdir(ld))) if (e->d_name[0] != '.') { snprintf(f, sizeof f, "%s/%s", getenv("DM_LIVE_SPV"), e->d_name); unlink(f); } closedir(ld); } }   // textures converted for a GPU without BC, kept for the next start (tex_cache.h)
