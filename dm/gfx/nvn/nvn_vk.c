@@ -4355,6 +4355,136 @@ static void swap_destroy_now(void) {
 }
 static int scale_setup(VkFormat fmt, int which);
 static int framegen_mode(void);
+// ---------- Software present: when the window's swapchain cannot be made ----------
+// With a custom driver loaded through libadrenotools, the swapchain is made by Android's Vulkan loader from the window's own buffers (gralloc), which the driver must
+// import. Mali kernels that refuse that import (a Mali-G52 on kernel 4.14 and a Mali-G615 with Mesa PanVK, #215 #227) failed every swapchain with
+// VK_ERROR_INVALID_EXTERNAL_HANDLE: the game ran, the screen stayed black. Then the swapchain is ours: images in the GPU's memory, each presented frame copied to a
+// buffer the CPU reads and written into the window with ANativeWindow_lock, which imports nothing. It costs a copy of the frame a present (8 MB at 1080p).
+// DM_VK_SOFT_PRESENT=0: never (the black screen as before), =1: from the start, on any GPU (for testing)
+#ifdef __ANDROID__
+enum { SW_N = 3 };
+static struct { int on; ANativeWindow *win; VkImage img[SW_N]; vmalloc_t mem[SW_N]; VkBuffer buf[SW_N]; vmalloc_t bmem[SW_N]; uint8_t *map[SW_N]; int coherent[SW_N];
+                VkCommandPool pool; VkCommandBuffer cb[SW_N]; VkFence fence[SW_N]; uint32_t w, h, next; int bgra, pending; uint64_t presents; } SW = { .pending = -1 };
+static int sw_mode(void) { static int v = -2; if (v == -2) { const char *e = getenv("DM_VK_SOFT_PRESENT"); v = e && *e ? atoi(e) : -1; } return v; }   // -1 auto, 0 never, 1 always
+static void sw_free(void) {
+    SW.pending = -1;
+    for (int i = 0; i < SW_N; i++) {
+        if (SW.img[i]) { vkDestroyImage(g_dev, SW.img[i], NULL); vk_free(SW.mem[i]); SW.img[i] = VK_NULL_HANDLE; }
+        if (SW.buf[i]) { vkDestroyBuffer(g_dev, SW.buf[i], NULL); vk_free(SW.bmem[i]); SW.buf[i] = VK_NULL_HANDLE; SW.map[i] = NULL; }
+    }
+}
+static VKAPI_ATTR VkResult VKAPI_CALL sw_create(VkDevice d, const VkSwapchainCreateInfoKHR *ci, const VkAllocationCallbacks *al, VkSwapchainKHR *out) {
+    (void)d; (void)al; sw_free();
+    SW.w = ci->imageExtent.width; SW.h = ci->imageExtent.height; SW.next = 0;
+    SW.bgra = ci->imageFormat == VK_FORMAT_B8G8R8A8_UNORM || ci->imageFormat == VK_FORMAT_B8G8R8A8_SRGB;
+    if (ANativeWindow_setBuffersGeometry(SW.win, (int32_t)SW.w, (int32_t)SW.h, WINDOW_FORMAT_RGBA_8888)) { VLOG("[RED] window: software present: the window refused %ux%u RGBA", SW.w, SW.h); return VK_ERROR_INITIALIZATION_FAILED; }
+    if (!SW.pool) {
+        VkCommandPoolCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, .queueFamilyIndex = g_qf };
+        if (vkCreateCommandPool(g_dev, &pci, NULL, &SW.pool)) return VK_ERROR_INITIALIZATION_FAILED;
+        VkCommandBufferAllocateInfo cai = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, .commandPool = SW.pool, .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, .commandBufferCount = SW_N };
+        vkAllocateCommandBuffers(g_dev, &cai, SW.cb);
+        for (int i = 0; i < SW_N; i++) { VkFenceCreateInfo fci = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .flags = VK_FENCE_CREATE_SIGNALED_BIT }; vkCreateFence(g_dev, &fci, NULL, &SW.fence[i]); }
+    }
+    for (int i = 0; i < SW_N; i++) {
+        VkImageCreateInfo ii = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = ci->imageFormat, .extent = { SW.w, SW.h, 1 }, .mipLevels = 1, .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = ci->imageUsage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED };
+        if (vkCreateImage(g_dev, &ii, NULL, &SW.img[i])) { sw_free(); return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+        VkMemoryRequirements rq; vkGetImageMemoryRequirements(g_dev, SW.img[i], &rq); SW.mem[i] = vk_alloc(rq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+        if (!SW.mem[i].b || vkBindImageMemory(g_dev, SW.img[i], SW.mem[i].b->mem, SW.mem[i].off)) { vkDestroyImage(g_dev, SW.img[i], NULL); SW.img[i] = VK_NULL_HANDLE; sw_free(); return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+        VkBufferCreateInfo bi = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = (VkDeviceSize)SW.w * SW.h * 4, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
+        if (vkCreateBuffer(g_dev, &bi, NULL, &SW.buf[i])) { sw_free(); return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+        vkGetBufferMemoryRequirements(g_dev, SW.buf[i], &rq);
+        SW.bmem[i] = vk_alloc(rq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 1); SW.coherent[i] = 0;   // (cached: the CPU reads it all)
+        if (!SW.bmem[i].b) { SW.bmem[i] = vk_alloc(rq, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 1); SW.coherent[i] = 1; }
+        if (!SW.bmem[i].b || !SW.bmem[i].b->map || vkBindBufferMemory(g_dev, SW.buf[i], SW.bmem[i].b->mem, SW.bmem[i].off)) { vkDestroyBuffer(g_dev, SW.buf[i], NULL); SW.buf[i] = VK_NULL_HANDLE; sw_free(); return VK_ERROR_OUT_OF_DEVICE_MEMORY; }
+        SW.map[i] = (uint8_t *)SW.bmem[i].b->map + SW.bmem[i].off;
+    }
+    *out = (VkSwapchainKHR)(uintptr_t)0x50f75c;   // (ours: no driver sees it)
+    VLOG("window: software present: %u images %ux%u of ours, each frame copied into the window by the CPU (%s readback memory)", SW_N, SW.w, SW.h, SW.coherent[0] ? "uncached" : "cached");
+    return VK_SUCCESS;
+}
+static VKAPI_ATTR void VKAPI_CALL sw_destroy(VkDevice d, VkSwapchainKHR sc, const VkAllocationCallbacks *al) { (void)d; (void)sc; (void)al; sw_free(); }
+static VKAPI_ATTR VkResult VKAPI_CALL sw_images(VkDevice d, VkSwapchainKHR sc, uint32_t *n, VkImage *imgs) {
+    (void)d; (void)sc; if (!imgs) { *n = SW_N; return VK_SUCCESS; }
+    uint32_t k = *n < SW_N ? *n : SW_N; for (uint32_t i = 0; i < k; i++) imgs[i] = SW.img[i]; *n = k; return k < SW_N ? VK_INCOMPLETE : VK_SUCCESS;
+}
+static VKAPI_ATTR VkResult VKAPI_CALL sw_acquire(VkDevice d, VkSwapchainKHR sc, uint64_t timeout, VkSemaphore sem, VkFence fence, uint32_t *idx) {
+    (void)d; (void)sc; (void)timeout;
+    uint32_t i = SW.next; SW.next = (SW.next + 1) % SW_N; *idx = i;
+    vkWaitForFences(g_dev, 1, &SW.fence[i], VK_TRUE, 2000000000ull);   // (its last copy is read already: sw_present waited for it)
+    if (sem || fence) {   // the image is ready at once: signal what the caller waits on
+        VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .signalSemaphoreCount = sem ? 1u : 0u, .pSignalSemaphores = &sem };
+        pthread_mutex_lock(&g_qmu); VkResult r = vkQueueSubmit(g_q, 1, &si, fence); pthread_mutex_unlock(&g_qmu);
+        if (r) return r;
+    }
+    return VK_SUCCESS;
+}
+// Image i's copy (fence signalled) into the window
+static VkResult sw_post(uint32_t i) {
+    if (vkWaitForFences(g_dev, 1, &SW.fence[i], VK_TRUE, 1000000000ull)) return VK_TIMEOUT;
+    if (!SW.coherent[i]) { VkMappedMemoryRange mr = { .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, .memory = SW.bmem[i].b->mem, .offset = 0, .size = VK_WHOLE_SIZE };
+                           if (vkInvalidateMappedMemoryRanges) vkInvalidateMappedMemoryRanges(g_dev, 1, &mr); }
+    ANativeWindow_Buffer wb;
+    if (ANativeWindow_lock(SW.win, &wb, NULL)) { RED_ONCE(124, "window: software present: the window cannot be locked for the CPU"); return VK_ERROR_SURFACE_LOST_KHR; }
+    uint32_t h = (uint32_t)wb.height < SW.h ? (uint32_t)wb.height : SW.h, w = (uint32_t)wb.width < SW.w ? (uint32_t)wb.width : SW.w;
+    if (wb.format == WINDOW_FORMAT_RGBA_8888 || wb.format == WINDOW_FORMAT_RGBX_8888) {
+        for (uint32_t y = 0; y < h; y++) {
+            uint8_t *dst = (uint8_t *)wb.bits + (size_t)y * (size_t)wb.stride * 4; const uint8_t *src = SW.map[i] + (size_t)y * SW.w * 4;
+            if (!SW.bgra) memcpy(dst, src, (size_t)w * 4);
+            else for (uint32_t x = 0; x < w; x++) { dst[4 * x] = src[4 * x + 2]; dst[4 * x + 1] = src[4 * x + 1]; dst[4 * x + 2] = src[4 * x]; dst[4 * x + 3] = src[4 * x + 3]; }
+        }
+    } else RED_ONCE(124, "window: software present: the window's format is %d, not RGBA: frames not copied", wb.format);
+    ANativeWindow_unlockAndPost(SW.win);
+    if (!SW.presents++) VLOG("window: software present: first frame on screen");
+    return VK_SUCCESS;
+}
+// (called with g_qmu held, as every vkQueuePresentKHR here is). The copy of this frame is started and the previous frame, whose copy is done, is posted:
+//   the GPU and the CPU work side by side, one frame later on screen
+static VKAPI_ATTR VkResult VKAPI_CALL sw_present(VkQueue q, const VkPresentInfoKHR *pi) {
+    VkResult res = VK_SUCCESS;
+    for (uint32_t s = 0; s < pi->swapchainCount; s++) {
+        uint32_t i = pi->pImageIndices[s]; if (i >= SW_N || !SW.img[i]) { res = VK_ERROR_OUT_OF_DATE_KHR; continue; }
+        VkCommandBuffer cb = SW.cb[i]; vkResetCommandBuffer(cb, 0);
+        VkCommandBufferBeginInfo bi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT };
+        vkBeginCommandBuffer(cb, &bi);
+        VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = SW.img[i], .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+        VkBufferImageCopy bc = { 0, 0, 0, { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }, { 0, 0, 0 }, { SW.w, SW.h, 1 } };
+        vkCmdCopyImageToBuffer(cb, SW.img[i], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, SW.buf[i], 1, &bc);
+        ib.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; ib.dstAccessMask = 0; ib.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; ib.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        VkBufferMemoryBarrier bb = { .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .buffer = SW.buf[i], .size = VK_WHOLE_SIZE };
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 1, &bb, 1, &ib);
+        vkEndCommandBuffer(cb);
+        VkPipelineStageFlags ws[8]; for (int k = 0; k < 8; k++) ws[k] = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .waitSemaphoreCount = s == 0 ? (pi->waitSemaphoreCount < 8 ? pi->waitSemaphoreCount : 8) : 0, .pWaitSemaphores = pi->pWaitSemaphores,
+            .pWaitDstStageMask = ws, .commandBufferCount = 1, .pCommandBuffers = &cb };
+        vkResetFences(g_dev, 1, &SW.fence[i]);
+        VkResult r = vkQueueSubmit(q, 1, &si, SW.fence[i]);
+        if (r == VK_SUCCESS) { if (SW.pending >= 0 && (uint32_t)SW.pending != i) { VkResult rp = sw_post((uint32_t)SW.pending); if (rp) res = rp; } SW.pending = (int)i; }
+        else res = r;
+        if (pi->pResults) pi->pResults[s] = res;
+    }
+    return res;
+}
+// The software swapchain's size: at most DM_VK_SOFT_PRESENT_H lines (default 720), the width in proportion; the compositor scales the window's buffer to the screen,
+//   so the frame copied each present stays small (a 3120x1440 screen: 18 MB a frame, 14 fps on a Galaxy S25+)
+static void sw_fit(VkSwapchainCreateInfoKHR *ci) {
+    const char *e = getenv("DM_VK_SOFT_PRESENT_H"); uint32_t mh = e && atoi(e) >= 240 ? (uint32_t)atoi(e) : 720;
+    uint32_t w = ci->imageExtent.width, h = ci->imageExtent.height;
+    if (h > mh) { w = (uint32_t)((uint64_t)w * mh / h) & ~1u; h = mh; }
+    ci->imageExtent = (VkExtent2D){ w, h }; W.ext = W.lext = ci->imageExtent; W.rot = 0; ci->preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+}
+// The swapchain functions become ours (the surface goes first: a surface holds the window for the GPU, and the CPU cannot lock it then)
+static void sw_install(void *win) {
+    if (W.surf) { vkDestroySurfaceKHR(g_inst, W.surf, NULL); W.surf = VK_NULL_HANDLE; }
+    SW.win = (ANativeWindow *)win; SW.on = 1;
+    vkCreateSwapchainKHR = sw_create; vkDestroySwapchainKHR = sw_destroy; vkGetSwapchainImagesKHR = sw_images; vkAcquireNextImageKHR = sw_acquire; vkQueuePresentKHR = sw_present;
+    p_refresh = NULL; p_past = NULL; g_dtiming = 0;   // (display timing would name our swapchain to the driver)
+}
+#endif
 static int swap_ensure_now(void *win, int srgb) {
     swap_destroy_now();
 #ifdef __ANDROID__
@@ -4396,6 +4526,9 @@ static int swap_ensure_now(void *win, int srgb) {
     if (caps.maxImageCount && ci.minImageCount > caps.maxImageCount) ci.minImageCount = caps.maxImageCount;
     if (!(caps.supportedCompositeAlpha & ci.compositeAlpha))
         for (uint32_t b = 1; b <= VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR; b <<= 1) if (caps.supportedCompositeAlpha & b) { ci.compositeAlpha = (VkCompositeAlphaFlagBitsKHR)b; break; }
+#ifdef __ANDROID__
+    if (SW.on || sw_mode() == 1) { sw_install(win); sw_fit(&ci); }   // (again for a new window: its surface was only for the size queries above)
+#endif
     VkResult r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
     // A swapchain the driver refuses (older Mali drivers among them) left the game with no picture at all. Again with the plainest one every driver must make: the fewest
     //   images, FIFO, no pre-rotation; a window another surface still holds, or a lost surface, gets a new surface first. Each step logged
@@ -4415,6 +4548,12 @@ static int swap_ensure_now(void *win, int srgb) {
         if (W.rot) { W.rot = 0; W.ext = W.lext; ci.imageExtent = W.ext; }
         r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
     }
+#ifdef __ANDROID__
+    if (r && !SW.on && sw_mode() != 0) {   // the window cannot get a swapchain from the driver: ours instead (software present)
+        VLOG("[RED] window: swapchain creation failed (%d): the frames go to the window through the CPU instead (DM_VK_SOFT_PRESENT=0 turns that off)", r);
+        sw_install(win); sw_fit(&ci); ci.surface = VK_NULL_HANDLE; r = vkCreateSwapchainKHR(g_dev, &ci, NULL, &W.sc);
+    }
+#endif
     if (r) { RED_ONCE(58, "swapchain creation failed: %d", r); return 0; }
     { uint32_t made = 0; vkGetSwapchainImagesKHR(g_dev, W.sc, &made, NULL);   // (every image the driver made: it may make more than minImageCount asked for)
       W.n = made < SC_MAX ? made : SC_MAX; vkGetSwapchainImagesKHR(g_dev, W.sc, &W.n, W.img);
