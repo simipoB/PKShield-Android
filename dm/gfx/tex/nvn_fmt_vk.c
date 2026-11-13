@@ -79,12 +79,19 @@ int nvn_fmt_vk_decode(int f) {
     return T[f].kind ? bc_kind(T[f].vk) : 0;
 }
 int nvn_fmt_vk_transcode(int f) { int k = nvn_fmt_vk_decode(f); return g_etc && k && bc_transcode_vk(k, 0, g_astc) ? k : 0; }
+// R11G11B10F as RGBA16F (nvn_fmt_vk_b10_as_rgba16; DM_VK_B10_AS_RGBA16, a Mali test): Arm's driver turns a lit-scene pass in R11G11B10F white (the format's maximum
+//   where a NaN or overflow lands), and the Persona 5 Royal Android port (Brandon04Gonzalez/p5r-android, MIT) stopped green / purple flickering on Mali by drawing
+//   R11G11B10F targets as RGBA16F. Images and their views change together (both come through here); the texel grows from 4 to 8 bytes
+static int g_b10_rgba16;
+void nvn_fmt_vk_b10_as_rgba16(int on) { g_b10_rgba16 = on; }
+int nvn_fmt_vk_b10_swapped(int f) { return f == 0x3F && g_b10_rgba16; }
 int nvn_fmt_to_vk(int f, uint32_t *vk, uint8_t swz[4]) {
     ent e = {0, 0, 0, 0};
     if (f >= 0x79 && f <= 0x94) { int k = (f - 0x79) % 14; e = (ent){(uint16_t)(ASTC0 + 2 * k + (f >= 0x87)), 1, 0, 0}; }
     else if (f > 0 && f < (int)(sizeof T / sizeof *T)) e = T[f];
     if (f == 0x33 && g_x8d24) e = (ent){X8D24, 1, 0, 0};
     if (f == 0x35 && g_d24s8) e = (ent){D24S8, 1, 0, 0};
+    if (f == 0x3F && g_b10_rgba16) e = (ent){RGBA16F, 2, 1, 0};   // (a substitute; no alpha: R11G11B10F has none)
     if (vk) *vk = e.kind ? (!g_bc && bc_kind(e.vk) ? bc_plain(e.vk) : e.vk) : 0;
     if (swz) { swz[0] = e.rb ? NVN_SWZ_B : NVN_SWZ_R; swz[1] = NVN_SWZ_G; swz[2] = e.rb ? NVN_SWZ_R : NVN_SWZ_B; swz[3] = e.noalpha ? NVN_SWZ_ONE : NVN_SWZ_A; }
     return e.kind;

@@ -261,6 +261,22 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         int rc = 0;
         if (mhi > mlo) rc = num == 0x2C ? mprotect((void *)mlo, mhi - mlo, PROT_READ | PROT_WRITE)
                                         : (madvise((void *)mlo, mhi - mlo, unmap_advice()), mprotect((void *)mlo, mhi - mlo, PROT_NONE));
+#ifdef __linux__
+        // A map over a range that holds a mapping of the GPU driver's (a pool's pages moved there: nvn_vk.c mtl_pool_add, the mremap route) failed as a whole with EACCES on
+        //   PowerVR (Arceus-Native-Android #22: "SVC 0x2c mprotect ... errno=13" at start). Mapping by mapping instead: the reserved (no access) pieces become writable, a
+        //   mapping that is readable and writable already is left as it is, and only a piece that still refuses stops the game
+        if (rc && num == 0x2C && errno == EACCES) {
+            int bad = 0; FILE *mf = fopen("/proc/self/maps", "r"); char ln[512];
+            while (mf && fgets(ln, sizeof ln, mf)) { unsigned long s0, e0; char pr[8] = "";
+                if (sscanf(ln, "%lx-%lx %7s", &s0, &e0, pr) != 3 || e0 <= mlo || s0 >= mhi) continue;
+                uintptr_t s1 = s0 > mlo ? s0 : mlo, e1 = e0 < mhi ? e0 : mhi;
+                if (pr[0] == 'r' && pr[1] == 'w') continue;
+                if (mprotect((void *)s1, e1 - s1, PROT_READ | PROT_WRITE)) bad = 1; }
+            if (mf) fclose(mf);
+            static int said; if (!said++) LOG("[mem] MapPhysicalMemory %p+%#zx: the range holds a mapping that refuses a change (errno 13): made writable piece by piece%s", a, size, bad ? ", one piece still refused" : "");
+            if (!bad) rc = 0; else errno = EACCES;
+        }
+#endif
         if (rc) { if (DM_GAME_MEM_MAP_LIMIT && num == 0x2C) pthread_mutex_unlock(&g_phys_mu); die("SVC %#x mprotect %p+%#zx errno=%d", num, a, size, errno); }
         if (g_flag.svc) LOG("%sPhysicalMemory %p+%#zx", num == 0x2C ? "Map" : "Unmap", a, size);
         // how deep the alias region is used (one line per 256 MB crossed): for sizing the reservation and alias region (iOS caps a single reservation at 6 GB)

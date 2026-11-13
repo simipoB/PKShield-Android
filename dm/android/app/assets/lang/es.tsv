@@ -338,3 +338,5 @@ FSR 1.0: AMD's upscaler, edge-aware enlarging then sharpening	FSR 1.0: el escala
 Faster rendering	Renderizado más rápido
 Auto: on for Adreno GPUs, off for others	Auto: activado en GPU Adreno, desactivado en las demás
 Off: the graphics work runs on the game's own thread	Desactivado: el trabajo gráfico se hace en el hilo del propio juego
+Bright scenes in a wider format	Escenas iluminadas en un formato más amplio
+On: the lit scene is drawn in a format with more room (RGBA16F instead of R11G11B10F), a test for white or flickering pictures; uses a little more memory	Activado: la escena iluminada se dibuja en un formato con más margen (RGBA16F en lugar de R11G11B10F), una prueba para imágenes blancas o que parpadean; usa un poco más de memoria
