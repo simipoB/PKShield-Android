@@ -324,3 +324,5 @@ Divisions	Divisions
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Textures : chaque lecture de texture est limitée à une plage raisonnable. Si le blanc disparaît, dites-le-nous : une texture est mal lue
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entrées : chaque valeur transmise par le shader de sommets est limitée. Si le blanc disparaît, dites-le-nous
 Divisions: every division is limited. If the white goes away, tell us	Divisions : chaque division est limitée. Si le blanc disparaît, dites-le-nous
+Bright scenes in a wider format	Scènes éclairées dans un format plus large
+On: the lit scene is drawn in a format with more room (RGBA16F instead of R11G11B10F), a test for white or flickering pictures; uses a little more memory	Activé : la scène éclairée est dessinée dans un format plus large (RGBA16F au lieu de R11G11B10F), un test pour les images blanches ou qui clignotent ; utilise un peu plus de mémoire

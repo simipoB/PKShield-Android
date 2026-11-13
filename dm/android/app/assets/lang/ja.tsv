@@ -324,3 +324,5 @@ Divisions	除算
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	テクスチャ：テクスチャの読み取り値をすべて妥当な範囲に制限します。白が消えたら教えてください（テクスチャの読み取りが誤っています）
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	入力：頂点シェーダーから渡される値をすべて制限します。白が消えたら教えてください
 Divisions: every division is limited. If the white goes away, tell us	除算：すべての除算結果を制限します。白が消えたら教えてください
+Bright scenes in a wider format	明るい場面をより広い形式で描画
+On: the lit scene is drawn in a format with more room (RGBA16F instead of R11G11B10F), a test for white or flickering pictures; uses a little more memory	オン：明るい場面をより余裕のある形式（R11G11B10Fの代わりにRGBA16F）で描画します。白い画面やちらつきのテストです。メモリを少し多く使います

@@ -489,6 +489,8 @@ void mtl_init(void) {
     //   DM_VK_FMZ=0 / 1 (the in-game menu's Mali tests) decides on any GPU
     //   Since v0.76 on by default for PanVK only: on Arm's own driver it did not help (#172, Mali-G720 r49p1, still white on v0.75) and made it worse on Bifrost (#215,
     //   Mali-G52 r26p0: 86 % white instead of 81 %, the dark outlines gone, about 10 % slower)
+    // R11G11B10F render targets as RGBA16F (nvn_fmt_vk.c nvn_fmt_vk_b10_as_rgba16): a test for Mali's white lit scene, off unless DM_VK_B10_AS_RGBA16=1 (the menu's Mali tests)
+    { const char *e = getenv("DM_VK_B10_AS_RGBA16"); if (e && atoi(e) > 0) { nvn_fmt_vk_b10_as_rgba16(1); VLOG("formats: R11G11B10F drawn and sampled as RGBA16F (DM_VK_B10_AS_RGBA16, a Mali test)"); } }
     { const char *e = getenv("DM_VK_FMZ"); g_fmz = e && *e ? atoi(e) > 0 : g_props.vendorID == 0x13B5 && !g_arm_rel;
       if (g_fmz) VLOG("shaders: a multiply by 0 gives 0 even for infinity and NaN, as on the Switch's GPU (FMZ, every multiply%s)", e && *e ? ": DM_VK_FMZ" : ": on by default for PanVK"); }
     // DM_VK_PROBE=samples,inputs,div (a diagnostic, #215): those values clamped in every fragment shader (spv_probe), one kind a run, to find which carries the white
@@ -1863,6 +1865,7 @@ static vtex *pkg_upload(const tex_t *t) {
     nvn_dirty_protect(t->mem, t->L.size); x->stamp = nvn_dirty_now();
     if (tex_upload(x, t)) { vtex_unref(x); return NULL; }
     x->pkg = 1; x->span = nvn_dirty_span(t->mem, t->L.size); x->seen = nvn_dirty_now();
+    if (nvn_fmt_vk_b10_swapped(t->d.format)) RED_ONCE(51, "a texture from the game's files in R11G11B10F with DM_VK_B10_AS_RGBA16 on: its texels do not fit RGBA16F and it comes out wrong (turn the test off)");
     return x;
 }
 static vtex *serial_get(uint64_t k) {   // caller holds g_smu
