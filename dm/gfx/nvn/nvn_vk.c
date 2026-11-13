@@ -3398,7 +3398,12 @@ static VkPipeline pso_make(vprog *pr, pkey k, const sst *ss) {
 #ifdef __ANDROID__
     { static int npipe; VLOG("pipeline %d: vertex %s fragment %s", ++npipe, vs->key, fs ? fs->key : "-"); }   // the last line before a driver crash names the shaders it was compiling
 #endif
-    VkResult r = vkCreateGraphicsPipelines(g_dev, g_pcache, 1, &gi, NULL, &p);
+    // PowerVR (BXM-8-256, driver 0x5d9576) crashes in vkCreateGraphicsPipelines when a pipeline cache is passed and the render pass has an unused colour slot
+    //   (VK_ATTACHMENT_UNUSED: a target with a gap): found and isolated by the Persona 5 Royal Android port (Brandon04Gonzalez/p5r-android, MIT). Such a pipeline
+    //   is made without the cache on PowerVR; every other pipeline, and every other GPU, keeps it
+    VkPipelineCache pc_ = g_pcache;
+    if (g_props.vendorID == 0x1010 && !g_dynren) for (uint32_t i = 0; i < ncb; i++) if (!cf[i]) { pc_ = VK_NULL_HANDLE; break; }
+    VkResult r = vkCreateGraphicsPipelines(g_dev, pc_, 1, &gi, NULL, &p);
     if (r == VK_INCOMPLETE && p) { RED_ONCE(107, "graphics pipeline creation answered VK_INCOMPLETE (out of spec; Mali, Adreno 5xx): the pipeline it made is used"); r = VK_SUCCESS; }
     if (r) { VLOG("[RED] graphics pipeline (vertex %s fragment %s) failed: %d", vs->key, fs ? fs->key : "-", r); return VK_NULL_HANDLE; }
     return p;
