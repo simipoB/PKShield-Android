@@ -1,0 +1,74 @@
+name: Bug report
+description: Something doesn't work in Galar Native (Pokémon Sword / Shield)
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The log is the most useful part: it shows what your phone and the game did.
+        **Never attach game files, keys or firmware.** Logs and screenshots are fine.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens
+      description: What you did, what you expected, and what happened instead. If you can, say exactly where in the game.
+    validations:
+      required: true
+  - type: input
+    id: phone
+    attributes:
+      label: Phone model
+      placeholder: e.g. Samsung Galaxy A55, Poco X6 Pro
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: Chip and GPU
+      description: Shown in the overlay at the top left, or in the log's "Vulkan device" line.
+      placeholder: e.g. Snapdragon 695 / Adreno 619, Dimensity 8300 / Mali-G615
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Galar Native version
+      description: The first line of the log says "app version code ...".
+      placeholder: e.g. 0.81
+    validations:
+      required: true
+  - type: dropdown
+    id: game
+    attributes:
+      label: Game
+      options:
+        - Pokémon Shield
+        - Pokémon Sword
+    validations:
+      required: true
+  - type: dropdown
+    id: driver
+    attributes:
+      label: Graphics driver
+      options:
+        - The phone's own driver
+        - Turnip (custom Adreno driver)
+        - PanVK / malisx2 (custom Mali driver)
+        - Other custom driver
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Attach `Download/PokemonShield-log-previous.txt` (or the Sword one) **from the run where the problem happened**, and `PokemonShield-log.txt` too.
+        For a picture problem, ☰ → Bug reports → **Capture a frame** where it shows, and attach the `...-frame-capture.zip` from Download.
+      placeholder: Drag the files here
+    validations:
+      required: true
+  - type: textarea
+    id: shots
+    attributes:
+      label: Screenshots or video
+      description: Optional, but they help a lot for graphics problems.
