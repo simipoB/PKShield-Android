@@ -347,3 +347,9 @@ NaN fix	Correção NaN
 NaN fix + textures	Correção NaN + texturas
 NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	Correção NaN: os valores quebrados que os shaders escrevem viram 0 em vez de deixar a imagem branca. Conte-nos como ficou
 NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	Correção NaN + texturas: o mesmo, e os valores quebrados lidos de texturas também viram 0. Conte-nos como ficou
+Output clamp	Limite de saída
+NaN fix + output clamp	Correção NaN + limite de saída
+Every operation	Cada operação
+Output clamp: what each shader writes is capped well below the white limit. Tell us how it looks	Limite de saída: o que cada shader escreve é limitado bem abaixo do limite do branco. Conte-nos como ficou
+NaN fix + output clamp: both together. Tell us how it looks	Correção NaN + limite de saída: os dois juntos. Conte-nos como ficou
+Every operation: every multiply, add and multiply-add result is limited. Tell us how it looks	Cada operação: cada resultado de multiplicação, soma e multiplicação-soma é limitado. Conte-nos como ficou

@@ -772,7 +772,9 @@ uint32_t *spv_clamp_zero(const uint32_t *code, size_t words, size_t *out_words) 
 // (clamped to [-1024, 1024]), PROBE_INPUTS every float the previous stage hands over (Input loads, [-16384, 16384]), PROBE_DIV every float division ([-16384, 16384]),
 // PROBE_OUTPUT what is stored to an output ([-64, 64]), and the arithmetic one kind at a time ([-16384, 16384]): PROBE_MUL (FMul, VectorTimesScalar), PROBE_ADD
 // (FAdd, FSub), PROBE_FMA (GLSL Fma). Not a probe but a fix: NAN_FIX_OUT turns a NaN stored to an output into 0 (infinities into ±65504, other values kept), NAN_FIX_TEX
-// the same on every texture sample, so a NaN written by one pass can't spread through the passes that read it (#215: NaN reaches the lit scene's target)
+// the same on every texture sample, so a NaN written by one pass can't spread through the passes that read it (#215: NaN reaches the lit scene's target).
+// CLAMP_OUT: what is stored to an output capped at ±4096 after the same NaN rule (NaN 0, infinities the cap): well under R11G11B10F's 65024, so a value the
+// lit target would saturate to white comes out a visible grey instead
 // NClamp also turns a NaN into the low bound. The result keeps its id: each op is emitted under a new one and the clamp takes the old. NULL when nothing matched
 uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsigned mask) {
     enum { OpExtInstImport = 11, OpExtInst = 12, OpTypeFloat = 22, OpTypeVector = 23, OpTypePointer = 32, OpConstant = 43, OpConstantComposite = 44, OpFunction = 54,
@@ -791,6 +793,7 @@ uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsig
         ((mask & PROBE_MUL) && ((op) == 133 || (op) == 142) && (n) == 5 && (x)[1] < bound && width[(x)[1]]) ? 5 : \
         ((mask & PROBE_ADD) && ((op) == 129 || (op) == 131) && (n) == 5 && (x)[1] < bound && width[(x)[1]]) ? 6 : \
         ((mask & PROBE_FMA) && (op) == OpExtInst && (n) == 8 && glsl && (x)[3] == glsl && (x)[4] == 50 && (x)[1] < bound && width[(x)[1]]) ? 7 : \
+        ((mask & CLAMP_OUT) && (op) == OpStore && (n) >= 3 && (x)[1] < bound && outty[(x)[1]] && outty[(x)[1]] < bound && width[outty[(x)[1]]]) ? 10 : \
         ((mask & NAN_FIX_OUT) && (op) == OpStore && (n) >= 3 && (x)[1] < bound && outty[(x)[1]] && outty[(x)[1]] < bound && width[outty[(x)[1]]]) ? 8 : \
         ((mask & NAN_FIX_TEX) && (op) >= 87 && (op) <= 96 && (n) >= 5 && (x)[1] < bound && width[(x)[1]]) ? 9 : 0)
     for (int pass = 0; pass < 2; pass++)
@@ -810,10 +813,10 @@ uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsig
         i += n; }
     if (!hits || !glsl || !tf32 || !first_fn) goto none;
     {   // constants: lo / hi per kind and width
-        static const uint32_t lo_bits[10] = { 0, 0xc4800000u, 0xc6800000u, 0xc6800000u, 0xc2800000u, 0xc6800000u, 0xc6800000u, 0xc6800000u, 0xc77fe000u, 0xc77fe000u },
-                              hi_bits[10] = { 0, 0x44800000u, 0x46800000u, 0x46800000u, 0x42800000u, 0x46800000u, 0x46800000u, 0x46800000u, 0x477fe000u, 0x477fe000u };   // ±1024, ±16384, output ±64, arithmetic ±16384, NaN fix ±65504
+        static const uint32_t lo_bits[11] = { 0, 0xc4800000u, 0xc6800000u, 0xc6800000u, 0xc2800000u, 0xc6800000u, 0xc6800000u, 0xc6800000u, 0xc77fe000u, 0xc77fe000u, 0xc5800000u },
+                              hi_bits[11] = { 0, 0x44800000u, 0x46800000u, 0x46800000u, 0x42800000u, 0x46800000u, 0x46800000u, 0x46800000u, 0x477fe000u, 0x477fe000u, 0x45800000u };   // ±1024, ±16384, output ±64, arithmetic ±16384, NaN fix ±65504, output clamp ±4096
         uint32_t *o = malloc(4 * (words + hits * 56 + 64)); if (!o) goto none;   // (each: 8 words of clamp, up to 14 of vector bounds; a NaN fix up to 48)
-        uint32_t next = bound, cs[10][5][2], zero = 0; memset(cs, 0, sizeof cs); size_t w = 0;
+        uint32_t next = bound, cs[11][5][2], zero = 0; memset(cs, 0, sizeof cs); size_t w = 0;
         // NaN fix: v -> NClamp(NMax(v, 0) + NMin(v, 0), -65504, 65504). NMax / NMin return the other operand for a NaN, so a NaN becomes 0 + 0, a finite value
         //   v + 0, and an infinity the half-float limit (no bool types needed, so nothing to add to the globals)
         #define SCRUB(ty, v, out, k) do { uint32_t wd_ = width[ty], z_ = zero, lo_ = cs[k][1][0], hi_ = cs[k][1][1], a_ = next++, b_ = next++, s_ = next++; \
@@ -827,13 +830,13 @@ uint32_t *spv_probe(const uint32_t *code, size_t words, size_t *out_words, unsig
             o[w++] = 8u << 16 | OpExtInst; o[w++] = ty; o[w++] = (out); o[w++] = glsl; o[w++] = NClamp; o[w++] = s_; o[w++] = lo_; o[w++] = hi_; } while (0)
         for (size_t i = 0; i < words;) {
             size_t n = i < 5 ? 5 : code[i] >> 16; const uint32_t *x = code + i; uint32_t op = i < 5 ? 0 : x[0] & 0xffff;
-            if (i == first_fn) { for (int k = 1; k <= 9; k++) {
+            if (i == first_fn) { for (int k = 1; k <= 10; k++) {
                 uint32_t sl = next++, sh = next++; o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = sl; o[w++] = lo_bits[k]; o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = sh; o[w++] = hi_bits[k];
                 cs[k][1][0] = sl; cs[k][1][1] = sh; }
                 zero = next++; o[w++] = 4u << 16 | OpConstant; o[w++] = tf32; o[w++] = zero; o[w++] = 0; }
             int k = i >= 5 ? KIND(x, n, op) : 0;
-            if (k == 8) {   // NaN fix on the value stored to an output; the store takes the fixed value
-                uint32_t c = next++; SCRUB(outty[x[1]], x[2], c, 8); memcpy(o + w, x, 4 * n); o[w + 2] = c; w += n;
+            if (k == 8 || k == 10) {   // NaN fix (8) / output clamp (10) on the value stored to an output; the store takes the fixed value
+                uint32_t c = next++; SCRUB(outty[x[1]], x[2], c, k); memcpy(o + w, x, 4 * n); o[w + 2] = c; w += n;
             } else if (k == 9) {   // NaN fix on a texture sample: the sample under a new id, the fix under the old
                 uint32_t ty = x[1], res = x[2], m = next++; memcpy(o + w, x, 4 * n); o[w + 2] = m; w += n; SCRUB(ty, m, res, 9);
             } else if (k == 4) {   // the value stored to an output, clamped first; the store then takes the clamp

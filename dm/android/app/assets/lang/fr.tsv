@@ -347,3 +347,9 @@ NaN fix	Correctif NaN
 NaN fix + textures	Correctif NaN + textures
 NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	Correctif NaN : les valeurs cassées écrites par les shaders deviennent 0 au lieu de rendre l'image blanche. Dites-nous ce que ça donne
 NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	Correctif NaN + textures : pareil, et les valeurs cassées lues dans les textures deviennent 0 aussi. Dites-nous ce que ça donne
+Output clamp	Plafond de sortie
+NaN fix + output clamp	Correctif NaN + plafond de sortie
+Every operation	Chaque opération
+Output clamp: what each shader writes is capped well below the white limit. Tell us how it looks	Plafond de sortie : ce que chaque shader écrit est plafonné bien en dessous de la limite du blanc. Dites-nous ce que ça donne
+NaN fix + output clamp: both together. Tell us how it looks	Correctif NaN + plafond de sortie : les deux ensemble. Dites-nous ce que ça donne
+Every operation: every multiply, add and multiply-add result is limited. Tell us how it looks	Chaque opération : chaque résultat de multiplication, d'addition et de multiplication-addition est limité. Dites-nous ce que ça donne

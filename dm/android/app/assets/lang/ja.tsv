@@ -347,3 +347,9 @@ NaN fix	NaN修正
 NaN fix + textures	NaN修正＋テクスチャ
 NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	NaN修正：シェーダーが書き込む壊れた値を、画面を白くする代わりに0にします。見た目を教えてください
 NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	NaN修正＋テクスチャ：同じ処理に加え、テクスチャから読んだ壊れた値も0にします。見た目を教えてください
+Output clamp	出力の上限
+NaN fix + output clamp	NaN修正＋出力の上限
+Every operation	すべての演算
+Output clamp: what each shader writes is capped well below the white limit. Tell us how it looks	出力の上限：各シェーダーが書き込む値を白の限界より十分下に制限します。見た目を教えてください
+NaN fix + output clamp: both together. Tell us how it looks	NaN修正＋出力の上限：両方を同時に使います。見た目を教えてください
+Every operation: every multiply, add and multiply-add result is limited. Tell us how it looks	すべての演算：乗算・加算・積和のすべての結果を制限します。見た目を教えてください

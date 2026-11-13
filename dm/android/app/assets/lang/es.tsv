@@ -347,3 +347,9 @@ NaN fix	Arreglo NaN
 NaN fix + textures	Arreglo NaN + texturas
 NaN fix: broken values the shaders write become 0 instead of turning the picture white. Tell us how it looks	Arreglo NaN: los valores rotos que escriben los sombreadores pasan a 0 en lugar de volver blanca la imagen. Cuéntanos cómo se ve
 NaN fix + textures: the same, and broken values read from textures become 0 too. Tell us how it looks	Arreglo NaN + texturas: lo mismo, y los valores rotos leídos de texturas también pasan a 0. Cuéntanos cómo se ve
+Output clamp	Límite de salida
+NaN fix + output clamp	Arreglo NaN + límite de salida
+Every operation	Cada operación
+Output clamp: what each shader writes is capped well below the white limit. Tell us how it looks	Límite de salida: lo que escribe cada sombreador se limita muy por debajo del límite del blanco. Cuéntanos cómo se ve
+NaN fix + output clamp: both together. Tell us how it looks	Arreglo NaN + límite de salida: ambos juntos. Cuéntanos cómo se ve
+Every operation: every multiply, add and multiply-add result is limited. Tell us how it looks	Cada operación: cada resultado de multiplicación, suma y multiplicación-suma se limita. Cuéntanos cómo se ve
