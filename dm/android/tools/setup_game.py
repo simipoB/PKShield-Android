@@ -5,11 +5,6 @@
 #   3. shaders: shader_split.py (the shaders inside RomFS) → dmsh_build.py in SPIR-V-only mode (the translator and spirv-cross built for the platform)
 #      → vk_meta.py (the replay's reflection) → spv_pak.py → shaders.pak
 #   4. the rest: shader_map.tsv from the profile, fonts (the phone's own font as the standard font, the button-icon font shipped with the app)
-# Fast setup (default; DM_SETUP_FULL=1 for the old one): step 3 translates only the shaders the game uses first (the profile's prewarm list, pso_manifest.tsv, and
-#   shader_first.tsv: about 2,200 of Sword / Shield's 38,500, with their vertex / pixel partners), so the game is ready to play in minutes instead of hours.
-#   The rest are listed in <out>/rest.json and translated afterwards by --rest, in batches, into <out>/rest/b-<chain> (the engine reads them from there as they
-#   come, nvn_vk.c live_check: a shader the game needs before its batch is done draws nothing until then), and merged into the pack once all are done
-#        setup_game.py --rest [--yield] --out <game dir> --work <scratch dir> --bin <dir>: that translation; --yield beside the running game (live_yield)
 # The game ends up in <out>: RomFS/, patched/, shaders.pak, shader_map.tsv, font/, aoc/ (what android_main.c reads). Progress goes to stdout as lines
 #   "STEP <n>/<total> <what>" and "DONE" / "FAILED <why>"; details go to <work>/setup.log.
 #        setup_game.py --captures <dir> --out <game dir> --work <scratch dir> --bin <dir>: translate the shaders the game built in memory and a run saved
@@ -39,7 +34,7 @@ def write_runtime_shader_map(found_map, profile_map, output):
                 rows.append(line)
     with open(output, 'w', encoding='utf-8') as f: f.writelines(rows)
 
-def watch_translation(found_map, work, built, stop, only=None):
+def watch_translation(found_map, work, built, stop):
     """'PROGRESS done/total' lines for the setup screen (SetupActivity.runSetup) while dmsh_build.py runs: it prints nothing until the end, and a phone takes hours.
     Counted from what it writes (left unchanged, since any edit to it changes the shader chain version): every shader's SPIR-V in its dmsh_* scratch dir,
     the vertex shaders' GL depth variants in gl_depth/ there, then every shader's reflection json in the cache"""
@@ -47,7 +42,7 @@ def watch_translation(found_map, work, built, stop, only=None):
     with open(found_map, encoding='utf-8') as f:
         for line in f:
             c = line.rstrip('\n').split('\t')
-            if len(c) > 4 and not line.startswith('#') and c[0] != 'package' and (only is None or c[3] in only): n += 1; vs += c[2] == 'vertex'
+            if len(c) > 4 and not line.startswith('#') and c[0] != 'package': n += 1; vs += c[2] == 'vertex'
     total, shown = 2 * n + vs, -1
     def count(d, end):
         try: return sum(e.name.endswith(end) for e in os.scandir(d))
@@ -81,49 +76,6 @@ def translation_kept(work, chain):
     try: m = json.load(open(translated_mark(work), encoding='utf-8'))
     except (OSError, ValueError): return False
     return m.get('chain') == chain and m.get('found') == found_digest(work) and bool(m.get('found'))
-
-def found_rows(work):
-    """The scan's map rows (package, index, stage, key, source), in its order"""
-    rows = []
-    for ln in open(os.path.join(work, 'shader_map.found.tsv'), encoding='utf-8'):
-        c = ln.rstrip('\n').split('\t')
-        if len(c) > 4 and not ln.startswith('#') and c[0] != 'package': rows.append(c)
-    return rows
-
-def pair_map(work):
-    """Vertex / pixel partners (shader_pairs.found.tsv): a vertex shader's translation reads its pixel shader's, so a batch keeps them together"""
-    m = {}
-    try:
-        for ln in open(os.path.join(work, 'shader_pairs.found.tsv'), encoding='utf-8'):
-            c = ln.rstrip('\n').split('\t')
-            if len(c) >= 2 and not ln.startswith('#'): m.setdefault(c[0], set()).add(c[1]); m.setdefault(c[1], set()).add(c[0])
-    except OSError: pass
-    return m
-
-def first_shaders(keys, pairs):
-    """Fast setup: the shaders of keys the game uses first, with their partners; None when there is no list or it would not save much (DM_SETUP_FULL=1: none)"""
-    if os.environ.get('DM_SETUP_FULL') == '1': return None
-    want = []
-    for name, col in (('pso_manifest.tsv', 1), ('shader_first.tsv', 0)):   # (the prewarm list's S rows; a plain list of keys)
-        try:
-            for ln in open(PROFILE.table(name), encoding='utf-8'):
-                c = ln.rstrip('\n').split('\t')
-                if ln.startswith('#') or len(c) <= col or (col == 1 and c[0] != 'S'): continue
-                want.append(c[col][:16])
-        except OSError: pass
-    have = set(keys); first = {k for k in want if k in have}
-    for k in list(first): first |= pairs.get(k, set()) & have
-    return first if first and len(first) < len(have) // 2 else None
-
-def next_first(later):
-    """Fast setup's background order: the game's shader_next.tsv keys first, in its order (the Wild Area's ground, battles, towns: they drew nothing until
-    their batch came, #173), then the rest as before. Unchanged when the game has no such list"""
-    try: nxt = [ln.split('	')[0].strip()[:16] for ln in open(PROFILE.table('shader_next.tsv'), encoding='utf-8') if ln.strip() and not ln.startswith('#')]
-    except OSError: return later
-    have = set(later); front = []; seen = set()
-    for k in nxt:
-        if k in have and k not in seen: seen.add(k); front.append(k)
-    return front + [k for k in later if k not in seen]
 
 def explain_failure(log_path, files):
     """The unpacker's known failures in words a player can act on (from the end of setup.log), and whether setting up anyway (--allow-damaged) can get past
@@ -169,11 +121,8 @@ def main():
     ap.add_argument('--live', help='with --captures, while the game runs: the translated shaders also go into this folder for the engine to load at once (nvn_vk.c live_check)')
     ap.add_argument('--mod-shaders', help="the RomFS folders of the mods that are on, ':'-separated: their new shaders translated into the pack")
     ap.add_argument('--resume', action='store_true', help='go on from the shader translation when an earlier run of this setup got that far (resume.json in --work)')
-    ap.add_argument('--rest', action='store_true', help='fast setup: translate the shaders step 3 left for later (<out>/rest.json) into <out>/rest, then into the pack')
-    ap.add_argument('--yield', dest='yield_', action='store_true', help='with --rest, beside the running game: out of its way (live_yield)')
     a = ap.parse_args()
     if a.mod_shaders is not None: return mod_shaders(a)
-    if a.rest: return rest(a)
     if a.games and not a.root: ap.error('--games needs --root')
     if a.captures:
         if a.live: live_yield()
@@ -299,9 +248,6 @@ def main():
         # with its rewritten code deleted)
         try: os.remove(os.path.join(a.out, 'ready'))
         except FileNotFoundError: pass
-        try: os.remove(os.path.join(a.out, 'rest.json'))   # (an earlier fast setup's shaders still to translate: this setup makes its own list)
-        except FileNotFoundError: pass
-        shutil.rmtree(os.path.join(a.out, 'rest'), ignore_errors=True)
         dst = os.path.join(a.out, 'aoc'); shutil.rmtree(dst, ignore_errors=True)
         if os.path.isdir(aoc): shutil.move(aoc, dst)
         aoc = dst
@@ -333,7 +279,7 @@ def main():
     # theirs): its pack is linked (or copied) in, and only the shaders it lacks are translated and merged into it, instead of the hours of translating them all
     found_keys = {bytes.fromhex(c[3][:16]) for c in (l.rstrip('\n').split('\t') for l in open(os.path.join(a.work, 'shader_map.found.tsv'), encoding='utf-8'))
                   if len(c) > 3 and len(c[3]) >= 16 and not c[0].startswith('#') and c[0] != 'package'}
-    donor = None; first = None   # (first: the fast setup's shaders, set below when it applies)
+    donor = None
     for i, g in enumerate(games):
         d = a.root if i == 0 else os.path.join(a.root, g.upper())
         dp = os.path.join(d, 'shaders.pak')
@@ -379,17 +325,13 @@ def main():
         if not resumed:
             for d in glob.glob(os.path.join(a.work, 'dmsh_*')): shutil.rmtree(d, ignore_errors=True)   # an interrupted run's scratch dir would count toward the progress
         os.makedirs(vk, exist_ok=True)
-        allk = [c[3] for c in found_rows(a.work)]; first = first_shaders(allk, pair_map(a.work))
-        later = [k for k in allk if k not in first] if first else []
-        later = next_first(later)   # (shader_next.tsv's keys first: the places a player reaches soon after the start, #173)
-        if first: log.write(f'fast setup: {len(first)} of {len(allk)} shaders now (the ones the game uses first), {len(later)} after, in the background\n')
         stop = threading.Event(); found = os.path.join(a.work, 'shader_map.found.tsv')
-        threading.Thread(target=watch_translation, args=(found, a.work, os.path.join(cache, 'b-' + chain), stop, first), daemon=True).start()
+        threading.Thread(target=watch_translation, args=(found, a.work, os.path.join(cache, 'b-' + chain), stop), daemon=True).start()
         # the translators go through dmsh_gate when the app has it: each beyond the first starts only while the phone has the memory for it (dmsh_gate.c)
         gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
         xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=a.work) if gate else dict(XLATE=tool('dmsh_xlate'))
         log.write(f'translators: {env.get("J", "8")} at most, ' + ('started as memory allows (dmsh_gate)\n' if gate else 'all at once (no dmsh_gate)\n'))
-        try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache, *sorted(first or [])], retry_killed=3,
+        try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache], retry_killed=3,
             env=dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=vk, **xenv, DMSH_CAS=os.path.join(a.work, 'cas'), WORK=a.work,
                      DMSH_SOURCE_MAP=os.path.join(a.work, 'shader_map.found.tsv'),
                      DMSH_FACTS=os.path.join(a.work, 'shader_facts.found.tsv'),
@@ -397,26 +339,15 @@ def main():
                      MAIN=os.path.join(exefs, 'main')))
         finally: stop.set()
         built = os.path.join(cache, 'b-' + chain)
-        if not first: write_translated(a.work, chain)   # (fast setup: the translation is not done until --rest is)
+        write_translated(a.work, chain)
 
         step(5)
         reflect(vk, built)
-        if first:   # a shader of the first batch that did not translate (a translator killed for memory: a Galaxy A55's pack had 2,349 of 2,395) is tried again first in
-            #   the background; it used to be left out of both, so it never came and what it draws stayed missing (the Wild Area's ground, #173)
-            failed = sorted(k for k in first if not (os.path.isfile(os.path.join(vk, k + '.spv')) and os.path.isfile(os.path.join(vk, k + '.vkr'))))
-            if failed:
-                log.write(f'fast setup: {len(failed)} of the first {len(first)} shaders did not translate: first in the background\n')
-                fs = set(failed); later = failed + [k for k in later if k not in fs]
         # the pack compressed (zlib per shader, the engine inflates each as it loads it: nvn_vk.c pak_blob): about 3.4 times smaller on the phone (Violet 2.9 GB → 0.85 GB, Sword 2.3 → 0.7)
         raw = os.path.join(a.work, 'shaders.raw.pak')
         run([py, os.path.join(DM, 'android/tools/spv_pak.py'), vk, raw])
         run([py, os.path.join(DM, 'android/tools/spv_pak.py'), '--compress', raw, os.path.join(a.out, 'shaders.pak')])
         os.remove(raw)
-        if first:   # what --rest needs stays (the scan's shaders and maps, the translation cache, the main module); the loose shaders packed above go
-            shutil.rmtree(os.path.dirname(vk), ignore_errors=True)
-            import json
-            json.dump({'chain': chain, 'keys': later, 'total': len(later), 'pkg': pkg, 'cache': cache, 'main': os.path.join(exefs, 'main'), 'work': a.work},
-                      open(os.path.join(a.out, 'rest.json.part'), 'w', encoding='utf-8'))
 
     step(6)
     write_runtime_shader_map(os.path.join(a.work, 'shader_map.found.tsv'),
@@ -430,7 +361,7 @@ def main():
     rom = os.path.join(a.out, 'RomFS')
     if os.path.realpath(rom) != os.path.realpath(romfs):
         shutil.rmtree(rom, ignore_errors=True); os.replace(romfs, rom)   # same storage: a rename, nothing copied
-    for d in (('vk', 'aoc') if first else ('shader_pkg', 'cas', 'vk', 'shader_cache', 'extract', 'aoc')): shutil.rmtree(os.path.join(a.work, d), ignore_errors=True)   # only setup.log stays (fast setup: and what --rest needs)
+    for d in ('shader_pkg', 'cas', 'vk', 'shader_cache', 'extract', 'aoc'): shutil.rmtree(os.path.join(a.work, d), ignore_errors=True)   # only setup.log stays
     try: os.remove(translated_mark(a.work))   # (its translation went with shader_cache)
     except FileNotFoundError: pass
     # the new pack holds every capture there is, so the launcher's list of captures already added is stale: the next start checks them against the pack again
@@ -439,9 +370,6 @@ def main():
     open(os.path.join(a.out, 'ready'), 'w').write(chain + '\n')
     try: os.remove(state)
     except FileNotFoundError: pass
-    if first:
-        os.replace(os.path.join(a.out, 'rest.json.part'), os.path.join(a.out, 'rest.json'))
-        print(f'REST {len(later)}', flush=True)   # (the setup screen starts --rest)
     print('DONE', flush=True)
 
 def pak_keys(path):   # the keys an NXSP shader pack holds, and its chain version
@@ -582,88 +510,6 @@ def mod_shaders(a):
     with open(gmap, 'a', encoding='utf-8') as f: f.writelines('\t'.join(c[:4] + ['/mods' + c[4] if len(c) > 4 else '/mods']) + '\n' for c in new if c[3] in got)
     log.write(f'mod shaders: {len(ok)} of {len(keys)} translated and added to the pack\n')
     shutil.rmtree(mw, ignore_errors=True)
-    print('DONE', flush=True)
-
-def rest(a):
-    # Fast setup's second part (the setup screen right after the setup; GameActivity beside the game, --yield): the shaders step 3 left, in batches of about 1,000
-    #   with their partners. Each batch is translated into a scratch folder and moved (a rename: the same storage) into <out>/rest/b-<chain> with its map rows and a new
-    #   gen, where the engine finds them as they come (nvn_vk.c live_check, DM_REST_SPV). rest.json is written again after each batch, so a run that is stopped goes on
-    #   where it was. Once all are done they are merged into the pack in one go and rest.json goes (android_main.c clears rest/ at the next start: the running game
-    #   may still read from it). One run at a time: another one prints BUSY and ends
-    import json, fcntl
-    sp = os.path.join(a.out, 'rest.json')
-    try: st = json.load(open(sp, encoding='utf-8'))
-    except (OSError, ValueError): print('DONE', flush=True); return
-    lk = open(os.path.join(os.environ.get('TMPDIR') or a.work, 'rest.lock'), 'w')   # (the app's own storage: a lock on shared storage may not hold)
-    try: fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError: print('BUSY', flush=True); return
-    yielded = bool(a.yield_)
-    if yielded: live_yield()
-    log = open(os.path.join(a.work, 'setup.log'), 'a', buffering=1); py = sys.executable
-    env = dict(os.environ, PYTHONUNBUFFERED='1', PATH=a.bin + os.pathsep + os.environ.get('PATH', ''))
-    tool = lambda n: os.path.join(a.bin, n)
-    def run(cmd, **kw):
-        log.write('$ ' + ' '.join(map(str, cmd)) + '\n')
-        r = subprocess.run(list(map(str, cmd)), stdout=log, stderr=subprocess.STDOUT, env=kw.pop('env', env), **kw)
-        if r.returncode: raise RuntimeError(f'{os.path.basename(str(cmd[1]))} failed ({r.returncode}): see {log.name}')
-    chain = subprocess.run([py, os.path.join(DM, 'gfx/tools/dmsh_chain.py')], capture_output=True, text=True, env=env).stdout.strip()
-    pak = os.path.join(a.out, 'shaders.pak')
-    try: pchain = pak_keys(pak)[1]
-    except (OSError, RuntimeError, struct.error): pchain = ''
-    w = st.get('work', a.work); pkg, cache, main = st.get('pkg', ''), st.get('cache', ''), st.get('main', '')
-    if st.get('chain') != chain or pchain != chain or not os.path.isdir(pkg) or not os.path.isfile(main):
-        log.write(f'rest: made for chain {st.get("chain")}, pack {pchain}, this app {chain}, scan {"there" if os.path.isdir(pkg) else "gone"}: dropped\n')
-        os.remove(sp); print('FAILED the shaders still to translate cannot be translated by this app version: set the game up again', flush=True); return
-    rows = {c[3]: c for c in found_rows(w)}; pairs = pair_map(w)
-    built = os.path.join(cache, 'b-' + chain)
-    dst = os.path.join(a.out, 'rest', 'b-' + chain); os.makedirs(dst, exist_ok=True)
-    keys, total = list(st['keys']), max(1, int(st.get('total', len(st['keys']))))
-    # a setup made before this check (v0.69, v0.70) left out the first-batch shaders that did not translate: the ones in neither the pack, the background's
-    #   folder nor its list go first now (#173); and the list follows shader_next.tsv's order, so an earlier setup gets the Wild Area first too
-    try:
-        have = {k.hex() for k in pak_keys(pak)[0]} | {f[:-4] for f in os.listdir(dst) if f.endswith('.spv')} | set(keys)
-        lost = sorted(k for k in rows if k not in have)
-        if lost: log.write(f'rest: {len(lost)} shaders in neither the pack nor the list (the first batch\'s failures): added first\n'); total += len(lost)
-        keys = lost + next_first(keys)
-    except (OSError, RuntimeError, struct.error) as e: log.write(f'rest: the pack could not be checked ({e}): the list as it was\n')
-    log.write(f'== {time.strftime("%H:%M:%S")} fast setup, the rest: {len(keys)} of {total} shaders to go{" (beside the game)" if a.yield_ else ""}\n')
-    print(f'STEP 1/2 translate {len(keys)} shaders', flush=True); print(f'PROGRESS {total - len(keys)}/{total}', flush=True)
-    gate = os.path.isfile(tool('dmsh_gate')) and os.path.isfile('/proc/meminfo')
-    B = max(50, int(os.environ.get('DM_REST_BATCH', '1000')))
-    while keys:
-        if not yielded and os.path.exists(os.path.join(a.out, 'game_running')):   # the game started meanwhile (GameActivity): out of its way from the next batch on
-            live_yield(); yielded = True; log.write('rest: the game started: the rest goes on beside it\n')
-        left = set(keys); batch = []; taken = set()
-        for k in keys:
-            if len(batch) >= B: break
-            if k in taken: continue
-            for g in sorted({k} | (pairs.get(k, set()) & left)):
-                if g not in taken: taken.add(g); batch.append(g)
-        bw = os.path.join(a.work, 'rest_vk', 'b-' + chain); shutil.rmtree(os.path.dirname(bw), ignore_errors=True); os.makedirs(bw)
-        xenv = dict(XLATE=tool('dmsh_gate'), DM_GATE_EXEC=tool('dmsh_xlate'), DM_GATE_SLOTS=env.get('J', '8'), DM_GATE_DIR=a.work) if gate else dict(XLATE=tool('dmsh_xlate'))
-        benv = dict(env, DMSH_SPV_ONLY='1', VK_SPV_OUT=bw, **xenv, DMSH_CAS=os.path.join(w, 'cas'), WORK=w,
-                    DMSH_SOURCE_MAP=os.path.join(w, 'shader_map.found.tsv'), DMSH_FACTS=os.path.join(w, 'shader_facts.found.tsv'),
-                    DMSH_PAIRS=os.path.join(w, 'shader_pairs.found.tsv'), MAIN=main)
-        try: run([py, os.path.join(DM, 'gfx/tools/dmsh_build.py'), pkg, cache, *batch], env=benv)
-        except RuntimeError as e: log.write(f'rest: a batch of {len(batch)}: {e}; the ones translated are kept\n')
-        run([py, os.path.join(DM, 'android/tools/vk_meta.py'), built, bw, built])
-        ok = [k for k in batch if os.path.exists(os.path.join(bw, k + '.spv')) and os.path.exists(os.path.join(bw, k + '.vkr'))]
-        for k in ok:
-            for ext in ('.gl.spv', '.vkr', '.spv'):   # (the .spv last: the engine takes a shader once its .spv is there)
-                f = os.path.join(bw, k + ext)
-                if os.path.exists(f): os.replace(f, os.path.join(dst, k + ext))
-        with open(os.path.join(dst, 'map.tsv'), 'a', encoding='utf-8') as f: f.writelines('\t'.join(rows[k][:5]) + '\n' for k in ok if k in rows)
-        gen = os.path.join(dst, 'gen'); open(gen + '.part', 'w').write(f'{time.time_ns()}\n'); os.replace(gen + '.part', gen)
-        if len(ok) < len(batch): log.write(f'rest: {len(batch) - len(ok)} of a batch of {len(batch)} not translated: {" ".join(sorted(set(batch) - set(ok))[:20])}\n')
-        gone = set(batch); keys = [k for k in keys if k not in gone]
-        st['keys'] = keys; json.dump(st, open(sp + '.part', 'w', encoding='utf-8')); os.replace(sp + '.part', sp)
-        print(f'PROGRESS {total - len(keys)}/{total}', flush=True)
-    print('STEP 2/2 pack the shaders', flush=True)
-    if any(f.endswith('.spv') for f in os.listdir(dst)):
-        small = os.path.join(a.work, 'rest.new.pak'); run([py, os.path.join(DM, 'android/tools/spv_pak.py'), dst, small]); pak_merge(pak, small); os.remove(small)
-    for d in ('shader_pkg', 'cas', 'shader_cache', 'extract', 'rest_vk'): shutil.rmtree(os.path.join(w, d), ignore_errors=True)
-    os.remove(sp)
-    log.write(f'== {time.strftime("%H:%M:%S")} fast setup: all {total} shaders translated and in the pack\n')
     print('DONE', flush=True)
 
 def live_yield():
