@@ -260,6 +260,7 @@ static int32_t on_input(struct android_app *app, AInputEvent *e) {
     (void)app; int32_t src = AInputEvent_getSource(e), type = AInputEvent_getType(e);
     if (type == AINPUT_EVENT_TYPE_KEY) {
         int32_t kc = AKeyEvent_getKeyCode(e); uint64_t b = key_bit(kc);
+        { int touch_ui_edit_back(void); if (kc == AKEYCODE_BACK && AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP && touch_ui_edit_back()) return 1; }   // (the layout editor: Back saves and leaves it)
         if (kc == AKEYCODE_BACK && !b) { uint64_t m = AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_DOWN ? DM_BTN_B : 0; dm_input_set(g_touch_btn | m, g_touch_s[0], g_touch_s[1], g_touch_s[2], g_touch_s[3]); return 1; }   // the system back = B (the game never closes on back)
         if (!b) return 0;
         int k = pad_slot(AInputEvent_getDeviceId(e));
