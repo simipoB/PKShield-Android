@@ -334,3 +334,4 @@ App folder: Android/data, as before	アプリのフォルダー：これまで�
 Documents	ドキュメント
 Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save（Syncthingなどの同期ツール用）。次回の起動時にセーブがそこへコピーされ、既にあったものはバックアップとして残ります。すべてのファイルへのアクセスが必要です
 The last setup translated only part of the game's shaders, so parts of the game were not drawn. Tap Set up once more: it finishes them (the ones already done are kept).	前回のセットアップはゲームのシェーダーの一部しか変換しなかったため、ゲームの一部が描画されませんでした。もう一度セットアップをタップしてください。残りを仕上げます（変換済みのものは保持されます）。
+FSR 1.0: AMD's upscaler, edge-aware enlarging then sharpening	FSR 1.0：AMDのアップスケーラー。輪郭を考慮して拡大し、その後シャープ化します

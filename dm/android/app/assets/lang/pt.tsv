@@ -334,3 +334,4 @@ App folder: Android/data, as before	Pasta do app: Android/data, como antes
 Documents	Documentos
 Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save, para ferramentas de sincronização como o Syncthing. Seu save é copiado para lá no próximo início; o que já estiver lá é mantido como backup. Requer acesso a todos os arquivos
 The last setup translated only part of the game's shaders, so parts of the game were not drawn. Tap Set up once more: it finishes them (the ones already done are kept).	A última configuração traduziu só parte dos shaders do jogo, por isso partes do jogo não apareciam. Toque em Configurar mais uma vez: ela termina o resto (os já feitos são mantidos).
+FSR 1.0: AMD's upscaler, edge-aware enlarging then sharpening	FSR 1.0: o escalonador da AMD, ampliação que respeita as bordas e depois nitidez

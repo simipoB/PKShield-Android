@@ -3,6 +3,8 @@
 #   ovl.vert / ovl.frag → ovl_spv.h (the touch overlay), scale.vert / scale.frag → scale_spv.h (the sharpening upscaler),
 #   sgsr.vert + dm/third_party/sgsr/sgsr1_shader_mobile.frag → sgsr_spv.h (Snapdragon Game Super Resolution 1, Qualcomm, BSD-3-Clause: dm/third_party/sgsr/LICENSE),
 #   fg.vert + fg_luma / fg_flow / fg_stat / fg_gen.frag → fgen_spv.h (frame generation: nvn_fgen.h; their .spv files are not kept).
+#   fsr.vert + fsr_easu.frag / fsr_rcas.frag → fsr_spv.h (AMD FidelityFX Super Resolution 1.0, MIT: dm/third_party/fsr1/license.txt; ffx_a.h / ffx_fsr1.h
+#   included unmodified; their .spv files are not kept).
 # SGSR's file is used as Qualcomm publishes it; only its two plain uniforms become Vulkan declarations here (ViewportInfo as a push-constant block, the sampler at binding 0)
 set -e
 O=$(cd "$(dirname "$0")" && pwd); T=$O/../../../third_party/sgsr
@@ -32,6 +34,19 @@ import re
 s = re.sub(r'\b(?:highp|mediump|lowp) (?=(?:vec|ivec|uvec|mat)[234]\s*\()', '', s)   # (precision on a constructor in an expression: ES accepts it, desktop GLSL does not)
 open(sys.argv[2], 'w', encoding='utf-8').write(s)
 EOF
+for f in fsr.vert fsr_easu.frag fsr_rcas.frag; do $G -V -I"$O/../../../third_party/fsr1" "$O/$f" -o "$W/$f.spv"; done
+python3 - "$W" "$O/fsr_spv.h" <<'EOF2'
+import struct, sys
+out = ('// Generated from fsr.vert / fsr_easu.frag / fsr_rcas.frag (glslangValidator -V): AMD FidelityFX Super Resolution 1.0 (EASU + RCAS),
+'
+       '// Copyright (c) 2021 Advanced Micro Devices, Inc., MIT (dm/third_party/fsr1/license.txt)
+')
+for name, f in (('fsr_vert', 'fsr.vert'), ('fsr_easu_frag', 'fsr_easu.frag'), ('fsr_rcas_frag', 'fsr_rcas.frag')):
+    b = open(sys.argv[1] + '/' + f + '.spv', 'rb').read(); w = struct.unpack('<%dI' % (len(b) // 4), b)
+    out += 'static const uint32_t %s_spv[] = {%s};
+' % (name, ','.join(hex(x) for x in w))
+open(sys.argv[2], 'w').write(out); print('fsr_spv.h')
+EOF2
 $G -V "$O/sgsr.vert" -o "$O/sgsr.vert.spv"; $G -V "$W/sgsr.frag" -o "$O/sgsr.frag.spv"; rm -rf "$W"
 python3 - "$O" <<'EOF'
 import struct, sys

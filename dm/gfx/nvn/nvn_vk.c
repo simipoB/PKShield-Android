@@ -4627,10 +4627,10 @@ static pthread_mutex_t g_wmu = PTHREAD_MUTEX_INITIALIZER;
 #include "overlay/sgsr_spv.h"   // Snapdragon Game Super Resolution 1 (Qualcomm, BSD-3-Clause: dm/third_party/sgsr)
 static struct { VkFormat fmt[2]; VkPipeline pipe[2]; VkPipelineLayout pl; VkDescriptorSetLayout dsl; VkSampler samp; int failed, bad[2]; } SC;   // [0] sharp, [1] SGSR
 typedef struct { float p0[4], p1[4], box[4], rot[4]; } scale_pc;   // sharp: crop uv, (1/w, 1/h, sharpness); SGSR: ViewportInfo (1/w, 1/h, w, h), crop uv
-__attribute__((weak)) volatile int dm_scaler_mode = -1;   // 0 sharp, 1 SGSR, 2 smooth (the plain stretch); -1: not read yet (DM_SCALER); the in-game menu sets it
+__attribute__((weak)) volatile int dm_scaler_mode = -1;   // 0 sharp, 1 SGSR, 2 smooth (the plain stretch), 3 FSR 1.0; -1: not read yet (DM_SCALER); the in-game menu sets it
 static int scaler_mode(void) {
     int m = dm_scaler_mode; if (m >= 0) return m;
-    const char *e = getenv("DM_SCALER"); m = e && !strcmp(e, "sgsr") ? 1 : e && (!strcmp(e, "smooth") || !strcmp(e, "off")) ? 2 : 0;
+    const char *e = getenv("DM_SCALER"); m = e && !strcmp(e, "sgsr") ? 1 : e && (!strcmp(e, "smooth") || !strcmp(e, "off")) ? 2 : e && !strcmp(e, "fsr") ? 3 : 0;
     dm_scaler_mode = m; return m;
 }
 __attribute__((weak)) volatile float dm_scaler_sharpness = -2;   // (an aligned float load / store is single-copy atomic on arm64)   // -2: not read yet; -1: off (smooth); the in-game menu sets it (android_main.c)
@@ -4638,7 +4638,7 @@ static float scale_sharpness(void) {
     float s = dm_scaler_sharpness;
     if (s > -2) return s;
     const char *e = getenv("DM_SCALER");
-    s = !e || !*e || !strcmp(e, "sharp") ? 0.7f : !strcmp(e, "smooth") || !strcmp(e, "off") ? -1.0f : fminf(2.0f, fmaxf(0.0f, (float)atof(e)));
+    s = !e || !*e || !strcmp(e, "sharp") || !strcmp(e, "sgsr") || !strcmp(e, "fsr") ? 0.7f : !strcmp(e, "smooth") || !strcmp(e, "off") ? -1.0f : fminf(2.0f, fmaxf(0.0f, (float)atof(e)));
     dm_scaler_sharpness = s;
     return s;
 }
@@ -4681,12 +4681,147 @@ static int scale_setup(VkFormat fmt, int which) {
     SC.fmt[which] = fmt; VLOG("upscaler %s ready (format %d)", which ? "SGSR" : "sharp", fmt);
     return 1;
 }
+// ---------- FSR 1.0 (AMD FidelityFX Super Resolution 1.0, MIT: dm/third_party/fsr1): DM_SCALER=fsr, or Upscaling → FSR 1.0 in the menu ----------
+// Two passes at present time, as AMD describes them: EASU (edge-adaptive spatial upsampling) draws the game frame at the size of the picture on screen into an
+// image of ours, then RCAS (robust contrast-adaptive sharpening) draws that into the swapchain's box. The constants are FsrEasuConOffset's and FsrRcasCon's,
+// worked out here (the crop's offset goes into EASU's, and a lower-left origin is turned in the shader). The sharp upscaler stays the path whenever FSR cannot
+// run: a pre-rotated swapchain, no push descriptors, a pipeline or image that cannot be made
+#include "overlay/fsr_spv.h"
+static struct { VkPipeline easu, rcas; VkFormat fmt; VkPipelineLayout pl; VkImage img; VkImageView view; vmalloc_t mem; uint32_t w, h; int failed; } FS;
+typedef struct { uint32_t con[4][4]; float box[4]; int32_t org[4]; } fsr_pc;   // (the push block of fsr.vert / fsr_easu.frag / fsr_rcas.frag: 96 bytes)
+static VkPipeline fsr_pipe(const uint32_t *fs, size_t fsz, VkFormat fmt) {
+    VkShaderModule vm = VK_NULL_HANDLE, fm = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo mv = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = sizeof fsr_vert_spv, .pCode = fsr_vert_spv }, mf = mv;
+    mf.codeSize = fsz; mf.pCode = fs;
+    if (vkCreateShaderModule(g_dev, &mv, NULL, &vm) || vkCreateShaderModule(g_dev, &mf, NULL, &fm)) { if (vm) vkDestroyShaderModule(g_dev, vm, NULL); return VK_NULL_HANDLE; }
+    VkPipelineShaderStageCreateInfo st[2] = { { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_VERTEX_BIT, .module = vm, .pName = "main" },
+                                              { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = VK_SHADER_STAGE_FRAGMENT_BIT, .module = fm, .pName = "main" } };
+    VkPipelineVertexInputStateCreateInfo vi = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo ia = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
+    VkPipelineViewportStateCreateInfo vp = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .viewportCount = 1, .scissorCount = 1 };
+    VkPipelineRasterizationStateCreateInfo rs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO, .polygonMode = VK_POLYGON_MODE_FILL, .cullMode = VK_CULL_MODE_NONE, .lineWidth = 1 };
+    VkPipelineMultisampleStateCreateInfo ms = { .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT };
+    VkPipelineColorBlendAttachmentState cba = { .colorWriteMask = 0xf };
+    VkPipelineColorBlendStateCreateInfo cb = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, .attachmentCount = 1, .pAttachments = &cba };
+    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dy = { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dyn };
+    VkPipelineRenderingCreateInfo rci = { .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = 1, .pColorAttachmentFormats = &fmt };
+    VkGraphicsPipelineCreateInfo gi = { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &rci, .stageCount = 2, .pStages = st, .pVertexInputState = &vi, .pInputAssemblyState = &ia,
+        .pViewportState = &vp, .pRasterizationState = &rs, .pMultisampleState = &ms, .pColorBlendState = &cb, .pDynamicState = &dy, .layout = FS.pl };
+    if (!g_dynren) { gi.pNext = NULL; gi.renderPass = rp_for_pipeline(1, &fmt, 0, 1, 1); }
+    VkPipeline p = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &gi, NULL, &p)) p = VK_NULL_HANDLE;
+    vkDestroyShaderModule(g_dev, vm, NULL); vkDestroyShaderModule(g_dev, fm, NULL);
+    return p;
+}
+static int fsr_setup(VkFormat fmt) {
+    if (FS.failed || !p_push) return 0;
+    if (FS.easu && FS.rcas && FS.fmt == fmt) return 1;
+    if (!scale_setup(fmt, 0)) return 0;   // (FSR uses the sharp upscaler's sampler and descriptor layout)
+    if (!FS.pl) {
+        VkPushConstantRange pr = { VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(fsr_pc) };
+        VkPipelineLayoutCreateInfo pli = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1, .pSetLayouts = &SC.dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr };
+        if (vkCreatePipelineLayout(g_dev, &pli, NULL, &FS.pl)) { FS.failed = 1; RED_ONCE(123, "FSR 1.0: no pipeline layout: the sharp upscaler instead"); return 0; }
+    }
+    if (FS.easu) { vkDestroyPipeline(g_dev, FS.easu, NULL); FS.easu = VK_NULL_HANDLE; }
+    if (FS.rcas) { vkDestroyPipeline(g_dev, FS.rcas, NULL); FS.rcas = VK_NULL_HANDLE; }
+    FS.easu = fsr_pipe(fsr_easu_frag_spv, sizeof fsr_easu_frag_spv, fmt);
+    FS.rcas = fsr_pipe(fsr_rcas_frag_spv, sizeof fsr_rcas_frag_spv, fmt);
+    if (!FS.easu || !FS.rcas) { FS.failed = 1; RED_ONCE(123, "FSR 1.0: a pipeline failed (EASU %d, RCAS %d): the sharp upscaler instead", FS.easu != VK_NULL_HANDLE, FS.rcas != VK_NULL_HANDLE); return 0; }
+    FS.fmt = fmt; VLOG("upscaler FSR 1.0 ready (format %d)", fmt);
+    return 1;
+}
+// EASU's picture: an image of ours the size of the box, made again only when that size changes
+static int fsr_target(uint32_t w, uint32_t h) {
+    if (FS.img && FS.w == w && FS.h == h) return 1;
+    if (FS.img) { vkDeviceWaitIdle(g_dev); vkDestroyImageView(g_dev, FS.view, NULL); vkDestroyImage(g_dev, FS.img, NULL); vk_free(FS.mem); FS.img = VK_NULL_HANDLE; FS.view = VK_NULL_HANDLE; }
+    VkImageCreateInfo ci = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D, .format = FS.fmt, .extent = { w, h, 1 }, .mipLevels = 1, .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED };
+    if (vkCreateImage(g_dev, &ci, NULL, &FS.img)) { FS.img = VK_NULL_HANDLE; return 0; }
+    VkMemoryRequirements rq; vkGetImageMemoryRequirements(g_dev, FS.img, &rq);
+    FS.mem = vk_alloc(rq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+    VkImageViewCreateInfo vci = { .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = FS.img, .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = FS.fmt,
+        .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    if (!FS.mem.b || vkBindImageMemory(g_dev, FS.img, FS.mem.b->mem, FS.mem.off) || vkCreateImageView(g_dev, &vci, NULL, &FS.view)) {
+        if (FS.mem.b) vk_free(FS.mem);
+        vkDestroyImage(g_dev, FS.img, NULL); FS.img = VK_NULL_HANDLE; FS.view = VK_NULL_HANDLE; return 0;
+    }
+    FS.w = w; FS.h = h;
+    return 1;
+}
+static uint32_t fsr_bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
+// The game picture (view sv, tw x th, crop cx cy cw ch, flipped when its origin is lower left) through FSR 1.0 into swapchain image ii's box (not pre-rotated),
+// the image left in TRANSFER_DST layout as after the blit. 0: nothing recorded (the caller uses the sharp upscaler)
+static int fsr_draw(VkCommandBuffer cb, VkImageView sv, uint32_t tw, uint32_t th, int32_t cx, int32_t cy, int32_t cw, int32_t ch, int flip, uint32_t ii, const int32_t box[4], float sharp) {
+    if (W.rot || box[0] < 0 || box[1] < 0 || box[2] <= 0 || box[3] <= 0 || box[0] + box[2] > (int32_t)W.ext.width || box[1] + box[3] > (int32_t)W.ext.height) return 0;
+    if (!fsr_setup(W.fmt)) return 0;
+    uint32_t bw = (uint32_t)box[2], bh = (uint32_t)box[3];
+    if (!fsr_target(bw, bh)) { RED_ONCE(123, "FSR 1.0: no %ux%u image for its first pass: the sharp upscaler instead", bw, bh); return 0; }
+    fsr_pc pc; memset(&pc, 0, sizeof pc);
+    // FsrEasuConOffset (ffx_fsr1.h): viewport cw x ch at (cx, cy) in a tw x th image, output bw x bh
+    float ix = (float)cw, iy = (float)ch, sx = (float)tw, sy = (float)th, ox = (float)bw, oy = (float)bh;
+    float c0[4] = { ix / ox, iy / oy, 0.5f * ix / ox - 0.5f + (float)cx, 0.5f * iy / oy - 0.5f + (float)cy };
+    float c1[4] = { 1.0f / sx, 1.0f / sy, 1.0f / sx, -1.0f / sy }, c2[4] = { -1.0f / sx, 2.0f / sy, 1.0f / sx, 2.0f / sy }, c3[2] = { 0.0f, 4.0f / sy };
+    for (int k = 0; k < 4; k++) { pc.con[0][k] = fsr_bits(c0[k]); pc.con[1][k] = fsr_bits(c1[k]); pc.con[2][k] = fsr_bits(c2[k]); }
+    pc.con[3][0] = fsr_bits(c3[0]); pc.con[3][1] = fsr_bits(c3[1]);
+    pc.box[0] = -1; pc.box[1] = -1; pc.box[2] = 1; pc.box[3] = 1; pc.org[2] = (int32_t)bh; pc.org[3] = flip ? 1 : 0;
+    // pass 1, EASU: the game frame into our image
+    VkImageMemoryBarrier tb = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_READ_BIT, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = FS.img, .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &tb);   // (last frame's RCAS read it)
+    VkRenderingAttachmentInfo ea = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = FS.view, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };
+    VkRenderingInfo eri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, { bw, bh } }, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ea };
+    { uint32_t cf = (uint32_t)FS.fmt; rend_begin(cb, &eri, &cf, 0, 1, 0); }
+    VkViewport v = { 0, 0, ox, oy, 0, 1 }; VkRect2D sc = { { 0, 0 }, { bw, bh } };
+    vkCmdSetViewport(cb, 0, 1, &v); vkCmdSetScissor(cb, 0, 1, &sc);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, FS.easu);
+    VkDescriptorImageInfo di = { SC.samp, sv, VK_IMAGE_LAYOUT_GENERAL };
+    VkWriteDescriptorSet w = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &di };
+    p_push(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, FS.pl, 0, 1, &w);
+    vkCmdPushConstants(cb, FS.pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+    rend_end(cb);
+    tb.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; tb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    tb.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; tb.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &tb);
+    // pass 2, RCAS: our image into the swapchain's box. FsrRcasCon: sharpness in stops (0 the most); the menu's 0..2 (default 0.7) becomes 0.5..0 stops
+    float stops = fmaxf(0.0f, fminf(2.0f, 0.5f - sharp * 0.25f));
+    memset(pc.con, 0, sizeof pc.con); pc.con[0][0] = fsr_bits(exp2f(-stops));
+    float lw = (float)W.ext.width, lh = (float)W.ext.height;
+    pc.box[0] = box[0] / lw * 2 - 1; pc.box[1] = box[1] / lh * 2 - 1; pc.box[2] = (box[0] + box[2]) / lw * 2 - 1; pc.box[3] = (box[1] + box[3]) / lh * 2 - 1;   // (the box itself: fsr.vert's triangle is twice its size)
+    pc.org[0] = box[0]; pc.org[1] = box[1]; pc.org[2] = 0; pc.org[3] = 0;
+    VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = W.img[ii], .subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 } };
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+    VkRenderingAttachmentInfo ca = { .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = W.view[ii], .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE };   // (LOAD: the black the caller cleared stays around the box)
+    VkRenderingInfo ri = { .sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = { {0, 0}, W.ext }, .layerCount = 1, .colorAttachmentCount = 1, .pColorAttachments = &ca };
+    { uint32_t cf = (uint32_t)W.fmt; rend_begin(cb, &ri, &cf, 0, 1, 1); }
+    VkViewport v2 = { 0, 0, lw, lh, 0, 1 }; VkRect2D sc2 = { { box[0], box[1] }, { bw, bh } };
+    vkCmdSetViewport(cb, 0, 1, &v2); vkCmdSetScissor(cb, 0, 1, &sc2);
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, FS.rcas);
+    VkDescriptorImageInfo di2 = { SC.samp, FS.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    w.pImageInfo = &di2;
+    p_push(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, FS.pl, 0, 1, &w);
+    vkCmdPushConstants(cb, FS.pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+    rend_end(cb);
+    ib.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT; ib.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    ib.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; ib.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &ib);
+    static int said; if (!said++) VLOG("upscaler FSR 1.0: %dx%d → %ux%u (RCAS %.2f stops)", cw, ch, bw, bh, stops);
+    return 1;
+}
 // The game frame x (crop cx cy cw ch, flipped when its origin is lower left) drawn into swapchain image ii's box, the rest black; the image is left in TRANSFER_DST layout,
 // as after the blit. Returns 0 (nothing recorded: the caller blits) when the upscaler does not apply
 static int scale_draw_view(VkCommandBuffer cb, VkImageView sv, uint32_t tw, uint32_t th, int32_t cx, int32_t cy, int32_t cw, int32_t ch, int flip, uint32_t ii, const int32_t box[4]) {
     int mode = scaler_mode(); float sh = scale_sharpness();
     if (!W.rot && (mode == 2 || sh < 0 || box[2] <= cw || box[3] <= ch)) return 0;   // not scaling up, or the plain stretch chosen: the blit (a turned swapchain always draws here)
     if (!sv || tw == 0 || th == 0 || !W.view[ii]) return 0;
+    if (mode == 3 && box[2] > cw && box[3] > ch && fsr_draw(cb, sv, tw, th, cx, cy, cw, ch, flip, ii, box, sh)) return 1;   // (FSR 1.0; else the sharp one below)
     int which = mode == 1 ? 1 : 0; if (which && !scale_setup(W.fmt, 1)) which = 0;
     if (!scale_setup(W.fmt, which)) return 0;
     if (mode == 2 || sh < 0) sh = 0;   // (turned but smooth: plain bilinear)
