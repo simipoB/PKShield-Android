@@ -115,16 +115,6 @@ def first_shaders(keys, pairs):
     for k in list(first): first |= pairs.get(k, set()) & have
     return first if first and len(first) < len(have) // 2 else None
 
-def next_first(later):
-    """Fast setup's background order: the game's shader_next.tsv keys first, in its order (the Wild Area's ground, battles, towns: they drew nothing until
-    their batch came, #173), then the rest as before. Unchanged when the game has no such list"""
-    try: nxt = [ln.split('	')[0].strip()[:16] for ln in open(PROFILE.table('shader_next.tsv'), encoding='utf-8') if ln.strip() and not ln.startswith('#')]
-    except OSError: return later
-    have = set(later); front = []; seen = set()
-    for k in nxt:
-        if k in have and k not in seen: seen.add(k); front.append(k)
-    return front + [k for k in later if k not in seen]
-
 def explain_failure(log_path, files):
     """The unpacker's known failures in words a player can act on (from the end of setup.log), and whether setting up anyway (--allow-damaged) can get past
     it; ('', False) when it is none of them"""
@@ -381,7 +371,6 @@ def main():
         os.makedirs(vk, exist_ok=True)
         allk = [c[3] for c in found_rows(a.work)]; first = first_shaders(allk, pair_map(a.work))
         later = [k for k in allk if k not in first] if first else []
-        later = next_first(later)   # (shader_next.tsv's keys first: the places a player reaches soon after the start, #173)
         if first: log.write(f'fast setup: {len(first)} of {len(allk)} shaders now (the ones the game uses first), {len(later)} after, in the background\n')
         stop = threading.Event(); found = os.path.join(a.work, 'shader_map.found.tsv')
         threading.Thread(target=watch_translation, args=(found, a.work, os.path.join(cache, 'b-' + chain), stop, first), daemon=True).start()
