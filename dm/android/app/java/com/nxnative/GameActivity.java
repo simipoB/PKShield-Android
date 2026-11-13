@@ -77,10 +77,14 @@ public final class GameActivity extends NativeActivity implements InputManager.I
     private final Runnable loadPoll = new Runnable() { @Override public void run() {
         int l; try { l = nativeLoading(); } catch (UnsatisfiedLinkError e) { return; }
         if (l != loadWas && android.os.Build.VERSION.SDK_INT >= 33) { loadWas = l;
-            try { android.app.GameManager gm = getSystemService(android.app.GameManager.class);
-                  if (gm != null) gm.setGameState(new android.app.GameState(l == 1, android.app.GameState.MODE_GAMEPLAY_INTERRUPTIBLE)); } catch (RuntimeException e) { } }
+            try { Api33.loading(GameActivity.this, l == 1); } catch (RuntimeException | LinkageError e) { } }
         if (alive) loadH.postDelayed(this, 500);
     } };
+    // Android 13's GameState in a class of its own, loaded only on 13+: inside the poller above, Android 12's verifier rejected the whole class over it and the app closed at
+    //   the Game Freak logo (Arceus-Native-Android #19, a Snapdragon 865 on Android 12)
+    private static final class Api33 { static void loading(android.content.Context c, boolean on) {
+        android.app.GameManager gm = c.getSystemService(android.app.GameManager.class);
+        if (gm != null) gm.setGameState(new android.app.GameState(on, android.app.GameState.MODE_GAMEPLAY_INTERRUPTIBLE)); } }
     // ---------- rumble (hle_hid.c → touch_ui.c dm_rumble): the game's motor strength 0..1, about every 100 ms while it lasts, on the engine's haptic thread ----------
     // the controller's own motor when the one in use has one, else the phone's (DM_RUMBLE: "" both, "pad" controllers only, "off" none); each call is a 150 ms pulse
     private volatile android.os.Vibrator padVib; private android.os.Vibrator phoneVib; private String rumbleMode; private long rumbleRead;
