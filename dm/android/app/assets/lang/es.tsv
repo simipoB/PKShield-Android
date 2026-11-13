@@ -333,3 +333,4 @@ App folder	Carpeta de la app
 App folder: Android/data, as before	Carpeta de la app: Android/data, como antes
 Documents	Documentos
 Documents/Galar Native/%s/save, for sync tools such as Syncthing. Your save is copied there at the next start; anything already there is kept as a backup. Needs All files access	Documents/Galar Native/%s/save, para herramientas de sincronización como Syncthing. Tu partida se copia allí en el próximo inicio; lo que ya hubiera se guarda como copia de seguridad. Requiere acceso a todos los archivos
+The last setup translated only part of the game's shaders, so parts of the game were not drawn. Tap Set up once more: it finishes them (the ones already done are kept).	La última configuración tradujo solo una parte de los shaders del juego, por eso partes del juego no se dibujaban. Toca Configurar una vez más: las termina (las ya hechas se conservan).

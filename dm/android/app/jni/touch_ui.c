@@ -325,6 +325,12 @@ void touch_ui_event(const AInputEvent *e, float w, float h, uint64_t *btn, int32
         for (int i = 0; i < 10; i++) if (g_ptr[i].id == id && g_ptr[i].target == C_MENU && hit(C_MENU, g_ptr[i].x, g_ptr[i].y, 1.5f)) { click_locked(); front_open_menu(0); }
         for (int i = 0; i < 10; i++) if (g_ptr[i].id == id) { if (g_ptr[i].target == C_CAM) g_cam_vx = g_cam_vy = 0; g_ptr[i].id = -1; }
     }
+    // A finger the system never lifted: every move (and every new finger) lists all fingers down, so one held here that the event does not list has gone without
+    //   its UP (a system gesture or panel took it); it let go of its button or stick then. Before, it stayed pressed until the next first finger (ghost presses)
+    if (act == AMOTION_EVENT_ACTION_MOVE || act == AMOTION_EVENT_ACTION_POINTER_DOWN)
+        for (int i = 0; i < 10; i++) if (g_ptr[i].id >= 0) { int seen = 0;
+            for (size_t k = 0; k < AMotionEvent_getPointerCount(e) && !seen; k++) seen = AMotionEvent_getPointerId(e, k) == g_ptr[i].id;
+            if (!seen) { static int nl; if (nl++ < 20) fprintf(stderr, "[touch] a finger on control %d was never lifted by the system: let go\n", g_ptr[i].target); g_ptr[i].id = -1; } }
     if (act == AMOTION_EVENT_ACTION_MOVE || act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN)
         for (size_t k = 0; k < AMotionEvent_getPointerCount(e); k++) {
             int32_t id = AMotionEvent_getPointerId(e, k);
@@ -349,6 +355,15 @@ void touch_ui_event(const AInputEvent *e, float w, float h, uint64_t *btn, int32
     pthread_mutex_unlock(&g_mu);
 }
 void touch_ui_hide(void) { pthread_mutex_lock(&g_mu); g_visible = 0; pthread_mutex_unlock(&g_mu); }
+// The app lost focus or went to the background (android_main.c): every finger let go. Android does not always send the lift or a cancel for fingers down when a
+//   panel opens over the game (the notification shade, Game Booster, the ☰ menu), and the buttons they held stayed pressed
+void touch_ui_release(void) {
+    pthread_mutex_lock(&g_mu); int n = 0;
+    for (int i = 0; i < 10; i++) { if (g_ptr[i].id >= 0) n++; g_ptr[i].id = -1; }
+    recompute_locked(); dm_input_set(g_btn, g_lx, g_ly, g_rx, g_ry);
+    pthread_mutex_unlock(&g_mu);
+    if (n) fprintf(stderr, "[touch] focus lost with %d finger%s down: let go\n", n, n == 1 ? "" : "s");
+}
 // GameActivity.java: a controller connected hides the controls at once (no input needed first); the last one disconnected shows them again
 void touch_ui_pad(int connected) { pthread_mutex_lock(&g_mu); g_visible = !connected; if (!connected) g_touch_t = now_s(); pthread_mutex_unlock(&g_mu); }
 #else

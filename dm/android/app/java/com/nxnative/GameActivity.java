@@ -77,10 +77,14 @@ public final class GameActivity extends NativeActivity implements InputManager.I
     private final Runnable loadPoll = new Runnable() { @Override public void run() {
         int l; try { l = nativeLoading(); } catch (UnsatisfiedLinkError e) { return; }
         if (l != loadWas && android.os.Build.VERSION.SDK_INT >= 33) { loadWas = l;
-            try { android.app.GameManager gm = getSystemService(android.app.GameManager.class);
-                  if (gm != null) gm.setGameState(new android.app.GameState(l == 1, android.app.GameState.MODE_GAMEPLAY_INTERRUPTIBLE)); } catch (RuntimeException e) { } }
+            try { Api33.loading(GameActivity.this, l == 1); } catch (RuntimeException | LinkageError e) { } }
         if (alive) loadH.postDelayed(this, 500);
     } };
+    // Android 13's GameState in a class of its own, loaded only on 13+: inside the poller above, Android 12's verifier rejected the whole class over it and the app closed at
+    //   the Game Freak logo (Arceus-Native-Android #19, a Snapdragon 865 on Android 12)
+    private static final class Api33 { static void loading(android.content.Context c, boolean on) {
+        android.app.GameManager gm = c.getSystemService(android.app.GameManager.class);
+        if (gm != null) gm.setGameState(new android.app.GameState(on, android.app.GameState.MODE_GAMEPLAY_INTERRUPTIBLE)); } }
     // ---------- rumble (hle_hid.c → touch_ui.c dm_rumble): the game's motor strength 0..1, about every 100 ms while it lasts, on the engine's haptic thread ----------
     // the controller's own motor when the one in use has one, else the phone's (DM_RUMBLE: "" both, "pad" controllers only, "off" none); each call is a 150 ms pulse
     private volatile android.os.Vibrator padVib; private android.os.Vibrator phoneVib; private String rumbleMode; private long rumbleRead;
@@ -159,15 +163,6 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         Thread t = new Thread(() -> {
             while (liveOn) {
                 try { Thread.sleep(10000); } catch (InterruptedException e) { return; }
-                // the fast setup's rest (setup_game.py --rest --yield): the shaders the setup left for later, beside the game in the same way; one run at a time (a run
-                //   the setup screen started, at full speed, makes way by itself once it sees game_running; this one then prints BUSY and is tried again later)
-                if (new File(dir, "rest.json").exists() && liveRoom()) {
-                    try {
-                        Process p = SetupActivity.startTool(this, java.util.Arrays.asList("--rest", "--yield"), GameSettings.memoryGb(this) < 7.5 ? 2 : 4);
-                        if (p != null) { try (java.io.InputStream in = p.getInputStream()) { byte[] b = new byte[4096]; while (in.read(b) >= 0) { } } p.waitFor(); }
-                    } catch (Exception e) { }
-                    continue;
-                }
                 java.util.List<String> todo = SetupActivity.pendingCaptures(dir); todo.removeAll(tried); if (todo.isEmpty()) continue;
                 if (!liveRoom()) continue;
                 tried.addAll(todo);   // (once a run: a failure is left to the setup screen's next start)
@@ -180,10 +175,7 @@ public final class GameActivity extends NativeActivity implements InputManager.I
         }, "live shaders");
         t.setPriority(Thread.MIN_PRIORITY); t.setDaemon(true); t.start();
     }
-    @Override protected void onResume() { super.onResume(); check(); gameRunning(true); displayMode(); }
-    @Override protected void onPause() { gameRunning(false); super.onPause(); }
-    // game_running: the game is on screen, so a fast setup's rest that runs at full speed (started from the setup screen) gets out of its way (setup_game.py rest)
-    private void gameRunning(boolean on) { File f = new File(GameSettings.dir(this), "game_running"); try { if (on) f.createNewFile(); else f.delete(); } catch (java.io.IOException e) { } }
+    @Override protected void onResume() { super.onResume(); check(); displayMode(); }
     // am start ... --es menu <page>: the settings panel (testing over adb; 1 = the controller buttons)
     @Override protected void onNewIntent(Intent i) { super.onNewIntent(i); String m = i.getStringExtra("menu"); if (m != null) GameMenu.show(this, m.equals("1") ? 1 : 0); }
     @Override protected void onActivityResult(int req, int res, Intent data) { if (!GameMenu.onResult(this, req, res, data)) super.onActivityResult(req, res, data); }   // the in-game menu's file pickers
