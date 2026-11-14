@@ -247,6 +247,9 @@ public final class GameMenu {
             { "sharp", t(a, "Sharp"), t(a, "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)") },
             { "sgsr", "SGSR", t(a, "Snapdragon Game Super Resolution (Qualcomm's upscaler)") },
             { "fsr", "FSR", t(a, "AMD FidelityFX Super Resolution 1: edge-aware upscaling, then sharpening (Sharpness sets how much)") }, { "smooth", t(a, "Smooth"), t(a, "Smooth: a plain stretch") } });
+        // the picture's colour, graded in the upscaler's last shader (nvn_vk.c color_mode): live
+        choice(a, "DM_COLOR", t(a, "Colour"), new String[][] { { "", t(a, "Natural"), t(a, "Natural: the colours as the game draws them") },
+            { "vibrant", t(a, "Vibrant"), t(a, "Vibrant: muted colours lifted, a touch more contrast (less grey haze)") }, { "cinematic", t(a, "Cinematic"), t(a, "Cinematic: stronger contrast, a slightly warm tone") } });
         // Frame generation (nvn_vk.c, nvn_fgen.h): off unless the player turns it on, on any GPU; takes effect at once
         //   Lossless Scaling's (nvn_lsfg.h): offered once the player has imported their own Lossless.dll (its shaders, converted, in files/lsfg)
         String[][] fgc = { { "", t(a, "Off"), "" },

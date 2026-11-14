@@ -4667,6 +4667,10 @@ static int scaler_mode(void) {
     const char *e = getenv("DM_SCALER"); m = e && !strcmp(e, "sgsr") ? 1 : e && !strcmp(e, "fsr") ? 3 : e && (!strcmp(e, "smooth") || !strcmp(e, "off")) ? 2 : 0;
     dm_scaler_mode = m; return m;
 }
+// The picture's colour (DM_COLOR: "vibrant" 1 / "cinematic" 2, else the game's 0; ☰ -> Colour, set live by android_main.c): graded in the upscaler's last shader
+//   (scale.frag, fsr_rcas.frag: grade), so with a colour chosen that shader runs even when the picture is not scaled up. SGSR and the plain stretch keep the game's colour
+__attribute__((weak)) volatile int dm_color_mode = -1;
+static int color_mode(void) { int m = dm_color_mode; if (m >= 0) return m; const char *e = getenv("DM_COLOR"); m = e && !strcmp(e, "vibrant") ? 1 : e && !strcmp(e, "cinematic") ? 2 : 0; dm_color_mode = m; return m; }
 __attribute__((weak)) volatile float dm_scaler_sharpness = -2;   // (an aligned float load / store is single-copy atomic on arm64)   // -2: not read yet; -1: off (smooth); the in-game menu sets it (android_main.c)
 static float scale_sharpness(void) {
     float s = dm_scaler_sharpness;
@@ -4829,6 +4833,7 @@ static int fsr_draw(VkCommandBuffer cb, VkImageView sv, uint32_t tw, uint32_t th
     p_push(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, FS.pl, 0, 1, &w);
     float lw = (float)W.lext.width, lh = (float)W.lext.height;
     fsr_pc rc = { { 0, 0, 1, 1 }, { (float)ow, (float)oh, 0, 0 }, { box[0] / lw * 2 - 1, box[1] / lh * 2 - 1, (box[0] + box[2]) / lw * 2 - 1, (box[1] + box[3]) / lh * 2 - 1 }, { (float)W.rot, 0, 0, 0 } };
+    rc.con[1][0] = (uint32_t)color_mode();   // (fsr_rcas.frag: grade)
     float stops = sharp < 0 ? 2.0f : fminf(2.0f, fmaxf(0.0f, 1.4f - 1.714f * sharp)); float lin = exp2f(-stops); memcpy(&rc.con[0][0], &lin, 4);   // (FsrRcasCon: stops → linear; con[1] (half) unused here)
     vkCmdPushConstants(cb, FS.pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof rc, &rc);
     vkCmdDraw(cb, 3, 1, 0, 0);
@@ -4839,7 +4844,7 @@ static int fsr_draw(VkCommandBuffer cb, VkImageView sv, uint32_t tw, uint32_t th
 // as after the blit. Returns 0 (nothing recorded: the caller blits) when the upscaler does not apply
 static int scale_draw_view(VkCommandBuffer cb, VkImageView sv, uint32_t tw, uint32_t th, int32_t cx, int32_t cy, int32_t cw, int32_t ch, int flip, uint32_t ii, const int32_t box[4]) {
     int mode = scaler_mode(); float sh = scale_sharpness();
-    if (!W.rot && (mode == 2 || (sh < 0 && mode != 3) || box[2] <= cw || box[3] <= ch)) return 0;   // not scaling up, or the plain stretch chosen: the blit (a turned swapchain always draws here)
+    if (!W.rot && !color_mode() && (mode == 2 || (sh < 0 && mode != 3) || box[2] <= cw || box[3] <= ch)) return 0;   // not scaling up, or the plain stretch chosen: the blit (a turned swapchain, or a colour chosen, always draws here)
     if (!sv || tw == 0 || th == 0 || !W.view[ii]) return 0;
     if (mode == 3 && box[2] > cw && box[3] > ch && fsr_draw(cb, sv, tw, th, cx, cy, cw, ch, flip, ii, box, sh)) {   // FSR 1 (fsr_draw); else the sharp upscaler below
         VkImageMemoryBarrier eb = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -4849,7 +4854,7 @@ static int scale_draw_view(VkCommandBuffer cb, VkImageView sv, uint32_t tw, uint
         static int said; if (!said++) VLOG("upscaler FSR 1: %dx%d → %dx%d%s", cw, ch, box[2], box[3], W.rot ? " (pre-rotated)" : "");
         return 1;
     }
-    int which = mode == 1 ? 1 : 0; if (which && !scale_setup(W.fmt, 1)) which = 0;
+    int which = mode == 1 && !color_mode() ? 1 : 0; if (which && !scale_setup(W.fmt, 1)) which = 0;   // (SGSR has no colour: with one chosen, the sharp upscaler)
     if (!scale_setup(W.fmt, which)) return 0;
     if (mode == 2 || sh < 0) sh = 0;   // (turned but smooth: plain bilinear)
     VkImageMemoryBarrier ib = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
@@ -4879,7 +4884,7 @@ static int scale_draw_view(VkCommandBuffer cb, VkImageView sv, uint32_t tw, uint
     scale_pc pc = { { 0 }, { 0 }, { box[0] / lw * 2 - 1, box[1] / lh * 2 - 1, (box[0] + box[2]) / lw * 2 - 1, (box[1] + box[3]) / lh * 2 - 1 }, { (float)W.rot, 0, 0, 0 } };
     float uv[4] = { u0, flip ? v1 : v0, u1, flip ? v0 : v1 };
     if (which) { float vi[4] = { 1.0f / tw, 1.0f / th, (float)tw, (float)th }; memcpy(pc.p0, vi, sizeof vi); memcpy(pc.p1, uv, sizeof uv); }
-    else { float t[4] = { 1.0f / tw, 1.0f / th, sh, 0 }; memcpy(pc.p0, uv, sizeof uv); memcpy(pc.p1, t, sizeof t); }
+    else { float t[4] = { 1.0f / tw, 1.0f / th, sh, (float)color_mode() }; memcpy(pc.p0, uv, sizeof uv); memcpy(pc.p1, t, sizeof t); }
     vkCmdPushConstants(cb, SC.pl, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
     rend_end(cb);
@@ -4892,7 +4897,7 @@ static int scale_draw_view(VkCommandBuffer cb, VkImageView sv, uint32_t tw, uint
 // (the game's own frame x: sampled through a view of it; sv / tw / th above: any picture in the GENERAL layout, frame generation's in-between one)
 static int scale_draw(VkCommandBuffer cb, vtex *x, int32_t cx, int32_t cy, int32_t cw, int32_t ch, int flip, uint32_t ii, const int32_t box[4]) {
     if (!(x->usage & VK_IMAGE_USAGE_SAMPLED_BIT) || x->is3d) return 0;
-    if (!W.rot && (scaler_mode() == 2 || (scale_sharpness() < 0 && scaler_mode() != 3) || box[2] <= cw || box[3] <= ch)) return 0;   // (the blit: no view needed)
+    if (!W.rot && !color_mode() && (scaler_mode() == 2 || (scale_sharpness() < 0 && scaler_mode() != 3) || box[2] <= cw || box[3] <= ch)) return 0;   // (the blit: no view needed)
     return scale_draw_view(cb, view_get(x, VK_IMAGE_VIEW_TYPE_2D, x->fmt, 0, 1, 0, 1, SW_ID, VK_IMAGE_ASPECT_COLOR_BIT), x->w, x->h, cx, cy, cw, ch, flip, ii, box);
 }
 // ---------- Frame generation (nvn_fgen.h): DM_FRAMEGEN=on, off by default, experimental ----------

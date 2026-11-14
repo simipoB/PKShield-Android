@@ -218,6 +218,7 @@ JNIEXPORT jboolean JNICALL Java_com_nxnative_GameMenu_nativeSetting(JNIEnv *env,
     else if (!strcmp(k, "DM_RUMBLE")) { touch_ui_setting(k, v); now = 0; }
     else if (!strcmp(k, "DM_RSTICK_SENS")) { extern _Atomic int dm_rstick_pct __attribute__((weak)); int p = v ? atoi(v) : 100; if (p < 25 || p > 400) p = 100; if (&dm_rstick_pct) atomic_store(&dm_rstick_pct, p); else now = 0; }   // (the touch click follows it at once; the game's motors are GameActivity's, GameMenu decides)
     else if (!strcmp(k, "DM_ASPECT")) __atomic_store_n(&dm_aspect_mode, !v ? DM_ASPECT_FIT : !strcmp(v, "20:9") ? DM_ASPECT_20_9 : !strcmp(v, "fill") ? DM_ASPECT_FILL : DM_ASPECT_FIT, __ATOMIC_RELAXED);
+    else if (!strcmp(k, "DM_COLOR")) { extern volatile int dm_color_mode; dm_color_mode = v && !strcmp(v, "vibrant") ? 1 : v && !strcmp(v, "cinematic") ? 2 : 0; }   // (nvn_vk.c color_mode: live)
     else if (!strcmp(k, "DM_SCALER")) { extern volatile int dm_scaler_mode; if (!v || !*v) v = getenv("DM_AUTO_SCALER"); dm_scaler_mode = v && !strcmp(v, "sgsr") ? 1 : v && !strcmp(v, "fsr") ? 3 : v && !strcmp(v, "smooth") ? 2 : 0; }   // (Auto: the app's pick)
     else if (!strcmp(k, "DM_FRAMEGEN")) { extern volatile int dm_framegen_mode; dm_framegen_mode = v && (!strcmp(v, "on") || !strcmp(v, "1")) ? 1 : v && !strcmp(v, "debug") ? 2 : v && !strcmp(v, "lsfg") ? 3 : 0; window_rate(atomic_load(&g_window));   // nvn_vk.c present_window_locked
         window_rate(atomic_load(&g_window)); }   // (Android is told the doubled rate, or the game's own again)
