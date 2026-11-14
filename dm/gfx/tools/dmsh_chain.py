@@ -8,7 +8,7 @@
 #       dmsh_chain.py --header        rewrite the game profile's dmsh_chain.h (run after changing any file listed above)
 #       dmsh_chain.py --check-tools   verify that the actual tools match the lock file; on mismatch print [RED] lines and exit 1
 #       dmsh_chain.py --update-lock   rewrite the lock file from the actual tools (run after changing Ryujinx / spirv-cross / Xcode; committed to the repo)
-# Environment: XLATE_DEBUG / XLATE_REDUCED (same meaning as in dmsh_build.py, default 1 / 1; non-default options yield a different V, which the host will not load)
+# Environment: XLATE_DEBUG / XLATE_REDUCED (same meaning as in dmsh_build.py, default 0 / 1 (debug off since chain 2026-11-13: the translator's expression optimizer runs, as in Ryujinx itself); non-default options yield a different V, which the host will not load)
 import os, sys, hashlib, subprocess
 DM_ROOT = os.environ.get('DM_ROOT') or os.path.expanduser('~/dm-work')   # Workspace root (game files, build outputs and run artifacts are all under it)
 HERE = os.path.dirname(os.path.abspath(__file__)); GFX = os.path.dirname(HERE); HOME = os.path.expanduser('~')
@@ -21,7 +21,7 @@ LOCK = os.path.join(HERE, 'dmsh_chain.lock'); HEADER = str(GAME.table('dmsh_chai
 XLATE_DIR = os.path.dirname(os.environ.get('XLATE', os.path.join(HERE, 'dmsh_xlate_bin/dmsh_xlate')))
 
 def options():
-    return 'debug=%s reduced=%s' % (os.environ.get('XLATE_DEBUG', '1') != '0', os.environ.get('XLATE_REDUCED', '1') == '1')
+    return 'debug=%s reduced=%s' % (os.environ.get('XLATE_DEBUG', '0') != '0', os.environ.get('XLATE_REDUCED', '1') == '1')
 
 def version():
     h = hashlib.sha256()

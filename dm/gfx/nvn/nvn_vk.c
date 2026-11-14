@@ -495,8 +495,10 @@ void mtl_init(void) {
     //   Mali-G52 r26p0: 86 % white instead of 81 %, the dark outlines gone, about 10 % slower)
     // R11G11B10F render targets as RGBA16F (nvn_fmt_vk.c nvn_fmt_vk_b10_as_rgba16): a test for Mali's white lit scene, off unless DM_VK_B10_AS_RGBA16=1 (the menu's Mali tests)
     { const char *e = getenv("DM_VK_B10_AS_RGBA16"); if (e && atoi(e) > 0) { nvn_fmt_vk_b10_as_rgba16(1); VLOG("formats: R11G11B10F drawn and sampled as RGBA16F (DM_VK_B10_AS_RGBA16, a Mali test)"); } }
-    { const char *e = getenv("DM_VK_FMZ"); g_fmz = e && *e ? atoi(e) > 0 : g_props.vendorID == 0x13B5 && !g_arm_rel;
-      if (g_fmz) VLOG("shaders: a multiply by 0 gives 0 even for infinity and NaN, as on the Switch's GPU (FMZ, every multiply%s)", e && *e ? ": DM_VK_FMZ" : ": on by default for PanVK"); }
+    //   Since chain 91294b095153 the translator writes FMZ into the multiplies the game marked (as yuzu / Eden do), on every GPU: PanVK keeps its fix and the multiplies
+    //   the game did not mark keep their NaN (the dark outlines on Mali-G52, #215), with a fraction of the cost. The every-multiply copy is off by default, DM_VK_FMZ=1 to compare
+    { const char *e = getenv("DM_VK_FMZ"); g_fmz = e && *e && atoi(e) > 0;
+      if (g_fmz) VLOG("shaders: a multiply by 0 gives 0 even for infinity and NaN, in every multiply (DM_VK_FMZ); the marked ones have it from the translator"); }
     // DM_VK_PROBE=samples,inputs,div (a diagnostic, #215): those values clamped in every fragment shader (spv_probe), one kind a run, to find which carries the white
     { const char *e = getenv("DM_VK_PROBE"); if (e && *e) { g_probe = (strstr(e, "samples") ? PROBE_SAMPLES : 0) | (strstr(e, "inputs") ? PROBE_INPUTS : 0) | (strstr(e, "div") ? PROBE_DIV : 0);
       if (g_probe) VLOG("shaders: DIAGNOSTIC, fragment shaders clamp%s%s%s (DM_VK_PROBE=%s)", g_probe & PROBE_SAMPLES ? " every texture sample" : "",

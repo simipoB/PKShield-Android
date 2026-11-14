@@ -295,7 +295,7 @@ def job_for(key, name, rec, w):
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
     tf = tf_layout(key, rec[ci:]) if stage == 'vs' else None
     j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), **({'tf': tf} if tf else {}),
-         'debug': os.environ.get('XLATE_DEBUG', '1') != '0', 'reduced': os.environ.get('XLATE_REDUCED', '1') == '1'}   # translation options (see dmsh_xlate/Program.cs); relaxed precision is on by default (GPU float last-bit error does not enter game state, whole frame −26% on the second Mac)   # c1: used by the translator to read indirect jump tables
+         'debug': os.environ.get('XLATE_DEBUG', '0') != '0', 'reduced': os.environ.get('XLATE_REDUCED', '1') == '1'}   # translation options (see dmsh_xlate/Program.cs); relaxed precision is on by default (GPU float last-bit error does not enter game state, whole frame −26% on the second Mac)   # c1: used by the translator to read indirect jump tables
     if key not in FACTS: j['pc_missing'] = True; return j, c1   # not in the answer table: queries use defaults (listed separately in the summary)
     j.update(FACTS[key])
     return j, c1
