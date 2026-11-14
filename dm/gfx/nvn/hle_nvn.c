@@ -1644,6 +1644,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     (void)q; win_t *o = (win_t *)w; o->presents++;
     dm_fps_lock_tick(); dm_res_scale_tick();
     if (dm_fps_state) { static int was; int c = fps_step_cap(); if (c != was) { LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, c == 30 && was == 60 ? " (prerendered movie)" : ""); was = c; } }
+    { extern void dm_fps_tick(void) __attribute__((weak)); if (dm_fps_tick) dm_fps_tick(); }   // (loader.c: the 60 fps patch deferred to a field area goes in)
     if (fstep_on()) fstep_tick(o); else if (vstep_on()) vstep_tick(o); else if (dyn_on()) dyn_tick(o);
     static uint64_t prev_in, prev_out, prev_pass, prev_draw;
     present_cfg(o);
