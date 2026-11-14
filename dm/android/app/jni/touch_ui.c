@@ -226,8 +226,11 @@ static void recompute_locked(void) {
 // ---------- the layout editor: hold − for 2 s to enter; drag a control to move it, pinch on it to resize it, double-tap it to hide / show it;
 // hold + for 2 s to go back to the default layout; hold − for 2 s again to save and leave. The game gets no input meanwhile ----------
 static double g_edit_hold_t;   // (g_edit_hold_t: when the hold that toggles the editor started)
-static struct { int32_t id; int c; float ox, oy, x0, y0; double t0; } g_ep[10];
+static struct { int32_t id; int c; float ox, oy, x0, y0, x, y; double t0; } g_ep[10];   // (x y: where the finger is now)
 static struct { int c, active; float d0, r0; } g_pinch;
+// The control last touched in the editor (a yellow-white ring): a pinch with two fingers anywhere on the screen sizes it. A pinch had to start with both fingers
+//   on the control itself, which small ones (− + ☰, L3 / R3) do not leave room for; and a finger resting on + for 2 s resets the whole layout
+static int g_sel = -1;
 static int g_last_tap_c = -1; static double g_last_tap_t;
 static int edit_hit(float x, float y) {   // the smallest control (shown or not) under the finger
     int best = -1; float br = 1e9f;
@@ -245,13 +248,17 @@ static void edit_event(const AInputEvent *e) {
         size_t k = act == AMOTION_EVENT_ACTION_DOWN ? 0 : idx; float x = AMotionEvent_getX(e, k), y = AMotionEvent_getY(e, k);
         if (act == AMOTION_EVENT_ACTION_DOWN) { for (int i = 0; i < 10; i++) g_ep[i].id = -1; g_pinch.active = 0; }
         int c = edit_hit(x, y);
-        for (int i = 0; i < 10; i++) if (g_ep[i].id >= 0 && c >= 0 && g_ep[i].c == c) {   // a second finger on the same control: pinch
-            float dx = x - g_ep[i].x0, dy = y - g_ep[i].y0; g_pinch.c = c; g_pinch.active = 1; g_pinch.d0 = sqrtf(dx * dx + dy * dy) + 1; g_pinch.r0 = g_c[c].r; break; }
-        for (int i = 0; i < 10; i++) if (g_ep[i].id < 0) { g_ep[i].id = AMotionEvent_getPointerId(e, k); g_ep[i].c = c; g_ep[i].x0 = x; g_ep[i].y0 = y; g_ep[i].t0 = now_s();
+        if (!g_pinch.active) for (int i = 0; i < 10; i++) if (g_ep[i].id >= 0) {   // a second finger, anywhere: pinch the first finger's control, else the one last touched
+            int pc = g_ep[i].c >= 0 ? g_ep[i].c : g_sel; if (pc < 0) break;
+            float dx = x - g_ep[i].x, dy = y - g_ep[i].y; g_pinch.c = pc; g_pinch.active = 1; g_pinch.d0 = sqrtf(dx * dx + dy * dy) + 1; g_pinch.r0 = g_c[pc].r;
+            g_ep[i].c = pc; c = pc; g_sel = pc; break; }
+        if (!g_pinch.active && c >= 0) g_sel = c;
+        for (int i = 0; i < 10; i++) if (g_ep[i].id < 0) { g_ep[i].id = AMotionEvent_getPointerId(e, k); g_ep[i].c = c; g_ep[i].x0 = g_ep[i].x = x; g_ep[i].y0 = g_ep[i].y = y; g_ep[i].t0 = now_s();
             g_ep[i].ox = c >= 0 ? g_c[c].cx - x : 0; g_ep[i].oy = c >= 0 ? g_c[c].cy - y : 0; break; }
     } else if (act == AMOTION_EVENT_ACTION_MOVE) {
         float px[10], py[10]; int n = 0;
         for (size_t k = 0; k < AMotionEvent_getPointerCount(e); k++) { int32_t id = AMotionEvent_getPointerId(e, k); float x = AMotionEvent_getX(e, k), y = AMotionEvent_getY(e, k);
+            for (int i = 0; i < 10; i++) if (g_ep[i].id == id) { g_ep[i].x = x; g_ep[i].y = y; }
             for (int i = 0; i < 10; i++) if (g_ep[i].id == id && g_ep[i].c >= 0) {
                 if (g_pinch.active && g_pinch.c == g_ep[i].c) { if (n < 10) { px[n] = x; py[n] = y; n++; } }
                 else { int c = g_ep[i].c; g_c[c].cx = clampf(x + g_ep[i].ox, g_c[c].r, g_w - g_c[c].r); g_c[c].cy = clampf(y + g_ep[i].oy, g_c[c].r, g_h - g_c[c].r); edit_store(c); } } }
@@ -264,7 +271,8 @@ static void edit_event(const AInputEvent *e) {
             if (c >= 0 && t - g_ep[i].t0 < 0.3 && mx * mx + my * my < g_h * g_h * 0.0004f) {   // a tap: a double tap toggles the control
                 if (g_last_tap_c == c && t - g_last_tap_t < 0.4 && c != C_PLUS && c != C_MINUS && c != C_MENU) { g_c[c].shown = !g_c[c].shown; edit_store(c); g_last_tap_c = -1; click_locked(); }
                 else { g_last_tap_c = c; g_last_tap_t = t; } }
-            if (g_pinch.active && g_pinch.c == c) g_pinch.active = 0;
+            if (g_pinch.active && g_pinch.c == c) { g_pinch.active = 0;   // (the finger left behind lets go of it: no jump to where it rests)
+                for (int j = 0; j < 10; j++) if (j != i && g_ep[j].id >= 0 && g_ep[j].c == c) g_ep[j].c = -1; }
             g_ep[i].id = -1; }
         layout_save();   // (each lift: closing the app keeps the edit, #200)
     }
@@ -466,7 +474,8 @@ int front_overlay(dm_ovl_item *it, int max, int width, int height) {
             float a = k->shown ? 1.0f : 0.3f;
             if (c == C_STICK || c == C_RSTICK) compass(it, &n, max, a, k->cx, k->cy, k->cx, k->cy, k->r);
             else if (c == C_THROW) pokeball(it, &n, max, k, 0, a); else if (c == C_MENU) menu_icon(it, &n, max, k, a); else bubble(it, &n, max, k, 0, 0, a);
-            dm_ovl_item *o = add(it, &n, max, k->cx, k->cy, k->r * 1.12f, OVL_RING, 255, 210, 60, 0.95f * a); if (o) o->ring = clampf(4.0f * (g_h / 1080.0f) / (k->r * 1.12f), 0.02f, 0.3f); }
+            int sel = c == g_sel; float rr = k->r * (sel ? 1.22f : 1.12f);   // (the one a pinch sizes: a thicker, paler ring)
+            dm_ovl_item *o = add(it, &n, max, k->cx, k->cy, rr, OVL_RING, 255, sel ? 245 : 210, sel ? 190 : 60, 0.95f * a); if (o) o->ring = clampf((sel ? 7.0f : 4.0f) * (g_h / 1080.0f) / rr, 0.02f, 0.3f); }
     } else if (g_visible) {
         double t = now_s(); int idle = ((g_fade > 0 && t - g_touch_t > g_fade) || touch_menu_active()) && !g_btn && !g_stick_on && !g_rstick_on;   // (in a menu its items are tapped directly)   // nothing touched for 3 s: everything faint
         float ia = idle ? 0.22f : 1.0f;
