@@ -4494,10 +4494,16 @@ static int pace_time(VkPresentTimeGOOGLE *pt) {
         }
     }
     uint64_t want = 0;
+    // How far ahead of being handed over a frame is asked to show (the lead): one whole frame interval (33.4 ms at 30 fps). It was one refresh (16.7 ms), but the GPU
+    //   draws a Legends: Arceus frame in 20-25 ms on a Galaxy S25+: a frame not finished by its time showed a refresh later, 33 then 50 ms apart, a shake every few
+    //   seconds (5-19 uneven frames in 10 s with the game's own work at 7-12 ms). A frame now has its interval to be drawn: a steady 33 ms for some 16 ms more input delay.
+    //   DM_VK_PACE_LEAD=<ms> sets it by hand (16 is the former one refresh)
+    uint64_t lead = iv; { static long ms = -2; if (ms == -2) { const char *e = getenv("DM_VK_PACE_LEAD"); ms = e && atol(e) > 0 ? atol(e) : -1; }
+        if (ms > 0) lead = (uint64_t)ms * 1000000ull; if (lead < r) lead = r; }
     if (pace) {
-        want = g_pace.next ? g_pace.next + iv : now + r;
-        if (want < now + r / 2) want = now + r;   // late: the next refresh it can make
-        if (want > now + iv) want = now + iv;     // the game ran ahead of the display: back in step
+        want = g_pace.next ? g_pace.next + iv : now + lead;
+        if (want < now + r / 2) want = now + lead;   // late: back to a full lead (it then shows at the slot after, and the frames after it keep their spacing)
+        if (want > now + (lead > iv ? lead : iv)) want = now + (lead > iv ? lead : iv);   // the game ran ahead of the display: back in step
         // frame generation: both pictures must reach the display early enough to make the refresh asked for, or one shows a refresh late and they land 8 and 25 ms
         //   apart (measured on a Galaxy S25+ at 120 Hz). The in-between picture asks for a time g_fg_lead ahead; the real frame exactly half an interval after it
         if (g_fg_pace == 1) { uint64_t lead = r * (uint64_t)g_fg_lead / 100; if (want < now + lead || want > now + lead + r) want = now + lead; }
