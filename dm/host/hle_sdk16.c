@@ -73,6 +73,42 @@ static font_t font_map(const char *p) {
     memcpy(m, &done, 4); memcpy(m + 4, &len, 4);
     f.p = m; f.n = n + 8; return f;
 }
+// A Switch system font as the console stores it (BFTTF: a word derived from the key, the obfuscated length, then the TTF XORed word by word): the player's own, dumped
+//   from their console, in DM_FONT_DIR under Nintendo's file name. Decoded here as the console does (key = word 0 ^ 0x7f9a0218, each word byte-swapped after the XOR),
+//   then handed over like a TTF stand-in. NULL when the file is missing or is not a BFTTF
+static font_t font_map_bfttf(const char *p) {
+    font_t f = {0}; int fd = open(p, O_RDONLY); struct stat st;
+    if (fd < 0 || fstat(fd, &st)) { if (fd >= 0) close(fd); return f; }
+    size_t n = (size_t)st.st_size;
+    if (n < 16 || (n & 3)) { close(fd); LOG("[RED] shared font %s: not a BFTTF (size %zu)", p, n); return f; }
+    uint32_t *w = malloc(n); size_t got = 0;
+    while (w && got < n) { ssize_t r = pread(fd, (uint8_t *)w + got, n - got, (off_t)got); if (r <= 0) break; got += (size_t)r; }
+    close(fd);
+    if (!w || got != n) { free(w); LOG("[RED] shared font read short: %s", p); return f; }
+    if (w[0] != 0x36f81a1eu) { LOG("[RED] shared font %s: not a Switch BFTTF (first word %08x)", p, w[0]); free(w); return f; }
+    uint32_t key = w[0] ^ 0x7f9a0218u, len = __builtin_bswap32(w[1] ^ key);
+    size_t ttf = n - 8; if (len && len <= ttf) ttf = len;
+    uint8_t *m = mmap(NULL, ttf + 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (m == MAP_FAILED) { free(w); LOG("[RED] shared font memory allocation failed (%zu bytes)", ttf + 8); return f; }
+    uint32_t *o = (uint32_t *)(m + 8); size_t nw = (ttf + 3) / 4;
+    for (size_t i = 0; i < nw; i++) o[i] = __builtin_bswap32(w[2 + i] ^ key);
+    free(w);
+    uint32_t done = 0x18029a7fu, hl = __builtin_bswap32((uint32_t)ttf ^ 0x49621806u);
+    memcpy(m, &done, 4); memcpy(m + 4, &hl, 4);
+    LOG("shared font: %s (the console's own font, %zu bytes decoded)", p, ttf);
+    f.p = m; f.n = ttf + 8; return f;
+}
+// The console's own font for a type, if the player put it in DM_FONT_DIR: Nintendo's BFTTF name first, then a plain TTF of that one type (for 1 to 4)
+static font_t font_real(int type) {
+    static const char *const bf[6] = { "nintendo_udsg-r_std_003.bfttf", "nintendo_udsg-r_org_zh-cn_003.bfttf", "nintendo_udsg-r_ext_zh-cn_003.bfttf",
+                                       "nintendo_udjxh-db_zh-tw_003.bfttf", "nintendo_udsg-r_ko_003.bfttf", "nintendo_ext_003.bfttf" };
+    static const char *const tt[6] = { NULL, "zh-cn.ttf", "zh-cn-ext.ttf", "zh-tw.ttf", "ko.ttf", NULL };
+    const char *dir = getenv("DM_FONT_DIR"); char buf[1024]; font_t f = {0};
+    if (!dir || !*dir || type < 0 || type > 5) return f;
+    snprintf(buf, sizeof buf, "%s/%s", dir, bf[type]); if (access(buf, R_OK) == 0) f = font_map_bfttf(buf);
+    if (!f.p && tt[type]) { snprintf(buf, sizeof buf, "%s/%s", dir, tt[type]); if (access(buf, R_OK) == 0) { f = font_map(buf); if (f.p) LOG("shared font %d: %s (%zu bytes)", type, buf, f.n - 8); } }
+    return f;
+}
 static font_t font_first(const char *env, const char *file, const char *fallback) {
     char buf[1024]; const char *dir = getenv("DM_FONT_DIR"), *c[3] = {getenv(env), NULL, fallback};
     if (dir && *dir) { snprintf(buf, sizeof buf, "%s/%s", dir, file); c[1] = buf; }
@@ -84,7 +120,12 @@ static font_t font_first(const char *env, const char *file, const char *fallback
 }
 static font_t font_get(int type) {
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static font_t std_f, ext_f; static int std_done, ext_done;
+    static font_t real_f[6]; static int real_done[6];
     pthread_mutex_lock(&mu);
+    // the console's own fonts, one per type, when the player supplied them (#239: Simplified Chinese drawn with the stand-in's metrics looked stretched, and its
+    //   extension font's punctuation, such as the ellipsis, came out as "?")
+    if (type >= 0 && type <= 5) { if (!real_done[type]) { real_done[type] = 1; real_f[type] = font_real(type); }
+                                  if (real_f[type].p) { font_t r = real_f[type]; pthread_mutex_unlock(&mu); return r; } }
     if (!std_done) { std_done = 1; std_f = font_first("DM_SHARED_FONT", "standard.ttf",
 #ifdef __ANDROID__
         access("/system/fonts/Roboto-Regular.ttf", R_OK) == 0 ? "/system/fonts/Roboto-Regular.ttf" : "/system/fonts/NotoSans-Regular.ttf"   // the phone's own font (the macOS path below does not exist there)
