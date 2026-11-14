@@ -1135,7 +1135,10 @@ static void *completion_main(void *unused) {
 static void completion_start(void) {
     VkSemaphoreTypeCreateInfo st = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE };
     VkSemaphoreCreateInfo sci = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &st };
-    if (g_tlsem) VKCHECK(vkCreateSemaphore(g_dev, &sci, NULL, &g_tl));
+    // A driver that lists timeline semaphores and then fails to make one (Qualcomm's 615.77 package on an Adreno 650 with a Vulkan 1.1 device: error 5, the game
+    //   stopped at start, #209) gets a fence for each submission instead, the path drivers without them take
+    if (g_tlsem) { VkResult r = vkCreateSemaphore(g_dev, &sci, NULL, &g_tl);
+        if (r != VK_SUCCESS) { g_tlsem = 0; g_tl = VK_NULL_HANDLE; VLOG("[RED] timeline semaphore not made (error %d): a fence for each submission instead", r); } }
     // The submission pools without the transient hint: with it the driver gave its memory back at every reset and mapped it again (Adreno 830, a Galaxy S25+:
     //   vkResetCommandPool was 13-16 % of the game thread, most of it munmap / mmap; without the hint it fell under 3 %, simpleperf 2026-11-09). Each pool is reset
     //   once per submission and reused, which is what the memory is kept for. DM_VK_POOL_TRANSIENT=1: the hint as before
