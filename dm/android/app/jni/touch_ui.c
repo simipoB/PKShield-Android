@@ -266,7 +266,14 @@ static void edit_event(const AInputEvent *e) {
                 else { g_last_tap_c = c; g_last_tap_t = t; } }
             if (g_pinch.active && g_pinch.c == c) g_pinch.active = 0;
             g_ep[i].id = -1; }
+        layout_save();   // (each lift: closing the app keeps the edit, #200)
     }
+}
+// Android's Back while the layout editor is open (android_main.c): saved and left, as holding − does (Galar-Native-Android #200: no way out was found)
+int touch_ui_edit_back(void) {
+    pthread_mutex_lock(&g_mu); int was = g_edit;
+    if (g_edit) { layout_save(); g_edit = 0; for (int i = 0; i < 10; i++) g_ep[i].id = -1; fprintf(stderr, "[touch] layout saved (Back): %s\n", g_lay_path); }
+    pthread_mutex_unlock(&g_mu); return was;
 }
 // the 2-second holds, checked once a frame (a finger held still sends no events): − toggles the editor (saving on the way out), + in the editor resets the layout
 static void edit_holds_locked(void) {

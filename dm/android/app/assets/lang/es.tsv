@@ -324,3 +324,13 @@ Divisions	Divisiones
 Textures: every texture read is limited to a sane range. If the white goes away, tell us: a texture is read wrong	Texturas: cada lectura de textura se limita a un rango razonable. Si el blanco desaparece, avísanos: una textura se lee mal
 Inputs: every value the vertex shader hands over is limited. If the white goes away, tell us	Entradas: cada valor que entrega el sombreador de vértices se limita. Si el blanco desaparece, avísanos
 Divisions: every division is limited. If the white goes away, tell us	Divisiones: cada división se limita. Si el blanco desaparece, avísanos
+Bright scenes in a wider format	Escenas iluminadas en un formato más amplio
+On: the lit scene is drawn in a format with more room (RGBA16F instead of R11G11B10F), a test for white or flickering pictures; uses a little more memory	Activado: la escena iluminada se dibuja en un formato con más margen (RGBA16F en lugar de R11G11B10F), una prueba para imágenes blancas o que parpadean; usa un poco más de memoria
+AMD FidelityFX Super Resolution 1: edge-aware upscaling, then sharpening (Sharpness sets how much)	AMD FidelityFX Super Resolution 1: escalado que respeta los bordes y luego nitidez (Nitidez ajusta cuánta)
+Colour	Color
+Natural	Natural
+Natural: the colours as the game draws them	Natural: los colores tal como los dibuja el juego
+Vibrant	Vivo
+Vibrant: muted colours lifted, a touch more contrast (less grey haze)	Vivo: los colores apagados se avivan, un poco más de contraste (menos bruma gris)
+Cinematic	Cinemático
+Cinematic: stronger contrast, a slightly warm tone	Cinemático: más contraste y un tono ligeramente cálido

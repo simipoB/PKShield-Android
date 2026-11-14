@@ -245,7 +245,11 @@ public final class GameMenu {
         String rec = GameSettings.profile(a)[6].equals("sgsr") ? "SGSR" : t(a, "Sharp");
         choice(a, "DM_SCALER", t(a, "Upscaling"), new String[][] { { "", t(a, "Auto"), t(a, "Auto: this phone gets %s", rec) },
             { "sharp", t(a, "Sharp"), t(a, "Sharp: the picture upscaled with sharpening (lighter settings keep their detail)") },
-            { "sgsr", "SGSR", t(a, "Snapdragon Game Super Resolution (Qualcomm's upscaler)") }, { "smooth", t(a, "Smooth"), t(a, "Smooth: a plain stretch") } });
+            { "sgsr", "SGSR", t(a, "Snapdragon Game Super Resolution (Qualcomm's upscaler)") },
+            { "fsr", "FSR", t(a, "AMD FidelityFX Super Resolution 1: edge-aware upscaling, then sharpening (Sharpness sets how much)") }, { "smooth", t(a, "Smooth"), t(a, "Smooth: a plain stretch") } });
+        // the picture's colour, graded in the upscaler's last shader (nvn_vk.c color_mode): live
+        choice(a, "DM_COLOR", t(a, "Colour"), new String[][] { { "", t(a, "Natural"), t(a, "Natural: the colours as the game draws them") },
+            { "vibrant", t(a, "Vibrant"), t(a, "Vibrant: muted colours lifted, a touch more contrast (less grey haze)") }, { "cinematic", t(a, "Cinematic"), t(a, "Cinematic: stronger contrast, a slightly warm tone") } });
         // Frame generation (nvn_vk.c, nvn_fgen.h): off unless the player turns it on, on any GPU; takes effect at once
         //   Lossless Scaling's (nvn_lsfg.h): offered once the player has imported their own Lossless.dll (its shaders, converted, in files/lsfg)
         String[][] fgc = { { "", t(a, "Off"), "" },
@@ -541,6 +545,8 @@ public final class GameMenu {
                 { "div", t(a, "Divisions"), t(a, "Divisions: every division is limited. If the white goes away, tell us") } });
             choice(a, "DM_VK_DEPTH_DISCARD", t(a, "Keep unused depth in tile memory"), new String[][] { { "", t(a, "Off"), "" },
                 { "1", t(a, "On"), t(a, "On: depth that nothing reads afterwards is not written back to memory (faster on Mali; a test: tell us if anything flickers)") } });
+            choice(a, "DM_VK_B10_AS_RGBA16", t(a, "Bright scenes in a wider format"), new String[][] { { "", t(a, "Off"), "" },
+                { "1", t(a, "On"), t(a, "On: the lit scene is drawn in a format with more room (RGBA16F instead of R11G11B10F), a test for white or flickering pictures; uses a little more memory") } });
             choice(a, "DM_VK_NO_PASS_MERGE", t(a, "Merge render passes"), new String[][] { { "", t(a, "On"), "" },
                 { "1", t(a, "Off"), t(a, "Off: every render target change starts a new pass") } });
         }
